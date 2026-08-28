@@ -1,0 +1,31 @@
+# Dependencies and build output
+node_modules/
+.next/
+dist/
+coverage/
+.turbo/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs and runtime files
+*.log
+tmp/
+temp/
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local brainstorming artifacts
+.superpowers/
+
+# Infrastructure state
+*.tfstate
+*.tfstate.*
+.terraform/
