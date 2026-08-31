@@ -9,12 +9,10 @@ WS09–WS18 每个独立窗口都必须遵守本文件。
 3. 如果 `git merge-base --is-ancestor codex/ws00-foundation codex/integration` 返回非 0，停止并报告，不得从 `main` 或旧 WS00 提交创建分支。
 4. 使用 `using-git-worktrees` 检测现有隔离环境；优先使用平台原生 Worktree 能力，没有时才使用 Git fallback。
 5. 新分支必须从 `codex/integration` 创建，使用各工作包指定的分支和绝对 Worktree 路径。
-6. 进入 Worktree 后运行：
+6. 进入 Worktree 后运行统一预检。该命令使用共享 Git 目录中的跨进程锁，多个窗口同时启动时会自动排队，禁止绕过或另开一组并行安装/验证：
 
 ```powershell
-corepack pnpm install --lockfile=false
-corepack pnpm verify
-corepack pnpm audit --audit-level high
+corepack pnpm preflight:wave1
 git status --short
 ```
 

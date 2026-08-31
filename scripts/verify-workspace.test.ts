@@ -20,10 +20,17 @@ describe('workspace', () => {
     };
 
     expect(packageJson.scripts?.['test:root']).toBe(
-      'vitest run scripts/verify-workspace.test.ts scripts/validate-compose.test.ts',
+      'vitest run scripts/verify-workspace.test.ts scripts/validate-compose.test.ts scripts/verify-lock.test.ts',
     );
     expect(packageJson.scripts?.test).toBe('pnpm test:root && turbo run test');
-    expect(packageJson.scripts?.verify).toContain('pnpm test');
+    expect(packageJson.scripts?.verify).toBe('node scripts/verify.mjs');
+
+    const verificationEntry = await readFile('scripts/verify.mjs', 'utf8');
+    const verificationWorkflow = await readFile('scripts/verification-workflow.mjs', 'utf8');
+    expect(verificationEntry).toContain('runVerificationWorkflow()');
+    expect(verificationWorkflow).toContain(
+      "['format:check', 'lint', 'typecheck', 'test', 'build']",
+    );
   });
 
   it('runs workspace and Compose verification in CI', async () => {
