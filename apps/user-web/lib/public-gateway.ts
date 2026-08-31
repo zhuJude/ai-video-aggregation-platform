@@ -118,9 +118,15 @@ export interface GatewayError {
   retryable: boolean;
 }
 
+export type GatewayTransport = 'fixture' | 'http';
+
+export interface GatewaySuccessMeta {
+  transport: GatewayTransport;
+  version: string;
+}
+
 export type GatewayResult<T> =
-  | { ok: true; data: T; meta: { transport: 'fixture'; version: string } }
-  | { ok: false; error: GatewayError };
+  { ok: true; data: T; meta: GatewaySuccessMeta } | { ok: false; error: GatewayError };
 
 export interface PublicSiteGateway {
   getHome(): Promise<GatewayResult<HomeResponse>>;
@@ -284,27 +290,35 @@ const pricing: PricingResponse = {
   ],
 };
 
-function success<T>(data: T): GatewayResult<T> {
-  return { ok: true, data, meta: { transport: 'fixture', version: 'ws15-v1' } };
+const fixtureMeta: GatewaySuccessMeta = { transport: 'fixture', version: 'ws15-v1' };
+
+function success<T>(data: T, meta: GatewaySuccessMeta): GatewayResult<T> {
+  return { ok: true, data, meta };
+}
+
+function fixtureSuccess<T>(data: T): GatewayResult<T> {
+  return success(data, fixtureMeta);
 }
 
 function priceMatches(model: PublicModel, price: ModelFilters['price']): boolean {
   if (!price) return true;
   if (price === 'UNDER_150') return model.pointRange.min < 150;
-  if (price === '150_TO_300') return model.pointRange.min <= 300 && model.pointRange.max >= 150;
-  return model.pointRange.max > 300;
+  if (price === '150_TO_300') {
+    return model.pointRange.min >= 150 && model.pointRange.min <= 300;
+  }
+  return model.pointRange.min > 300;
 }
 
 class FixturePublicSiteGateway implements PublicSiteGateway {
   getHome(): Promise<GatewayResult<HomeResponse>> {
-    return Promise.resolve(success({ popularModels: models, creatorCases }));
+    return Promise.resolve(fixtureSuccess({ popularModels: models, creatorCases }));
   }
 
   getHelp(slug: readonly string[]): Promise<GatewayResult<HelpResponse>> {
     const key = slug.join('/');
     const article = helpArticles.find((item) => item.slug.join('/') === key) ?? null;
     return Promise.resolve(
-      success({
+      fixtureSuccess({
         article,
         navigation: helpArticles.map((item) => ({ slug: item.slug, title: item.title })),
       }),
@@ -312,7 +326,7 @@ class FixturePublicSiteGateway implements PublicSiteGateway {
   }
 
   getModel(id: string): Promise<GatewayResult<PublicModel | null>> {
-    return Promise.resolve(success(models.find((model) => model.id === id) ?? null));
+    return Promise.resolve(fixtureSuccess(models.find((model) => model.id === id) ?? null));
   }
 
   getModels(filters: ModelFilters): Promise<GatewayResult<ModelsResponse>> {
@@ -328,7 +342,7 @@ class FixturePublicSiteGateway implements PublicSiteGateway {
     );
 
     return Promise.resolve(
-      success({
+      fixtureSuccess({
         items,
         total: items.length,
         filters,
@@ -343,7 +357,7 @@ class FixturePublicSiteGateway implements PublicSiteGateway {
   }
 
   getPricing(): Promise<GatewayResult<PricingResponse>> {
-    return Promise.resolve(success(pricing));
+    return Promise.resolve(fixtureSuccess(pricing));
   }
 }
 

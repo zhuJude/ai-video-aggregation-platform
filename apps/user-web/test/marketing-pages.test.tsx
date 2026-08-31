@@ -1,6 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 
 import { cleanup, render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import HomePage from '../app/(marketing)/page';
@@ -23,7 +25,7 @@ describe('public marketing pages', () => {
     expect(screen.getByRole('navigation', { name: '公共导航' })).toBeVisible();
   });
 
-  it('renders a model detail from the public Gateway response', async () => {
+  it('keeps maintenance models non-actionable', async () => {
     render(
       await ModelDetailPage({
         params: Promise.resolve({ id: 'seedance-1-5-pro' }),
@@ -32,9 +34,21 @@ describe('public marketing pages', () => {
 
     expect(screen.getByRole('heading', { name: 'Seedance 1.5 Pro' })).toBeVisible();
     expect(screen.getByText('按输出规格计费')).toBeVisible();
+    expect(screen.queryByRole('link', { name: '使用此模型' })).not.toBeInTheDocument();
+    expect(screen.getByText(/暂时无法提交新任务/)).toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('模型恢复后才可开始新任务');
+  });
+
+  it('offers an active model as a studio action', async () => {
+    render(
+      await ModelDetailPage({
+        params: Promise.resolve({ id: 'kling-2-1-pro' }),
+      }),
+    );
+
     expect(screen.getByRole('link', { name: '使用此模型' })).toHaveAttribute(
       'href',
-      '/studio?model=seedance-1-5-pro',
+      '/studio?model=kling-2-1-pro',
     );
   });
 
@@ -69,5 +83,16 @@ describe('public marketing pages', () => {
     expect(safeLink?.getAttribute('href')).toBe('https://example.com');
     expect(safeLink?.getAttribute('rel')).toBe('noreferrer noopener');
     expect(safeLink?.getAttributeNames().sort()).toEqual(['href', 'rel']);
+  });
+
+  it('preloads the hero image and preserves mobile navigation tap targets', () => {
+    const homeSource = readFileSync(resolve(process.cwd(), 'app/(marketing)/page.tsx'), 'utf8');
+    const css = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
+
+    expect(homeSource).toMatch(/<Image[\s\S]*?\bpreload\b[\s\S]*?\/>/);
+    expect(homeSource).not.toMatch(/<Image[\s\S]*?\bpriority\b[\s\S]*?\/>/);
+    expect(css).toMatch(
+      /@media \(max-width: 47\.99rem\)[\s\S]*?\.public-navigation a\s*\{[^}]*display:\s*inline-flex;[^}]*min-height:\s*2\.75rem;[^}]*align-items:\s*center;/,
+    );
   });
 });

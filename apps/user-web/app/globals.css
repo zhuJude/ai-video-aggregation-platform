@@ -1245,6 +1245,10 @@ input:disabled {
   }
 
   .public-navigation a {
+    display: inline-flex;
+    min-height: 2.75rem;
+    align-items: center;
+    justify-content: center;
     font-size: 0.8125rem;
   }
 

@@ -42,7 +42,7 @@ export default async function HomePage() {
                 width={1536}
                 height={1024}
                 sizes="(max-width: 767px) 100vw, 58vw"
-                priority
+                preload
                 alt="多层视频画面中的海岸日落，展示 AI 视频创作过程"
               />
             </div>

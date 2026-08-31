@@ -121,12 +121,12 @@ export default async function ModelsPage({
               </select>
             </label>
             <label>
-              价格范围
+              起步点数
               <select name="price" defaultValue={filters.price ?? ''}>
                 <option value="">全部区间</option>
-                <option value="UNDER_150">150 以下起</option>
-                <option value="150_TO_300">150-300</option>
-                <option value="OVER_300">300 以上</option>
+                <option value="UNDER_150">低于 150 点起步</option>
+                <option value="150_TO_300">150-300 点起步</option>
+                <option value="OVER_300">高于 300 点起步</option>
               </select>
             </label>
             <label>
@@ -184,7 +184,7 @@ export default async function ModelsPage({
                       <div>
                         <dt>常见价格</dt>
                         <dd>
-                          {model.pointRange.min}-{model.pointRange.max} {model.pointRange.unit}
+                          {model.pointRange.min}-{model.pointRange.max} 点
                         </dd>
                       </div>
                       <div>

@@ -58,9 +58,15 @@ export default async function ModelDetailPage({ params }: ModelDetailPageProps) 
             <strong>
               常见 {model.pointRange.min}-{model.pointRange.max} {model.pointRange.unit}
             </strong>
-            <Link className="button-link button-primary" href={`/studio?model=${model.id}`}>
-              使用此模型
-            </Link>
+            {model.state === 'ACTIVE' ? (
+              <Link className="button-link button-primary" href={`/studio?model=${model.id}`}>
+                使用此模型
+              </Link>
+            ) : (
+              <p className="model-action-unavailable" role="status">
+                当前不可操作，模型恢复后才可开始新任务。
+              </p>
+            )}
           </aside>
         </header>
 
