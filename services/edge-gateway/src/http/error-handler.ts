@@ -5,6 +5,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 
 const PUBLIC_ERROR_STATUSES: Readonly<Record<string, number>> = {
   BAD_REQUEST: 400,
+  CIRCUIT_OPEN: 503,
   FORBIDDEN: 403,
   IDEMPOTENCY_CONFLICT: 409,
   IDEMPOTENCY_REQUIRED: 400,
@@ -14,6 +15,8 @@ const PUBLIC_ERROR_STATUSES: Readonly<Record<string, number>> = {
   RATE_LIMITED: 429,
   RATE_LIMIT_UNAVAILABLE: 503,
   SERVICE_TIMEOUT: 504,
+  UPSTREAM_ERROR: 502,
+  UPSTREAM_UNAVAILABLE: 503,
 };
 
 function requestTraceId(request: FastifyRequest): string {
