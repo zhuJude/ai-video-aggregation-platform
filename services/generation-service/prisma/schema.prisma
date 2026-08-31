@@ -35,6 +35,18 @@ enum TaskIdempotencyStatus {
   FAILED
 }
 
+enum TaskCreationPhase {
+  CLAIMED
+  RESERVE_REQUESTED
+  RESERVED
+  PERSISTENCE_FAILED
+  COMPENSATION_REQUESTED
+  COMPENSATED
+  REPAIR_REQUIRED
+  SUCCEEDED
+  FAILED
+}
+
 enum TaskTransitionSource {
   API
   ORCHESTRATOR
@@ -55,7 +67,7 @@ model GenerationTask {
   id                       String            @id @db.Uuid
   userId                   String            @db.Uuid
   quoteId                  String            @unique @db.Uuid
-  capabilityVersionId     String            @db.Uuid
+  capabilityVersionId      String            @db.Uuid
   status                   TaskStatus        @default(QUOTED)
   quoteSnapshot            Json
   quoteSnapshotSha256      String            @db.Char(64)
@@ -72,25 +84,25 @@ model GenerationTask {
   idempotencyRecords       TaskIdempotency[]
   repairCases              TaskRepairCase[]
 
-  @@index([userId, createdAt])
+  @@index([userId, createdAt, id])
   @@index([status, updatedAt])
   @@index([capabilityVersionId, createdAt])
 }
 
 model TaskTransition {
-  id          String                      @id @db.Uuid
-  taskId      String                      @db.Uuid
+  id          String                  @id @db.Uuid
+  taskId      String                  @db.Uuid
   fromStatus  TaskStatus
   toStatus    TaskStatus
   taskVersion Int
-  reasonCode  String                      @db.VarChar(80)
+  reasonCode  String                  @db.VarChar(80)
   source      TaskTransitionSource
   actorType   TaskTransitionActorType
-  actorId     String                      @db.VarChar(160)
-  traceId     String                      @db.Char(32)
+  actorId     String                  @db.VarChar(160)
+  traceId     String                  @db.Char(32)
   metadata    Json?
-  createdAt   DateTime                    @default(now()) @db.Timestamptz(3)
-  task        GenerationTask              @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  createdAt   DateTime                @default(now()) @db.Timestamptz(3)
+  task        GenerationTask          @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@unique([taskId, taskVersion])
   @@index([taskId, createdAt])
@@ -100,16 +112,24 @@ model TaskTransition {
 }
 
 model TaskIdempotency {
-  id             String                @id @db.Uuid
-  userId         String                @db.Uuid
-  idempotencyKey String                @db.VarChar(160)
-  requestSha256  String                @db.Char(64)
-  status         TaskIdempotencyStatus @default(IN_PROGRESS)
-  response       Json?
-  taskId         String?               @db.Uuid
-  createdAt      DateTime              @default(now()) @db.Timestamptz(3)
-  expiresAt      DateTime              @db.Timestamptz(3)
-  task           GenerationTask?       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  id                      String                @id @db.Uuid
+  userId                  String                @db.Uuid
+  idempotencyKey          String                @db.VarChar(160)
+  requestSha256           String                @db.Char(64)
+  proposedTaskId          String                @db.Uuid
+  quotedPoints            String                @db.VarChar(40)
+  reserveBusinessKey      String                @db.VarChar(120)
+  compensationBusinessKey String                @db.VarChar(120)
+  traceId                 String                @db.Char(32)
+  leaseToken              String                @unique @db.Char(64)
+  phase                   TaskCreationPhase     @default(CLAIMED)
+  status                  TaskIdempotencyStatus @default(IN_PROGRESS)
+  response                Json?
+  taskId                  String?               @db.Uuid
+  createdAt               DateTime              @default(now()) @db.Timestamptz(3)
+  expiresAt               DateTime              @db.Timestamptz(3)
+  task                    GenerationTask?       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  repairCases             TaskRepairCase[]
 
   @@unique([userId, idempotencyKey])
   @@index([taskId])
@@ -117,19 +137,20 @@ model TaskIdempotency {
 }
 
 model OutboxEvent {
-  id            String    @id @db.Uuid
-  aggregateType String    @db.VarChar(80)
-  aggregateId   String    @db.Uuid
-  eventType     String    @db.VarChar(160)
-  eventVersion  Int
-  payload       Json
-  headers       Json
-  occurredAt    DateTime  @db.Timestamptz(3)
-  availableAt   DateTime  @default(now()) @db.Timestamptz(3)
-  publishedAt   DateTime? @db.Timestamptz(3)
-  attempts      Int       @default(0)
-  lastError     String?
-  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  id               String    @id @db.Uuid
+  aggregateType    String    @db.VarChar(80)
+  aggregateId      String    @db.Uuid
+  eventType        String    @db.VarChar(160)
+  eventVersion     Int
+  deduplicationKey String?   @unique @db.VarChar(240)
+  payload          Json
+  headers          Json
+  occurredAt       DateTime  @db.Timestamptz(3)
+  availableAt      DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt      DateTime? @db.Timestamptz(3)
+  attempts         Int       @default(0)
+  lastError        String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([publishedAt, availableAt])
   @@index([aggregateType, aggregateId, occurredAt])
@@ -150,17 +171,20 @@ model InboxMessage {
 }
 
 model TaskRepairCase {
-  id           String           @id @db.Uuid
-  taskId       String           @db.Uuid
-  status       RepairCaseStatus @default(OPEN)
-  kind         String           @db.VarChar(80)
-  summary      String           @db.VarChar(500)
-  evidence     Json
-  detectedAt   DateTime         @default(now()) @db.Timestamptz(3)
-  resolvedAt   DateTime?        @db.Timestamptz(3)
-  resolution   Json?
-  task         GenerationTask   @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  id            String           @id @db.Uuid
+  taskId        String?          @db.Uuid
+  idempotencyId String?          @unique @db.Uuid
+  status        RepairCaseStatus @default(OPEN)
+  kind          String           @db.VarChar(80)
+  summary       String           @db.VarChar(500)
+  evidence      Json
+  detectedAt    DateTime         @default(now()) @db.Timestamptz(3)
+  resolvedAt    DateTime?        @db.Timestamptz(3)
+  resolution    Json?
+  task          GenerationTask?  @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  idempotency   TaskIdempotency? @relation(fields: [idempotencyId], references: [id], onDelete: Restrict)
 
   @@index([status, detectedAt])
   @@index([taskId, detectedAt])
+  @@index([idempotencyId, detectedAt])
 }

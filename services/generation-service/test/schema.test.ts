@@ -14,6 +14,12 @@ function schemaBlock(kind: 'enum' | 'model', name: string): string {
 }
 
 describe('generation persistence schema', () => {
+  it('gives outbox commands a durable deduplication key', () => {
+    const outbox = schemaBlock('model', 'OutboxEvent');
+
+    expect(outbox).toMatch(/\bdeduplicationKey\s+String\?\s+@unique\s+@db\.VarChar\(240\)/);
+  });
+
   it('supports an idempotency row before task creation and records its lifecycle', () => {
     const status = schemaBlock('enum', 'TaskIdempotencyStatus');
     const idempotency = schemaBlock('model', 'TaskIdempotency');
@@ -24,6 +30,23 @@ describe('generation persistence schema', () => {
     expect(idempotency).toMatch(/\bstatus\s+TaskIdempotencyStatus\s+@default\(IN_PROGRESS\)/);
     expect(idempotency).toMatch(/\btaskId\s+String\?\s+@db\.Uuid/);
     expect(idempotency).toMatch(/\btask\s+GenerationTask\?\s+@relation\(/);
+    expect(idempotency).toMatch(/\bproposedTaskId\s+String\s+@db\.Uuid/);
+    expect(idempotency).toMatch(/\bquotedPoints\s+String\s+@db\.VarChar\(40\)/);
+    expect(idempotency).toMatch(/\breserveBusinessKey\s+String\s+@db\.VarChar\(120\)/);
+    expect(idempotency).toMatch(/\bcompensationBusinessKey\s+String\s+@db\.VarChar\(120\)/);
+    expect(idempotency).toMatch(/\btraceId\s+String\s+@db\.Char\(32\)/);
+    expect(idempotency).toMatch(/\bleaseToken\s+String\s+@unique\s+@db\.Char\(64\)/);
+    expect(idempotency).toMatch(/\bphase\s+TaskCreationPhase\s+@default\(CLAIMED\)/);
+  });
+
+  it('supports actionable repair cases before a generation task exists', () => {
+    const repair = schemaBlock('model', 'TaskRepairCase');
+    const idempotency = schemaBlock('model', 'TaskIdempotency');
+
+    expect(repair).toMatch(/\btaskId\s+String\?\s+@db\.Uuid/);
+    expect(repair).toMatch(/\bidempotencyId\s+String\?\s+@unique\s+@db\.Uuid/);
+    expect(repair).toMatch(/\bidempotency\s+TaskIdempotency\?\s+@relation\(/);
+    expect(idempotency).toMatch(/\brepairCases\s+TaskRepairCase\[\]/);
   });
 
   it('requires the application to supply a UUIDv7 task-transition ID', () => {
@@ -53,5 +76,11 @@ describe('generation persistence schema', () => {
     expect(transition).toMatch(/\bactorType\s+TaskTransitionActorType\b/);
     expect(transition).toMatch(/\bactorId\s+String\s+@db\.VarChar\(160\)/);
     expect(transition).toMatch(/\btraceId\s+String\s+@db\.Char\(32\)/);
+  });
+
+  it('indexes the complete deterministic user task pagination order', () => {
+    const task = schemaBlock('model', 'GenerationTask');
+
+    expect(task).toContain('@@index([userId, createdAt, id])');
   });
 });

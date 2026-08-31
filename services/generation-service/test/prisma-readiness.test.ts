@@ -38,6 +38,15 @@ describe('Prisma readiness', () => {
     expect(packageJson.scripts.build).toContain('prisma:generate');
   });
 
+  it('generates the service-owned client before every clean-checkout compiler test entrypoint', () => {
+    expect(packageJson.scripts).toMatchObject({
+      prelint: 'pnpm run prisma:generate',
+      pretypecheck: 'pnpm run prisma:generate',
+      pretest: 'pnpm run prisma:generate',
+      'pretest:coverage': 'pnpm run prisma:generate',
+    });
+  });
+
   it('does not run synchronous nested package-manager processes inside Vitest', () => {
     const synchronousSpawnApi = ['spawn', 'Sync'].join('');
 
