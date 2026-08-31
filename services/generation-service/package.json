@@ -1,0 +1,25 @@
+{
+  "name": "@repo/generation-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm run prisma:generate && tsc -p tsconfig.json",
+    "lint": "eslint src test",
+    "prisma:check": "pnpm run prisma:validate && pnpm run prisma:migrate:smoke",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:smoke": "prisma migrate diff --config prisma.schema-tools.config.ts --from-empty --to-schema prisma/schema.prisma --script",
+    "prisma:validate": "prisma validate",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --exclude dist/**",
+    "test:coverage": "vitest run --coverage --exclude dist/**"
+  },
+  "dependencies": {
+    "@prisma/client": "7.2.0",
+    "@repo/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "4.1.11",
+    "prisma": "7.2.0"
+  }
+}
