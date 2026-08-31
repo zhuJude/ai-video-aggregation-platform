@@ -464,3 +464,73 @@ it('does not let a stale Smart capability response overwrite the selected Pro mo
   });
   expect(screen.queryByText('能力版本 stale-smart-v9')).not.toBeInTheDocument();
 });
+
+it('loads the exact capability when the catalog arrives after switching to Pro', async () => {
+  let resolveProviders:
+    ((providers: Awaited<ReturnType<StudioGateway['listProviders']>>) => void) | undefined;
+  let resolveModels:
+    ((models: Awaited<ReturnType<StudioGateway['listModels']>>) => void) | undefined;
+  let resolveLateSmart: ((document: StudioCapabilityDocument) => void) | undefined;
+  const providers = new Promise<Awaited<ReturnType<StudioGateway['listProviders']>>>((resolve) => {
+    resolveProviders = resolve;
+  });
+  const models = new Promise<Awaited<ReturnType<StudioGateway['listModels']>>>((resolve) => {
+    resolveModels = resolve;
+  });
+  const lateSmart = new Promise<StudioCapabilityDocument>((resolve) => {
+    resolveLateSmart = resolve;
+  });
+  const initialSmartDocument: StudioCapabilityDocument = {
+    ...imageToVideoCapability,
+    capabilityVersion: 'smart-before-catalog-v1',
+  };
+  const proDocument: StudioCapabilityDocument = {
+    ...imageToVideoCapability,
+    capabilityVersion: 'pro-after-catalog-v2',
+  };
+  const getSmartCapability = vi
+    .fn<StudioGateway['getSmartCapability']>()
+    .mockResolvedValueOnce(initialSmartDocument)
+    .mockReturnValueOnce(lateSmart);
+  const getCapability = vi.fn<StudioGateway['getCapability']>().mockResolvedValue(proDocument);
+  const gateway: StudioGateway = {
+    listProviders: vi.fn().mockReturnValue(providers),
+    listModels: vi.fn().mockReturnValue(models),
+    getCapability,
+    getSmartCapability,
+    quote: vi.fn(),
+    createTask: vi.fn(),
+  };
+
+  render(<StudioWorkspace gateway={gateway} />);
+  expect(await screen.findByText('能力版本 smart-before-catalog-v1')).toBeVisible();
+
+  fireEvent.click(screen.getByRole('button', { name: '专业模式' }));
+  expect(screen.queryByText('能力版本 smart-before-catalog-v1')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '获取准确报价' })).toBeDisabled();
+
+  fireEvent.click(screen.getByRole('button', { name: '智能模式' }));
+  fireEvent.click(screen.getByRole('button', { name: '专业模式' }));
+  resolveProviders?.([{ id: 'provider-a', name: '平台 A' }]);
+  resolveModels?.([
+    {
+      id: 'model-active',
+      providerId: 'provider-a',
+      name: '精确模型',
+      status: 'ACTIVE',
+      capabilityVersion: proDocument.capabilityVersion,
+    },
+  ]);
+
+  await waitFor(() => {
+    expect(getCapability).toHaveBeenCalledTimes(1);
+    expect(getCapability).toHaveBeenCalledWith('model-active');
+  });
+  expect(await screen.findByText('能力版本 pro-after-catalog-v2')).toBeVisible();
+
+  resolveLateSmart?.({ ...imageToVideoCapability, capabilityVersion: 'late-smart-v9' });
+  await waitFor(() => {
+    expect(screen.getByText('能力版本 pro-after-catalog-v2')).toBeVisible();
+  });
+  expect(screen.queryByText('能力版本 late-smart-v9')).not.toBeInTheDocument();
+});

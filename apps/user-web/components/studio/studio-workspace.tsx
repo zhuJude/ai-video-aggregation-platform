@@ -53,6 +53,7 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
   const [pageError, setPageError] = useState<string>();
   const [quote, setQuote] = useState<StudioQuote>();
   const [quoting, setQuoting] = useState(false);
+  const studioModeRef = useRef<'SMART' | 'PRO'>('SMART');
   const capabilityRequestId = useRef(0);
   const quoteRequestId = useRef(0);
 
@@ -66,6 +67,7 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
     async (preferences: SmartPreferences) => {
       const requestId = ++capabilityRequestId.current;
       setLoadingCapability(true);
+      setDocument(undefined);
       setFormValid(false);
       setFormValues({});
       setPageError(undefined);
@@ -87,13 +89,14 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
 
   const loadProCapability = useCallback(
     async (modelId: string) => {
-      if (!modelId) return;
       const requestId = ++capabilityRequestId.current;
       setLoadingCapability(true);
+      setDocument(undefined);
       setFormValid(false);
       setFormValues({});
       setPageError(undefined);
       invalidateQuote();
+      if (!modelId) return;
       try {
         const nextDocument = await gateway.getCapability(modelId);
         if (requestId === capabilityRequestId.current) setDocument(nextDocument);
@@ -122,6 +125,9 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
           providerId: firstActive?.providerId ?? nextProviders[0]?.id ?? '',
           modelId: firstActive?.id ?? '',
         }));
+        if (studioModeRef.current === 'PRO' && firstActive) {
+          void loadProCapability(firstActive.id);
+        }
       })
       .catch(() => {
         if (active) setPageError('工作台配置加载失败，请稍后重试。');
@@ -132,7 +138,7 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
       capabilityRequestId.current += 1;
       quoteRequestId.current += 1;
     };
-  }, [gateway, loadSmartCapability]);
+  }, [gateway, loadProCapability, loadSmartCapability]);
 
   const handleCapabilityChange = useCallback(
     (values: Readonly<Record<string, unknown>>, result: PreparedCapabilityParameters) => {
@@ -162,6 +168,7 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
 
   const selectStudioMode = (nextMode: 'SMART' | 'PRO') => {
     if (nextMode === studioMode) return;
+    studioModeRef.current = nextMode;
     setStudioMode(nextMode);
     invalidateQuote();
     if (nextMode === 'PRO') void loadProCapability(proSelection.modelId);
