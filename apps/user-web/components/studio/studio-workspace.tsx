@@ -8,6 +8,13 @@ import {
   type PreparedCapabilityParameters,
 } from '../../lib/studio/capability';
 import { studioGateway as defaultGateway } from '../../lib/studio/gateway';
+import {
+  assertCatalogConsistency,
+  parseCapability,
+  parseModels,
+  parseProviders,
+  parseQuote,
+} from '../../lib/studio/runtime';
 import type {
   ProSelection,
   SmartPreferences,
@@ -16,6 +23,7 @@ import type {
   StudioModelOption,
   StudioProviderOption,
   StudioQuote,
+  StudioQuoteRequest,
 } from '../../lib/studio/types';
 import { CapabilityForm } from './capability-form';
 import { ProMode } from './pro-mode';
@@ -54,6 +62,7 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
   const [quote, setQuote] = useState<StudioQuote>();
   const [quoting, setQuoting] = useState(false);
   const studioModeRef = useRef<'SMART' | 'PRO'>('SMART');
+  const modelsRef = useRef<readonly StudioModelOption[]>([]);
   const capabilityRequestId = useRef(0);
   const quoteRequestId = useRef(0);
 
@@ -73,7 +82,12 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
       setPageError(undefined);
       invalidateQuote();
       try {
-        const nextDocument = await gateway.getSmartCapability(preferences.generationMode);
+        const nextDocument = parseCapability(
+          await gateway.getSmartCapability(preferences.generationMode),
+        );
+        if (nextDocument.mode !== preferences.generationMode) {
+          throw new Error('SMART_CAPABILITY_MODE_MISMATCH');
+        }
         if (requestId === capabilityRequestId.current) setDocument(nextDocument);
       } catch {
         if (requestId === capabilityRequestId.current) {
@@ -96,9 +110,20 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
       setFormValues({});
       setPageError(undefined);
       invalidateQuote();
-      if (!modelId) return;
+      if (!modelId) {
+        setLoadingCapability(false);
+        setPageError('当前平台没有可用模型，请选择其他平台或稍后重试。');
+        return;
+      }
       try {
-        const nextDocument = await gateway.getCapability(modelId);
+        const selectedModel = modelsRef.current.find((model) => model.id === modelId);
+        if (!selectedModel || selectedModel.status !== 'ACTIVE') {
+          throw new Error('MODEL_UNAVAILABLE');
+        }
+        const nextDocument = parseCapability(await gateway.getCapability(modelId));
+        if (nextDocument.capabilityVersion !== selectedModel.capabilityVersion) {
+          throw new Error('CAPABILITY_VERSION_MISMATCH');
+        }
         if (requestId === capabilityRequestId.current) setDocument(nextDocument);
       } catch {
         if (requestId === capabilityRequestId.current) {
@@ -115,8 +140,12 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
   useEffect(() => {
     let active = true;
     void Promise.all([gateway.listProviders(), gateway.listModels()])
-      .then(([nextProviders, nextModels]) => {
+      .then(([providerPayload, modelPayload]) => {
         if (!active) return;
+        const nextProviders = parseProviders(providerPayload);
+        const nextModels = parseModels(modelPayload);
+        assertCatalogConsistency(nextProviders, nextModels);
+        modelsRef.current = nextModels;
         setProviders(nextProviders);
         setModels(nextModels);
         const firstActive = nextModels.find((model) => model.status === 'ACTIVE');
@@ -125,12 +154,26 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
           providerId: firstActive?.providerId ?? nextProviders[0]?.id ?? '',
           modelId: firstActive?.id ?? '',
         }));
-        if (studioModeRef.current === 'PRO' && firstActive) {
-          void loadProCapability(firstActive.id);
+        if (studioModeRef.current === 'PRO') {
+          void loadProCapability(firstActive?.id ?? '');
         }
       })
       .catch(() => {
-        if (active) setPageError('工作台配置加载失败，请稍后重试。');
+        if (active) {
+          modelsRef.current = [];
+          setProviders([]);
+          setModels([]);
+          setProSelection(INITIAL_PRO_SELECTION);
+          if (studioModeRef.current === 'PRO') {
+            capabilityRequestId.current += 1;
+            setDocument(undefined);
+            setFormValues({});
+            setFormValid(false);
+            setLoadingCapability(false);
+            invalidateQuote();
+          }
+          setPageError('工作台配置加载失败，请稍后重试。');
+        }
       });
     void loadSmartCapability(INITIAL_SMART_PREFERENCES);
     return () => {
@@ -163,7 +206,7 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
     const modelChanged = next.modelId !== proSelection.modelId;
     setProSelection(next);
     invalidateQuote();
-    if (modelChanged && next.modelId) void loadProCapability(next.modelId);
+    if (modelChanged) void loadProCapability(next.modelId);
   };
 
   const selectStudioMode = (nextMode: 'SMART' | 'PRO') => {
@@ -203,14 +246,15 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
     const requestId = ++quoteRequestId.current;
     setQuoting(true);
     try {
-      const nextQuote = await gateway.quote({
+      const quoteRequest: StudioQuoteRequest = {
         capabilityVersion: document.capabilityVersion,
         parameters: prepared.parameters,
         routing:
           studioMode === 'SMART'
             ? { kind: 'SMART', preferences: smartPreferences }
             : { kind: 'EXACT_MODEL', ...proSelection },
-      });
+      };
+      const nextQuote = parseQuote(await gateway.quote(quoteRequest), quoteRequest);
       if (requestId === quoteRequestId.current) setQuote(nextQuote);
     } catch {
       if (requestId === quoteRequestId.current) {
@@ -303,6 +347,7 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
         </div>
       ) : (
         <QuoteConfirmation
+          key={quote.id}
           gateway={gateway}
           quote={quote}
           request={{

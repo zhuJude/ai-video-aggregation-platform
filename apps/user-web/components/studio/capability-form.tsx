@@ -165,6 +165,12 @@ export function CapabilityForm({ document, onChange, onValid }: CapabilityFormPr
   }
 
   const properties = document.jsonSchema.properties ?? {};
+  const globalErrors = prepared.errors.filter(
+    (error) =>
+      !error.field ||
+      !document.uiSchema.order.includes(error.field) ||
+      !isFieldVisible(document, error.field, values),
+  );
   const updateField = (field: string, value: unknown) => {
     setValues((current) => {
       if (value === undefined || value === '') {
@@ -319,14 +325,12 @@ export function CapabilityForm({ document, onChange, onValid }: CapabilityFormPr
           </fieldset>
         );
       })}
-      {prepared.errors.some((error) => !error.field) ? (
+      {globalErrors.length > 0 ? (
         <div className="capability-form-errors" role="alert">
           <strong>请检查参数组合</strong>
-          {prepared.errors
-            .filter((error) => !error.field)
-            .map((error, index) => (
-              <p key={`${error.keyword}-${String(index)}`}>{displayError(error.message)}</p>
-            ))}
+          {globalErrors.map((error, index) => (
+            <p key={`${error.keyword}-${String(index)}`}>{displayError(error.message)}</p>
+          ))}
         </div>
       ) : null}
     </form>

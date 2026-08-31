@@ -12,6 +12,7 @@ import type {
   StudioTaskAccepted,
 } from './types';
 import { validateForm } from './capability';
+import { stableDeepEqual } from './runtime';
 
 const providers: readonly StudioProviderOption[] = [
   { id: 'mock-provider-east', name: '演示平台 East' },
@@ -289,7 +290,7 @@ class FixtureStudioGateway implements StudioGateway {
     if (
       quote.capabilityVersion !== request.capabilityVersion ||
       quote.quotedPoints !== request.quotedPoints ||
-      JSON.stringify(quote.parameters) !== JSON.stringify(request.parameters)
+      !stableDeepEqual(quote.parameters, request.parameters)
     ) {
       throw definitiveFailure('QUOTE_SNAPSHOT_MISMATCH');
     }

@@ -13,6 +13,7 @@ import { ProMode } from '../components/studio/pro-mode';
 import { QuoteConfirmation } from '../components/studio/quote-confirmation';
 import { SmartMode } from '../components/studio/smart-mode';
 import { StudioWorkspace } from '../components/studio/studio-workspace';
+import { auditCapabilityDocument, defaultCapabilityValues } from '../lib/studio/capability';
 import { studioGateway } from '../lib/studio/gateway';
 import type {
   StudioCapabilityDocument,
@@ -107,6 +108,50 @@ describe('CapabilityForm', () => {
     ).toMatchObject({ valid: false });
   });
 
+  it('reuses a validator for one schema object without colliding on repeated $id values', async () => {
+    const user = userEvent.setup();
+    const identifiedSchema = {
+      ...imageToVideoCapability.jsonSchema,
+      $id: 'urn:studio:test:identified-capability',
+    };
+    const identifiedDocument: StudioCapabilityDocument = {
+      ...imageToVideoCapability,
+      jsonSchema: identifiedSchema,
+    };
+
+    expect(
+      validateForm(identifiedSchema, { image: 'asset-1', duration: 5, motion: 'natural' }),
+    ).toMatchObject({ valid: true });
+    expect(
+      validateForm(identifiedSchema, { image: 'asset-2', duration: 5, motion: 'natural' }),
+    ).toMatchObject({ valid: true });
+
+    const sameIdDifferentSchema = {
+      ...identifiedSchema,
+      properties: {
+        ...identifiedSchema.properties,
+        duration: { type: 'integer' as const, maximum: 4 },
+      },
+    };
+    const differentResult = validateForm(sameIdDifferentSchema, {
+      image: 'asset-1',
+      duration: 5,
+      motion: 'natural',
+    });
+    expect(differentResult.valid).toBe(false);
+    expect(differentResult.errors.some((error) => error.keyword === 'maximum')).toBe(true);
+    expect(differentResult.errors.some((error) => error.keyword === 'compile')).toBe(false);
+
+    const onValid = vi.fn();
+    render(<CapabilityForm document={identifiedDocument} onValid={onValid} />);
+    await user.type(screen.getByLabelText('起始图片'), 'asset-3');
+    await waitFor(() => {
+      expect(onValid).toHaveBeenCalledWith(
+        expect.objectContaining({ image: 'asset-3', duration: 5, motion: 'natural' }),
+      );
+    });
+  });
+
   it('blocks the whole capability when a keyword is unsupported and reports versions', () => {
     const unsupportedDocument: StudioCapabilityDocument = {
       ...imageToVideoCapability,
@@ -124,6 +169,271 @@ describe('CapabilityForm', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('202012');
     expect(screen.getByRole('alert')).toHaveTextContent('capability-image-v8');
     expect(screen.queryByLabelText('起始图片')).not.toBeInTheDocument();
+  });
+
+  it('fails closed when Schema and UI metadata cannot render every field exactly once', () => {
+    const baseProperties = imageToVideoCapability.jsonSchema.properties;
+    const baseFields = imageToVideoCapability.uiSchema.fields;
+    const invalidDocuments: readonly (readonly [string, StudioCapabilityDocument])[] = [
+      [
+        'property missing from order',
+        {
+          ...imageToVideoCapability,
+          jsonSchema: {
+            ...imageToVideoCapability.jsonSchema,
+            properties: { ...baseProperties, orphan: { type: 'string', default: 'leak' } },
+          },
+        },
+      ],
+      [
+        'duplicate order field',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            order: ['image', 'duration', 'duration', 'motion', 'customMotion'],
+          },
+        },
+      ],
+      [
+        'unknown order field',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            order: [...imageToVideoCapability.uiSchema.order, 'ghost'],
+          },
+        },
+      ],
+      [
+        'unknown group field',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            groups: [
+              ...imageToVideoCapability.uiSchema.groups,
+              { key: 'ghost', title: 'Ghost', fields: ['ghost'] },
+            ],
+          },
+        },
+      ],
+      [
+        'duplicate grouped field',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            groups: [
+              ...imageToVideoCapability.uiSchema.groups,
+              { key: 'duplicate', title: 'Duplicate', fields: ['image'] },
+            ],
+          },
+        },
+      ],
+      [
+        'ungrouped order field',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            groups: imageToVideoCapability.uiSchema.groups.map((group) => ({
+              ...group,
+              fields: group.fields.filter((field) => field !== 'motion'),
+            })),
+          },
+        },
+      ],
+      [
+        'unknown ui field metadata',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            fields: { ...baseFields, ghost: { label: 'Ghost' } },
+          },
+        },
+      ],
+      [
+        'unknown required field',
+        {
+          ...imageToVideoCapability,
+          jsonSchema: { ...imageToVideoCapability.jsonSchema, required: ['image', 'ghost'] },
+        },
+      ],
+      [
+        'unconditionally required hidden field',
+        {
+          ...imageToVideoCapability,
+          jsonSchema: {
+            ...imageToVideoCapability.jsonSchema,
+            required: [...imageToVideoCapability.jsonSchema.required, 'customMotion'],
+          },
+        },
+      ],
+      [
+        'incomplete condition',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            conditions: [{ field: 'customMotion', when: { field: 'motion' } }],
+          },
+        },
+      ],
+      [
+        'conditional required field hidden when required',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            conditions: [{ field: 'customMotion', when: { field: 'motion', equals: 'natural' } }],
+          },
+        },
+      ],
+      [
+        'duplicate condition',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            conditions: [
+              ...imageToVideoCapability.uiSchema.conditions,
+              { field: 'customMotion', when: { field: 'motion', equals: 'natural' } },
+            ],
+          },
+        },
+      ],
+      [
+        'unknown condition target',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            conditions: [{ field: 'ghost', when: { field: 'motion', equals: 'custom' } }],
+          },
+        },
+      ],
+      [
+        'unknown condition dependency',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            conditions: [{ field: 'customMotion', when: { field: 'ghost', equals: true } }],
+          },
+        },
+      ],
+      [
+        'unsupported widget',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            fields: { ...baseFields, image: { ...baseFields.image, widget: 'slider' as never } },
+          },
+        },
+      ],
+      [
+        'unsupported field type',
+        {
+          ...imageToVideoCapability,
+          jsonSchema: {
+            ...imageToVideoCapability.jsonSchema,
+            properties: { ...baseProperties, duration: { type: 'number' } },
+          },
+        },
+      ],
+      [
+        'widget and type mismatch',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            fields: { ...baseFields, image: { ...baseFields.image, widget: 'boolean' } },
+          },
+        },
+      ],
+      [
+        'options and enum mismatch',
+        {
+          ...imageToVideoCapability,
+          uiSchema: {
+            ...imageToVideoCapability.uiSchema,
+            fields: {
+              ...baseFields,
+              motion: {
+                ...baseFields.motion,
+                options: [{ value: 'natural', label: '自然运动' }],
+              },
+            },
+          },
+        },
+      ],
+      [
+        'dependentRequired is not renderable',
+        {
+          ...imageToVideoCapability,
+          jsonSchema: {
+            ...imageToVideoCapability.jsonSchema,
+            dependentRequired: { motion: ['customMotion'] },
+          },
+        },
+      ],
+    ];
+
+    for (const [name, document] of invalidDocuments) {
+      expect.soft(auditCapabilityDocument(document), name).not.toEqual([]);
+    }
+  });
+
+  it('only initializes and emits renderable ordered fields while rejecting injected values', () => {
+    const document: StudioCapabilityDocument = {
+      ...imageToVideoCapability,
+      jsonSchema: {
+        ...imageToVideoCapability.jsonSchema,
+        properties: {
+          ...imageToVideoCapability.jsonSchema.properties,
+          orphan: { type: 'string', default: 'must-not-leak' },
+        },
+      },
+    };
+
+    expect(defaultCapabilityValues(document)).not.toHaveProperty('orphan');
+    const prepared = prepareCapabilityParameters(imageToVideoCapability, {
+      image: 'asset-1',
+      duration: 5,
+      motion: 'natural',
+      injected: 'must-not-emit',
+    });
+    expect(prepared.valid).toBe(false);
+    expect(prepared.parameters).not.toHaveProperty('injected');
+  });
+
+  it('initializes a required boolean without a default as explicit false', async () => {
+    const booleanDocument: StudioCapabilityDocument = {
+      ...imageToVideoCapability,
+      capabilityVersion: 'required-boolean-v1',
+      jsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { consent: { type: 'boolean' } },
+        required: ['consent'],
+      },
+      uiSchema: {
+        order: ['consent'],
+        groups: [{ key: 'rules', title: '规则', fields: ['consent'] }],
+        fields: { consent: { label: '接受规则', widget: 'boolean' } },
+      },
+    };
+    const onValid = vi.fn();
+
+    render(<CapabilityForm document={booleanDocument} onValid={onValid} />);
+
+    expect(screen.getByLabelText('接受规则')).not.toBeChecked();
+    await waitFor(() => {
+      expect(onValid).toHaveBeenCalledWith({ consent: false });
+    });
   });
 
   it('omits hidden optional fields but keeps visible invalid values as blocking errors', () => {
@@ -170,6 +480,36 @@ it('revalidates unknown fields at the Gateway quote boundary', async () => {
       },
     }),
   ).rejects.toThrow('INVALID_PARAMETERS');
+});
+
+it('compares fixture task snapshots independently of object key order', async () => {
+  const parameters = { image: 'asset-key-order', duration: 5, motion: 'natural' };
+  const acceptedQuote = await studioGateway.quote({
+    routing: {
+      kind: 'SMART',
+      preferences: {
+        generationMode: 'IMAGE_TO_VIDEO',
+        quality: 'BALANCED',
+        speed: 'BALANCED',
+        budgetPoints: 300,
+        goal: '测试快照',
+      },
+    },
+    capabilityVersion: 'cap-image-v7',
+    parameters,
+  });
+
+  await expect(
+    studioGateway.createTask(
+      {
+        quoteId: acceptedQuote.id,
+        capabilityVersion: acceptedQuote.capabilityVersion,
+        parameters: { motion: 'natural', duration: 5, image: 'asset-key-order' },
+        quotedPoints: acceptedQuote.quotedPoints,
+      },
+      { idempotencyKey: '00000000-0000-4000-8000-000000000099' },
+    ),
+  ).resolves.toMatchObject({ status: 'QUEUED' });
 });
 
 it('states Smart routing inputs and does not pretend a final model is already selected', () => {
@@ -227,6 +567,35 @@ const quote: StudioQuote = {
   cancellationRule: '供应商受理后仅在其支持取消时可取消，并按确认规则退款。',
 };
 
+const workspaceQuote: StudioQuote = {
+  ...quote,
+  id: 'workspace-quote-1',
+  routing: { kind: 'SMART_ROUTING', promise: '按本次偏好选择可用模型' },
+  capabilityVersion: imageToVideoCapability.capabilityVersion,
+  parameters: { image: 'asset-1', duration: 5, motion: 'natural' },
+  expiresAt: '2099-08-31T10:01:30.000Z',
+};
+
+function testGateway(overrides: Partial<StudioGateway> = {}): StudioGateway {
+  return {
+    listProviders: vi.fn().mockResolvedValue([{ id: 'provider-a', name: '平台 A' }]),
+    listModels: vi.fn().mockResolvedValue([
+      {
+        id: 'model-active',
+        providerId: 'provider-a',
+        name: '精确模型',
+        status: 'ACTIVE',
+        capabilityVersion: imageToVideoCapability.capabilityVersion,
+      },
+    ]),
+    getCapability: vi.fn().mockResolvedValue(imageToVideoCapability),
+    getSmartCapability: vi.fn().mockResolvedValue(imageToVideoCapability),
+    quote: vi.fn().mockResolvedValue(workspaceQuote),
+    createTask: vi.fn().mockResolvedValue({ taskId: 'task-1', status: 'QUEUED' }),
+    ...overrides,
+  };
+}
+
 it('invalidates an existing quote when any quote input changes', async () => {
   const user = userEvent.setup();
   const gateway: StudioGateway = {
@@ -242,7 +611,7 @@ it('invalidates an existing quote when any quote input changes', async () => {
     ]),
     getCapability: vi.fn().mockResolvedValue(imageToVideoCapability),
     getSmartCapability: vi.fn().mockResolvedValue(imageToVideoCapability),
-    quote: vi.fn().mockResolvedValue(quote),
+    quote: vi.fn().mockResolvedValue(workspaceQuote),
     createTask: vi.fn(),
   };
 
@@ -293,7 +662,7 @@ it('ignores an in-flight quote response after quote inputs change', async () => 
   expect(screen.getByRole('button', { name: '正在获取报价' })).toBeDisabled();
 
   await user.selectOptions(screen.getByLabelText('质量偏好'), 'QUALITY_FIRST');
-  resolveQuote?.(quote);
+  resolveQuote?.(workspaceQuote);
   await Promise.resolve();
   await waitFor(() => {
     expect(screen.getByRole('button', { name: '获取准确报价' })).toBeVisible();
@@ -533,4 +902,196 @@ it('loads the exact capability when the catalog arrives after switching to Pro',
     expect(screen.getByText('能力版本 pro-after-catalog-v2')).toBeVisible();
   });
   expect(screen.queryByText('能力版本 late-smart-v9')).not.toBeInTheDocument();
+});
+
+it('fails closed on malformed catalog and capability payloads', async () => {
+  const malformedCatalog = testGateway({
+    listProviders: vi.fn().mockResolvedValue([{ id: 7, name: null }] as never),
+  });
+  const { unmount } = render(<StudioWorkspace gateway={malformedCatalog} />);
+  expect(await screen.findByText(/工作台配置加载失败/)).toBeVisible();
+  unmount();
+
+  const malformedCapability = testGateway({
+    getSmartCapability: vi.fn().mockResolvedValue({ mode: 'IMAGE_TO_VIDEO' } as never),
+  });
+  render(<StudioWorkspace gateway={malformedCapability} />);
+  expect(await screen.findByText(/暂时无法加载这类生成能力/)).toBeVisible();
+  expect(screen.getByRole('button', { name: '获取准确报价' })).toBeDisabled();
+});
+
+it('rejects Smart mode and Pro capability-version mismatches', async () => {
+  const smartMismatch = testGateway({
+    getSmartCapability: vi
+      .fn()
+      .mockResolvedValue({ ...imageToVideoCapability, mode: 'TEXT_TO_VIDEO' }),
+  });
+  const { unmount } = render(<StudioWorkspace gateway={smartMismatch} />);
+  expect(await screen.findByText(/暂时无法加载这类生成能力/)).toBeVisible();
+  unmount();
+
+  const proMismatch = testGateway({
+    getCapability: vi.fn().mockResolvedValue({
+      ...imageToVideoCapability,
+      capabilityVersion: 'unexpected-capability-v9',
+    }),
+  });
+  render(<StudioWorkspace gateway={proMismatch} />);
+  await screen.findByText(`能力版本 ${imageToVideoCapability.capabilityVersion}`);
+  fireEvent.click(screen.getByRole('button', { name: '专业模式' }));
+  expect(await screen.findByText(/所选模型当前不可用/)).toBeVisible();
+  expect(screen.queryByText('能力版本 unexpected-capability-v9')).not.toBeInTheDocument();
+});
+
+it.each([
+  [
+    'parameter snapshot',
+    { ...workspaceQuote, parameters: { image: 'asset-1', duration: 6, motion: 'natural' } },
+  ],
+  [
+    'routing',
+    {
+      ...workspaceQuote,
+      routing: { kind: 'EXACT_MODEL' as const, modelId: 'model-active', modelName: '精确模型' },
+    },
+  ],
+])('rejects a quote with a mismatched %s', async (_name, mismatchedQuote) => {
+  const user = userEvent.setup();
+  render(
+    <StudioWorkspace
+      gateway={testGateway({ quote: vi.fn().mockResolvedValue(mismatchedQuote) })}
+    />,
+  );
+  await user.type(await screen.findByLabelText('起始图片'), 'asset-1');
+  const quoteButton = screen.getByRole('button', { name: '获取准确报价' });
+  await waitFor(() => {
+    expect(quoteButton).toBeEnabled();
+  });
+  await user.click(quoteButton);
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('报价未完成');
+  expect(screen.queryByRole('heading', { name: '本次报价与任务规则' })).not.toBeInTheDocument();
+});
+
+it('rejects malformed task acceptance and resets submission state for a replacement quote', async () => {
+  const malformedCreate = vi.fn().mockResolvedValue({ status: 'QUEUED' });
+  const { unmount } = render(
+    <QuoteConfirmation
+      gateway={{ createTask: malformedCreate as StudioGateway['createTask'] }}
+      now={() => Date.parse('2026-08-31T10:00:00.000Z')}
+      quote={quote}
+      request={taskRequest()}
+      uuidFactory={() => '00000000-0000-4000-8000-000000000010'}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: '确认并创建任务' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('结果尚未确认');
+  expect(screen.queryByText(/任务已创建/)).not.toBeInTheDocument();
+  unmount();
+
+  const createTask = vi.fn().mockResolvedValue({ taskId: 'task-accepted', status: 'QUEUED' });
+  const nextQuote = { ...quote, id: 'quote-2' };
+  const nextRequest = { ...taskRequest(), quoteId: nextQuote.id };
+  const view = render(
+    <QuoteConfirmation
+      gateway={{ createTask }}
+      now={() => Date.parse('2026-08-31T10:00:00.000Z')}
+      quote={quote}
+      request={taskRequest()}
+      uuidFactory={() => '00000000-0000-4000-8000-000000000011'}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: '确认并创建任务' }));
+  expect(await screen.findByText(/任务已创建，编号 task-accepted/)).toBeVisible();
+  view.rerender(
+    <QuoteConfirmation
+      gateway={{ createTask }}
+      now={() => Date.parse('2026-08-31T10:00:00.000Z')}
+      quote={nextQuote}
+      request={nextRequest}
+      uuidFactory={() => '00000000-0000-4000-8000-000000000012'}
+    />,
+  );
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: '确认并创建任务' })).toBeEnabled();
+  });
+});
+
+it.each([
+  ['empty', []],
+  [
+    'maintenance-only',
+    [
+      {
+        id: 'model-maintenance',
+        providerId: 'provider-a',
+        name: '维护模型',
+        status: 'MAINTENANCE' as const,
+        capabilityVersion: 'cap-maintenance-v1',
+      },
+    ],
+  ],
+])('shows an actionable Pro empty state for an %s catalog', async (_name, catalogModels) => {
+  render(
+    <StudioWorkspace
+      gateway={testGateway({ listModels: vi.fn().mockResolvedValue(catalogModels) })}
+    />,
+  );
+  await screen.findByText(`能力版本 ${imageToVideoCapability.capabilityVersion}`);
+  fireEvent.click(screen.getByRole('button', { name: '专业模式' }));
+
+  expect(await screen.findByText(/没有可用模型/)).toBeVisible();
+  expect(screen.queryByText('正在加载模型能力')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '获取准确报价' })).toBeDisabled();
+});
+
+it('reports catalog rejection without crashing', async () => {
+  render(
+    <StudioWorkspace
+      gateway={testGateway({ listModels: vi.fn().mockRejectedValue(new Error('offline')) })}
+    />,
+  );
+  expect(await screen.findByText(/工作台配置加载失败/)).toBeVisible();
+});
+
+it('clears an exact capability when switching to a provider without active models', async () => {
+  const models = [
+    {
+      id: 'model-active',
+      providerId: 'provider-a',
+      name: '精确模型',
+      status: 'ACTIVE' as const,
+      capabilityVersion: imageToVideoCapability.capabilityVersion,
+    },
+    {
+      id: 'model-maintenance',
+      providerId: 'provider-b',
+      name: '维护模型',
+      status: 'MAINTENANCE' as const,
+      capabilityVersion: 'cap-maintenance-v1',
+    },
+  ];
+  render(
+    <StudioWorkspace
+      gateway={testGateway({
+        listProviders: vi.fn().mockResolvedValue([
+          { id: 'provider-a', name: '平台 A' },
+          { id: 'provider-b', name: '平台 B' },
+        ]),
+        listModels: vi.fn().mockResolvedValue(models),
+      })}
+    />,
+  );
+  await screen.findByText(`能力版本 ${imageToVideoCapability.capabilityVersion}`);
+  fireEvent.click(screen.getByRole('button', { name: '专业模式' }));
+  await waitFor(() => {
+    expect(screen.getByLabelText('模型')).toHaveValue('model-active');
+  });
+  fireEvent.change(screen.getByLabelText('平台'), { target: { value: 'provider-b' } });
+
+  expect(await screen.findByText(/没有可用模型/)).toBeVisible();
+  expect(
+    screen.queryByText(`能力版本 ${imageToVideoCapability.capabilityVersion}`),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '获取准确报价' })).toBeDisabled();
 });

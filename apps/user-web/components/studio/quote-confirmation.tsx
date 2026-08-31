@@ -8,6 +8,7 @@ import type {
   StudioQuote,
   StudioTaskAccepted,
 } from '../../lib/studio/types';
+import { parseTaskAccepted } from '../../lib/studio/runtime';
 
 interface QuoteConfirmationProps {
   readonly quote: StudioQuote;
@@ -67,6 +68,7 @@ export function QuoteConfirmation({
   const [accepted, setAccepted] = useState<StudioTaskAccepted>();
   const pendingRef = useRef(false);
   const attemptKeyRef = useRef<string | undefined>(undefined);
+  const submissionGenerationRef = useRef(0);
   const expiresAt = Date.parse(quote.expiresAt);
   const remaining = Number.isNaN(expiresAt) ? 0 : expiresAt - now();
   const expired = remaining <= 0;
@@ -80,20 +82,39 @@ export function QuoteConfirmation({
     };
   }, []);
 
+  useEffect(() => {
+    submissionGenerationRef.current += 1;
+    pendingRef.current = false;
+    attemptKeyRef.current = undefined;
+    setSubmitting(false);
+    setSubmitError(undefined);
+    setUncertain(false);
+    setAccepted(undefined);
+  }, [
+    quote.id,
+    request.capabilityVersion,
+    request.parameters,
+    request.quoteId,
+    request.quotedPoints,
+  ]);
+
   const submit = async () => {
     if (expired || pendingRef.current || accepted) return;
     pendingRef.current = true;
     setSubmitting(true);
     setSubmitError(undefined);
+    const submissionGeneration = submissionGenerationRef.current;
     const idempotencyKey = attemptKeyRef.current ?? uuidFactory();
     attemptKeyRef.current = idempotencyKey;
 
     try {
-      const result = await gateway.createTask(request, { idempotencyKey });
+      const result = parseTaskAccepted(await gateway.createTask(request, { idempotencyKey }));
+      if (submissionGeneration !== submissionGenerationRef.current) return;
       setAccepted(result);
       setUncertain(false);
       onAccepted?.(result);
     } catch (error) {
+      if (submissionGeneration !== submissionGenerationRef.current) return;
       if (isDefinitiveFailure(error)) {
         attemptKeyRef.current = undefined;
         setUncertain(false);
@@ -103,8 +124,10 @@ export function QuoteConfirmation({
         setSubmitError('提交结果尚未确认。安全查询会复用原请求标识，不会重复创建任务。');
       }
     } finally {
-      pendingRef.current = false;
-      setSubmitting(false);
+      if (submissionGeneration === submissionGenerationRef.current) {
+        pendingRef.current = false;
+        setSubmitting(false);
+      }
     }
   };
 
