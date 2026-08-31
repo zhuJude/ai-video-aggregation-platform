@@ -580,6 +580,54 @@ describe('CapabilityForm', () => {
     expect(screen.getByLabelText('普通提示')).toHaveAttribute('aria-required', 'true');
   });
 
+  it('requires a conditional discriminator to be present before deriving hidden required fields', () => {
+    const conditionalDocument = (
+      presence: 'none' | 'if-required' | 'root-required' | 'default',
+    ): StudioCapabilityDocument => ({
+      schemaVersion: 202012,
+      capabilityVersion: `conditional-${presence}`,
+      mode: 'TEXT_TO_VIDEO',
+      jsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: {
+            type: 'string',
+            enum: ['custom', 'normal'],
+            ...(presence === 'default' ? { default: 'custom' } : {}),
+          },
+          customPrompt: { type: 'string' },
+          normalPrompt: { type: 'string' },
+        },
+        ...(presence === 'root-required' ? { required: ['mode'] } : {}),
+        if: {
+          properties: { mode: { const: 'custom' } },
+          ...(presence === 'if-required' ? { required: ['mode'] } : {}),
+        },
+        then: { required: ['customPrompt'] },
+        else: { required: ['normalPrompt'] },
+      },
+      uiSchema: {
+        order: ['mode', 'customPrompt', 'normalPrompt'],
+        groups: [
+          { key: 'mode', title: '模式', fields: ['mode'] },
+          { key: 'prompts', title: '提示词', fields: ['customPrompt', 'normalPrompt'] },
+        ],
+        fields: {},
+        conditions: [
+          { field: 'customPrompt', when: { field: 'mode', equals: 'custom' } },
+          { field: 'normalPrompt', when: { field: 'mode', notEquals: 'custom' } },
+        ],
+      },
+      costDimensions: [],
+    });
+
+    expect(auditCapabilityDocument(conditionalDocument('none'))).not.toEqual([]);
+    expect(auditCapabilityDocument(conditionalDocument('if-required'))).toEqual([]);
+    expect(auditCapabilityDocument(conditionalDocument('root-required'))).toEqual([]);
+    expect(auditCapabilityDocument(conditionalDocument('default'))).toEqual([]);
+  });
+
   it('supports a finite discriminated oneOf branch with target schemas beside the discriminator', async () => {
     const user = userEvent.setup();
     const document: StudioCapabilityDocument = {
@@ -638,6 +686,49 @@ describe('CapabilityForm', () => {
     expect(screen.getByLabelText('文字提示')).toHaveAttribute('aria-required', 'true');
   });
 
+  it('rejects overlapping anyOf predicates used for dynamic required fields', () => {
+    const document: StudioCapabilityDocument = {
+      schemaVersion: 202012,
+      capabilityVersion: 'overlapping-any-of-v1',
+      mode: 'TEXT_TO_VIDEO',
+      jsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kind: { type: 'string', enum: ['image', 'text'], default: 'image' },
+          broadPrompt: { type: 'string' },
+          imagePrompt: { type: 'string' },
+        },
+        required: ['kind'],
+        anyOf: [
+          {
+            properties: { kind: { enum: ['image', 'text'] }, broadPrompt: { minLength: 1 } },
+            required: ['broadPrompt'],
+          },
+          {
+            properties: { kind: { const: 'image' }, imagePrompt: { minLength: 1 } },
+            required: ['imagePrompt'],
+          },
+        ],
+      },
+      uiSchema: {
+        order: ['kind', 'broadPrompt', 'imagePrompt'],
+        groups: [
+          { key: 'kind', title: '类型', fields: ['kind'] },
+          { key: 'prompts', title: '提示词', fields: ['broadPrompt', 'imagePrompt'] },
+        ],
+        fields: {},
+        conditions: [
+          { field: 'broadPrompt', when: { field: 'kind', in: ['image', 'text'] } },
+          { field: 'imagePrompt', when: { field: 'kind', equals: 'image' } },
+        ],
+      },
+      costDimensions: [],
+    };
+
+    expect(auditCapabilityDocument(document)).not.toEqual([]);
+  });
+
   it('supports visible dependentRequired targets and initializes required booleans to false', async () => {
     const user = userEvent.setup();
     const document: StudioCapabilityDocument = {
@@ -678,6 +769,70 @@ describe('CapabilityForm', () => {
     await waitFor(() => {
       expect(onValid).toHaveBeenCalledWith({ trigger: 'on', dependentFlag: false });
     });
+  });
+
+  it('normalizes chained and cyclic dependent booleans to a fixed point independent of UI order', async () => {
+    const user = userEvent.setup();
+    const chainDocument: StudioCapabilityDocument = {
+      schemaVersion: 202012,
+      capabilityVersion: 'dependent-chain-v1',
+      mode: 'TEXT_TO_VIDEO',
+      jsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          a: { type: 'string', minLength: 1 },
+          b: { type: 'boolean' },
+          c: { type: 'boolean' },
+        },
+        dependentRequired: { a: ['b'], b: ['c'] },
+      },
+      uiSchema: {
+        order: ['a', 'c', 'b'],
+        groups: [{ key: 'chain', title: '链式依赖', fields: ['a', 'c', 'b'] }],
+        fields: {
+          a: { label: '触发字段' },
+          b: { label: '第二开关', widget: 'boolean' },
+          c: { label: '第三开关', widget: 'boolean' },
+        },
+      },
+      costDimensions: [],
+    };
+    const onValid = vi.fn();
+
+    render(<CapabilityForm document={chainDocument} onValid={onValid} />);
+    await user.type(screen.getByLabelText('触发字段'), 'on');
+    expect(screen.getByLabelText('第二开关')).toHaveAttribute('aria-required', 'true');
+    expect(screen.getByLabelText('第三开关')).toHaveAttribute('aria-required', 'true');
+    await waitFor(() => {
+      expect(onValid).toHaveBeenCalledWith({ a: 'on', c: false, b: false });
+    });
+
+    await user.clear(screen.getByLabelText('触发字段'));
+    expect(screen.getByLabelText('第二开关')).not.toHaveAttribute('aria-required');
+    expect(screen.getByLabelText('第三开关')).not.toHaveAttribute('aria-required');
+    await waitFor(() => {
+      expect(onValid).toHaveBeenLastCalledWith({});
+    });
+
+    expect(prepareCapabilityParameters(chainDocument, {}).parameters).toEqual({});
+
+    const cycleDocument: StudioCapabilityDocument = {
+      ...chainDocument,
+      capabilityVersion: 'dependent-cycle-v1',
+      jsonSchema: {
+        ...chainDocument.jsonSchema,
+        properties: { a: { type: 'boolean' }, b: { type: 'boolean' } },
+        required: ['a'],
+        dependentRequired: { a: ['b'], b: ['a'] },
+      },
+      uiSchema: {
+        order: ['b', 'a'],
+        groups: [{ key: 'cycle', title: '循环依赖', fields: ['b', 'a'] }],
+        fields: {},
+      },
+    };
+    expect(defaultCapabilityValues(cycleDocument)).toEqual({ b: false, a: false });
   });
 
   it('rejects a dependentRequired target that can be hidden while its trigger is present', () => {

@@ -8,7 +8,9 @@ import {
   errorsForField,
   isFieldRequired,
   isFieldVisible,
+  normalizeCapabilityValues,
   prepareCapabilityParameters,
+  removeCapabilityValue,
   validateForm,
   type PreparedCapabilityParameters,
 } from '../../lib/studio/capability';
@@ -153,9 +155,9 @@ export function CapabilityForm({ document, onChange, onValid }: CapabilityFormPr
   const updateField = (field: string, value: unknown) => {
     setValues((current) => {
       if (value === undefined || value === '') {
-        return Object.fromEntries(Object.entries(current).filter(([key]) => key !== field));
+        return removeCapabilityValue(document, current, field);
       }
-      return { ...current, [field]: value };
+      return normalizeCapabilityValues(document, { ...current, [field]: value });
     });
   };
 

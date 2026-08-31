@@ -193,6 +193,134 @@ function predicateFromIf(schema: StudioJsonSchema): RequirementPredicate | undef
   return undefined;
 }
 
+function schemaHasRequiredFields(schema: StudioJsonSchema | undefined): boolean {
+  if (!schema) return false;
+  if (schema.required?.length) return true;
+  for (const keyword of ['allOf', 'anyOf', 'oneOf'] as const) {
+    if (schema[keyword]?.some(schemaHasRequiredFields)) return true;
+  }
+  return (
+    schemaHasRequiredFields(schema.then) ||
+    schemaHasRequiredFields(schema.else) ||
+    schemaHasRequiredFields(schema.if)
+  );
+}
+
+function rootGuaranteesField(
+  root: StudioJsonSchema,
+  branch: StudioJsonSchema,
+  field: string,
+): boolean {
+  return (
+    root.required?.includes(field) === true ||
+    root.properties?.[field]?.default !== undefined ||
+    branch.required?.includes(field) === true
+  );
+}
+
+function predicateUsesFiniteRootEnum(
+  predicate: RequirementPredicate,
+  properties: Readonly<Record<string, StudioJsonSchema>>,
+): boolean {
+  const dependency = properties[predicate.field];
+  return (
+    Boolean(dependency?.enum?.length) &&
+    predicate.values.length > 0 &&
+    predicate.values.every((value) => (dependency ? valueMatchesField(dependency, value) : false))
+  );
+}
+
+function predicatesOverlap(left: RequirementPredicate, right: RequirementPredicate): boolean {
+  const rightValues = new Set(right.values.map(valueKey));
+  return left.values.some((value) => rightValues.has(valueKey(value)));
+}
+
+function auditConditionalPredicates(
+  schema: StudioJsonSchema,
+  root: StudioJsonSchema,
+  properties: Readonly<Record<string, StudioJsonSchema>>,
+  path: string,
+  unsupported: Set<string>,
+): void {
+  if (schema.if && (schemaHasRequiredFields(schema.then) || schemaHasRequiredFields(schema.else))) {
+    const predicate = predicateFromIf(schema.if);
+    if (!predicate || !predicateUsesFiniteRootEnum(predicate, properties)) {
+      unsupported.add(`${path || '$'}.if:finite-enum-discriminator-required`);
+    } else if (!rootGuaranteesField(root, schema.if, predicate.field)) {
+      unsupported.add(`${path || '$'}.if.${predicate.field}:optional-discriminator`);
+    }
+  }
+
+  for (const keyword of ['anyOf', 'oneOf'] as const) {
+    const branches = schema[keyword] ?? [];
+    if (branches.some(schemaHasRequiredFields)) {
+      const predicates = branches.map(predicateFromIf);
+      const discriminator = predicates[0]?.field;
+      if (
+        !discriminator ||
+        predicates.some(
+          (predicate) =>
+            !predicate ||
+            predicate.field !== discriminator ||
+            !predicateUsesFiniteRootEnum(predicate, properties),
+        )
+      ) {
+        unsupported.add(`${path || '$'}.${keyword}:finite-shared-discriminator-required`);
+      } else {
+        const finitePredicates = predicates.filter(
+          (predicate): predicate is RequirementPredicate => predicate !== undefined,
+        );
+        if (branches.some((branch) => !rootGuaranteesField(root, branch, discriminator))) {
+          unsupported.add(`${path || '$'}.${keyword}.${discriminator}:optional-discriminator`);
+        }
+        for (let left = 0; left < finitePredicates.length; left += 1) {
+          for (let right = left + 1; right < finitePredicates.length; right += 1) {
+            const leftPredicate = finitePredicates[left];
+            const rightPredicate = finitePredicates[right];
+            if (
+              leftPredicate &&
+              rightPredicate &&
+              predicatesOverlap(leftPredicate, rightPredicate)
+            ) {
+              unsupported.add(`${path || '$'}.${keyword}.${discriminator}:overlapping-predicates`);
+            }
+          }
+        }
+      }
+    }
+    branches.forEach((branch, index) => {
+      auditConditionalPredicates(
+        branch,
+        root,
+        properties,
+        `${path || '$'}.${keyword}[${String(index)}]`,
+        unsupported,
+      );
+    });
+  }
+  schema.allOf?.forEach((branch, index) => {
+    auditConditionalPredicates(
+      branch,
+      root,
+      properties,
+      `${path || '$'}.allOf[${String(index)}]`,
+      unsupported,
+    );
+  });
+  for (const keyword of ['then', 'else'] as const) {
+    const branch = schema[keyword];
+    if (branch) {
+      auditConditionalPredicates(
+        branch,
+        root,
+        properties,
+        `${path || '$'}.${keyword}`,
+        unsupported,
+      );
+    }
+  }
+}
+
 function complementPredicate(
   predicate: RequirementPredicate | undefined,
   properties: Readonly<Record<string, StudioJsonSchema>>,
@@ -376,6 +504,7 @@ export function auditCapabilityDocument(document: StudioCapabilityDocument): rea
   }
 
   auditRequiredReferences(document.jsonSchema, properties, '', unsupported);
+  auditConditionalPredicates(document.jsonSchema, document.jsonSchema, properties, '', unsupported);
   const rootRequired = new Set(document.jsonSchema.required ?? []);
   const conditionTargets = new Set<string>();
   for (const condition of document.uiSchema.conditions ?? []) {
@@ -566,25 +695,66 @@ export function defaultCapabilityValues(
     if (schema.default !== undefined) defaults[field] = schema.default;
     else if (schema.type === 'boolean' && required.has(field)) defaults[field] = false;
   }
-  return defaults;
+  return normalizeCapabilityValues(document, defaults);
+}
+
+export function normalizeCapabilityValues(
+  document: StudioCapabilityDocument,
+  values: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const normalized: Record<string, unknown> = { ...values };
+  const properties = document.jsonSchema.properties ?? {};
+  for (let pass = 0; pass <= document.uiSchema.order.length; pass += 1) {
+    let changed = false;
+    for (const field of document.uiSchema.order) {
+      if (
+        normalized[field] === undefined &&
+        properties[field]?.type === 'boolean' &&
+        isFieldVisible(document, field, normalized) &&
+        isFieldRequired(document, field, normalized)
+      ) {
+        normalized[field] = false;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return normalized;
+}
+
+export function removeCapabilityValue(
+  document: StudioCapabilityDocument,
+  values: Readonly<Record<string, unknown>>,
+  field: string,
+): Readonly<Record<string, unknown>> {
+  let next = Object.fromEntries(Object.entries(values).filter(([key]) => key !== field));
+  const properties = document.jsonSchema.properties ?? {};
+  const dependencies = document.jsonSchema.dependentRequired ?? {};
+  const pending = [field];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const trigger = pending.shift();
+    if (!trigger || visited.has(trigger)) continue;
+    visited.add(trigger);
+    for (const target of dependencies[trigger] ?? []) {
+      if (
+        next[target] === false &&
+        properties[target]?.type === 'boolean' &&
+        !isFieldRequired(document, target, next)
+      ) {
+        next = Object.fromEntries(Object.entries(next).filter(([key]) => key !== target));
+        pending.push(target);
+      }
+    }
+  }
+  return normalizeCapabilityValues(document, next);
 }
 
 export function prepareCapabilityParameters(
   document: StudioCapabilityDocument,
   values: Readonly<Record<string, unknown>>,
 ): PreparedCapabilityParameters {
-  const normalizedValues: Record<string, unknown> = { ...values };
-  const properties = document.jsonSchema.properties ?? {};
-  for (const field of document.uiSchema.order) {
-    if (
-      normalizedValues[field] === undefined &&
-      properties[field]?.type === 'boolean' &&
-      isFieldVisible(document, field, normalizedValues) &&
-      isFieldRequired(document, field, normalizedValues)
-    ) {
-      normalizedValues[field] = false;
-    }
-  }
+  const normalizedValues = normalizeCapabilityValues(document, values);
   const hiddenOptional = new Set<string>();
   for (const field of document.uiSchema.order) {
     if (
