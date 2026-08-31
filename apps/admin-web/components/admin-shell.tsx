@@ -78,6 +78,7 @@ export type AdminShellProps = Readonly<{
   children: ReactNode;
   breadcrumbs?: readonly BreadcrumbDescriptor[];
   environment?: string;
+  identity?: string;
   actions?: readonly AdminAction[];
 }>;
 
@@ -294,6 +295,7 @@ export function AdminShell({
   breadcrumbs = [{ label: '总览', href: '/overview' }],
   children,
   environment = '生产',
+  identity,
   subject,
 }: AdminShellProps) {
   const styles = useStyles();
@@ -434,6 +436,7 @@ export function AdminShell({
               <Badge appearance="outline">
                 数据范围 {dataScopeLabels[subject.dataScope]}
               </Badge>
+              {identity ? <Badge appearance="outline">管理员 {identity}</Badge> : null}
             </div>
           </div>
         </header>
@@ -449,6 +452,7 @@ export function AdminShell({
           <Badge appearance="outline">
             数据范围 {dataScopeLabels[subject.dataScope]}
           </Badge>
+          {identity ? <Badge appearance="outline">管理员 {identity}</Badge> : null}
         </div>
 
         <aside

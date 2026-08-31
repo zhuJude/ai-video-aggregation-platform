@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 
 import { hasPermission } from './permissions';
+import { isSameUuidV7 } from './uuid-v7';
 import {
   ADMIN_SESSION_COOKIE,
   AuthorizationError,
@@ -27,6 +28,16 @@ export async function requireAdminAuthorization(
   requiredPermission: string,
   context?: ServerGuardContext,
 ): Promise<AdminAuthorizationContext> {
+  const authorization = await requireAdminSession(context);
+  if (!hasPermission(authorization.claims, requiredPermission)) {
+    throw new AuthorizationError('FORBIDDEN', '权限不足');
+  }
+  return authorization;
+}
+
+export async function requireAdminSession(
+  context?: ServerGuardContext,
+): Promise<AdminAuthorizationContext> {
   const cookieStore = context ? null : await cookies();
   const sessionToken = context
     ? context.sessionToken
@@ -36,10 +47,6 @@ export async function requireAdminAuthorization(
 
   if (!claims) {
     throw new AuthorizationError('UNAUTHENTICATED', '需要管理员登录');
-  }
-
-  if (!hasPermission(claims, requiredPermission)) {
-    throw new AuthorizationError('FORBIDDEN', '权限不足');
   }
 
   return { claims, trustedSessionToken: sessionToken as string };
@@ -63,9 +70,9 @@ export function assertAdminDataScope(
   const allowed =
     claims.dataScope === 'ALL' ||
     (claims.dataScope === 'OWN' &&
-      resource.ownerAdminId === claims.subjectId) ||
+      isSameUuidV7(resource.ownerAdminId, claims.subjectId)) ||
     (claims.dataScope === 'ASSIGNED' &&
-      resource.assignedAdminIds.includes(claims.subjectId));
+      resource.assignedAdminIds.some((id) => isSameUuidV7(id, claims.subjectId)));
   if (!allowed) {
     throw new AuthorizationError('FORBIDDEN', '数据范围不允许此操作');
   }

@@ -14,12 +14,13 @@ import {
   webLightTheme,
 } from '@fluentui/react-components';
 import { LockClosed24Regular, ShieldKeyhole24Regular } from '@fluentui/react-icons';
-import { useActionState, useEffect, useState } from 'react';
+import { useActionState, useEffect, useRef, useState } from 'react';
 
 import type { TotpActionResult } from '../lib/admin-auth-actions';
 import type { PasswordStepResult } from '../lib/login-flow';
 
 export type LoginPanelProps = Readonly<{
+  preflightAction: (identifier: string) => Promise<Readonly<{ status: 'READY' | 'ERROR' }>>;
   passwordAction: (
     previousState: PasswordStepResult | null,
     formData: FormData,
@@ -123,6 +124,7 @@ const useStyles = makeStyles({
 
 export function LoginPanel({
   passwordAction,
+  preflightAction,
   totpAction,
 }: LoginPanelProps) {
   const styles = useStyles();
@@ -135,13 +137,65 @@ export function LoginPanel({
     null,
   );
   const [remainingCooldown, setRemainingCooldown] = useState(0);
+  const [identifier, setIdentifier] = useState('');
+  const [readyIdentifier, setReadyIdentifier] = useState<string | null>(null);
+  const [preflightPending, setPreflightPending] = useState(false);
+  const [preflightError, setPreflightError] = useState(false);
+  const [recoveryRequired, setRecoveryRequired] = useState(false);
+  const generationRef = useRef(0);
+  const identifierRef = useRef('');
+  const pendingRef = useRef(false);
+  const queuedGenerationRef = useRef<number | null>(null);
   const step = passwordState?.step ?? 'password';
+  const normalizedIdentifier = identifier.trim();
+  const preflightReady = readyIdentifier === normalizedIdentifier && normalizedIdentifier.length > 0;
+
+  function startPreflight(generation: number, snapshot: string): void {
+    if (!snapshot) {
+      setPreflightPending(false);
+      return;
+    }
+    if (pendingRef.current) {
+      queuedGenerationRef.current = generation;
+      return;
+    }
+    pendingRef.current = true;
+    setPreflightPending(true);
+    setPreflightError(false);
+    void preflightAction(snapshot).then((result) => {
+      if (generation !== generationRef.current || snapshot !== identifierRef.current) return;
+      setReadyIdentifier(result.status === 'READY' ? snapshot : null);
+      setPreflightError(result.status !== 'READY');
+      if (result.status === 'READY') setRecoveryRequired(false);
+    }).catch(() => {
+      if (generation !== generationRef.current || snapshot !== identifierRef.current) return;
+      setReadyIdentifier(null);
+      setPreflightError(true);
+    }).finally(() => {
+      pendingRef.current = false;
+      const queuedGeneration = queuedGenerationRef.current;
+      queuedGenerationRef.current = null;
+      if (queuedGeneration !== null && queuedGeneration === generationRef.current) {
+        startPreflight(queuedGeneration, identifierRef.current);
+        return;
+      }
+      if (generation === generationRef.current) setPreflightPending(false);
+    });
+  }
 
   useEffect(() => {
     setRemainingCooldown(
       totpState?.status === 'LOCKED' ? totpState.cooldownSeconds : 0,
     );
   }, [totpState]);
+
+  useEffect(() => {
+    if (!passwordState?.requiresPreflight) return;
+    generationRef.current += 1;
+    queuedGenerationRef.current = pendingRef.current ? generationRef.current : null;
+    setReadyIdentifier(null);
+    setRecoveryRequired(true);
+  }, [passwordState]);
 
   useEffect(() => {
     if (remainingCooldown <= 0) {
@@ -179,7 +233,13 @@ export function LoginPanel({
         <main className={styles.formRegion}>
           <Card className={styles.card}>
             {step === 'password' ? (
-              <form action={passwordFormAction} className={styles.form}>
+              <form
+                action={passwordFormAction}
+                className={styles.form}
+                onSubmit={(event) => {
+                  if (!preflightReady || pendingRef.current || readyIdentifier !== identifierRef.current) event.preventDefault();
+                }}
+              >
                 <LockClosed24Regular aria-hidden />
                 <Title1 className={styles.heading}>管理员登录</Title1>
                 <Text className={styles.supportingCopy}>
@@ -189,10 +249,21 @@ export function LoginPanel({
                   <Input
                     aria-label="管理员账号"
                     autoComplete="username"
-                    name="identifier"
+                    onChange={(_event, data) => {
+                      setIdentifier(data.value);
+                      const nextIdentifier = data.value.trim();
+                      identifierRef.current = nextIdentifier;
+                      generationRef.current += 1;
+                      setReadyIdentifier(null);
+                      setPreflightError(false);
+                      setRecoveryRequired(false);
+                      if (pendingRef.current) queuedGenerationRef.current = generationRef.current;
+                    }}
                     required
+                    value={identifier}
                   />
                 </Field>
+                <input name="identifier" type="hidden" value={normalizedIdentifier} />
                 <Field label="密码" required>
                   <Input
                     aria-label="密码"
@@ -202,13 +273,25 @@ export function LoginPanel({
                     type="password"
                   />
                 </Field>
+                {preflightError ? <Text className={mergeClasses(styles.status, styles.errorStatus)} role="alert">无法建立安全登录，请重试</Text> : null}
+                {passwordState?.step === 'password' ? <Text className={mergeClasses(styles.status, styles.errorStatus)} role="alert">{passwordState.message}</Text> : null}
                 <Button
                   appearance="primary"
                   className={styles.submit}
-                  disabled={passwordPending}
-                  type="submit"
+                  disabled={passwordPending || preflightPending}
+                  onClick={preflightReady ? undefined : () => {
+                    if (!normalizedIdentifier || pendingRef.current) return;
+                    startPreflight(generationRef.current, normalizedIdentifier);
+                  }}
+                  type={preflightReady ? 'submit' : 'button'}
                 >
-                  继续验证
+                  {preflightPending
+                    ? '正在建立安全登录'
+                    : preflightReady
+                      ? '继续验证'
+                      : recoveryRequired
+                        ? '重新建立安全登录'
+                        : '准备安全登录'}
                 </Button>
               </form>
             ) : (

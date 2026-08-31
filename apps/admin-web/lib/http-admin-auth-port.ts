@@ -13,8 +13,11 @@ import {
 import {
   type SafeTelemetryEvent,
   type SafeTelemetryPort,
+  consumeTechnicalFailure,
+  createSafeTelemetryEvent,
   defaultSafeTelemetry,
   recordSafeTelemetry,
+  recordTechnicalFailure,
 } from './safe-telemetry';
 import {
   ADMIN_MFA_CHALLENGE_TTL_MS,
@@ -22,6 +25,13 @@ import {
   createRandomAdminMfaChallengeId,
   isValidAdminMfaChallengeId,
 } from './session-auth';
+import { createUuidV7, isUuidV7 } from './uuid-v7';
+import {
+  createOutboundRequestContext,
+  parseOutboundRequestContext,
+  type OutboundRequestContext,
+} from './outbound-request-context';
+import { isValidAdminPermissions } from './permissions';
 
 export {
   ADMIN_MFA_CHALLENGE_TTL_MS,
@@ -34,6 +44,7 @@ type AuthEnvironment = Readonly<{
 }>;
 
 type HttpAdminAuthPortOptions = Readonly<{
+  createRequestContext?: (correlationId: string) => unknown;
   deadlineMs?: number;
   fetchImpl?: typeof fetch;
   maxLockoutTtlMs?: number;
@@ -45,23 +56,45 @@ type HttpAdminAuthPortOptions = Readonly<{
 const DEFAULT_MAX_LOCKOUT_TTL_MS = 15 * 60_000;
 const DEFAULT_MAX_SESSION_TTL_MS = 12 * 60 * 60_000;
 
-class InvalidAdminAuthResponseError extends Error {}
+export type ClassifiedAdminAuthFailureReason =
+  | 'MALFORMED_RESPONSE'
+  | 'NETWORK_FAILURE'
+  | 'TIMEOUT'
+  | 'UPSTREAM_FAILURE';
+
+class ClassifiedAdminAuthFailure extends Error {
+  readonly reason: ClassifiedAdminAuthFailureReason;
+
+  constructor(reason: ClassifiedAdminAuthFailureReason) {
+    super('Admin authentication dependency failed');
+    this.name = 'ClassifiedAdminAuthFailure';
+    this.reason = reason;
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
 
 function isAdminAuthenticatedSubject(
   value: unknown,
 ): value is AdminAuthenticatedSubject {
-  if (!value || typeof value !== 'object') {
+  if (!isPlainObject(value) || !hasExactKeys(value, ['dataScope', 'permissions', 'subjectId'])) {
     return false;
   }
 
   const candidate = value as Partial<AdminAuthenticatedSubject>;
   return (
-    typeof candidate.subjectId === 'string' &&
-    candidate.subjectId.length > 0 &&
-    Array.isArray(candidate.permissions) &&
-    candidate.permissions.every(
-      (permission) => typeof permission === 'string',
-    ) &&
+    isUuidV7(candidate.subjectId) &&
+    isValidAdminPermissions(candidate.permissions) &&
     (candidate.dataScope === 'ALL' ||
       candidate.dataScope === 'OWN' ||
       candidate.dataScope === 'ASSIGNED')
@@ -86,6 +119,7 @@ function configuration(
   options: HttpAdminAuthPortOptions,
 ): {
   baseUrl: URL;
+  createRequestContext: (correlationId: string) => unknown;
   deadlineMs: number;
   fetchImpl: typeof fetch;
   maxLockoutTtlMs: number;
@@ -120,6 +154,8 @@ function configuration(
 
     return {
       baseUrl,
+      createRequestContext: options.createRequestContext ?? ((correlationId) =>
+        createOutboundRequestContext(undefined, () => correlationId)),
       deadlineMs,
       fetchImpl: options.fetchImpl ?? fetch,
       maxLockoutTtlMs,
@@ -127,12 +163,12 @@ function configuration(
       now: options.now ?? Date.now,
       telemetry,
     };
-  } catch {
-    recordSafeTelemetry(telemetry, {
-      operation: 'iam.config',
-      reason: 'INVALID_CONFIG',
-    });
-    throw new Error('Admin IAM configuration is unavailable');
+  } catch (cause) {
+    throw recordTechnicalFailure(
+      telemetry,
+      createSafeTelemetryEvent('iam.config', 'INVALID_CONFIG'),
+      new Error('Admin IAM configuration is unavailable', { cause }),
+    );
   }
 }
 
@@ -145,12 +181,36 @@ export function createHttpAdminAuthPort(
 ): AdminAuthPort {
   const config = configuration(environment, options);
 
+  function commandContext(input: { correlationId?: string; idempotencyKey?: string }) {
+    const correlationId = input.correlationId ?? createUuidV7();
+    const idempotencyKey = input.idempotencyKey ?? createUuidV7();
+    if (!isUuidV7(correlationId) || !isUuidV7(idempotencyKey)) throw new Error('Invalid MFA request context');
+    return { correlationId, idempotencyKey };
+  }
+
   async function postJson<T>(
     pathname: string,
     body: unknown,
     operation: SafeTelemetryEvent['operation'],
-    consume: (response: Response, signal: AbortSignal) => Promise<T> | T,
+    command: Readonly<{ correlationId: string; idempotencyKey: string }>,
+    consume: (
+      response: Response,
+      signal: AbortSignal,
+      requestContext: OutboundRequestContext,
+    ) => Promise<T> | T,
   ): Promise<T> {
+    let requestContext: OutboundRequestContext;
+    try {
+      requestContext = parseOutboundRequestContext(
+        config.createRequestContext(command.correlationId),
+      );
+    } catch {
+      throw recordTechnicalFailure(
+        config.telemetry,
+        createSafeTelemetryEvent(operation, 'UPSTREAM_FAILURE'),
+        new ClassifiedAdminAuthFailure('UPSTREAM_FAILURE'),
+      );
+    }
     try {
       return await fetchWithDeadline(
         config.fetchImpl,
@@ -160,50 +220,72 @@ export function createHttpAdminAuthPort(
           cache: 'no-store',
           headers: {
             'Content-Type': 'application/json',
+            'Idempotency-Key': command.idempotencyKey,
+            'X-Correlation-Id': requestContext.correlationId,
             'X-Service-Identity-Ref':
               environment.kmsIdentityReference as string,
+            'X-Trace-Id': requestContext.traceId,
           },
           method: 'POST',
         },
         config.deadlineMs,
-        consume,
+        (response, signal) => consume(response, signal, requestContext),
       );
     } catch (error) {
-      if (!(error instanceof SafeHttpRequestError)) {
+      if (error instanceof ClassifiedAdminAuthFailure) {
         throw error;
       }
-      recordSafeTelemetry(config.telemetry, {
-        operation,
-        reason: error.reason,
-      });
-      throw error;
+      const reason = error instanceof SafeHttpRequestError
+        ? error.reason
+        : 'UPSTREAM_FAILURE';
+      throw recordTechnicalFailure(
+        config.telemetry,
+        createSafeTelemetryEvent(operation, reason, requestContext),
+        new ClassifiedAdminAuthFailure(reason),
+      );
     }
   }
 
-  function malformed(operation: SafeTelemetryEvent['operation']): never {
-    recordSafeTelemetry(config.telemetry, {
-      operation,
-      reason: 'MALFORMED_RESPONSE',
-    });
-    throw new InvalidAdminAuthResponseError('Admin IAM response is invalid');
+  function malformed(
+    operation: SafeTelemetryEvent['operation'],
+    requestContext: OutboundRequestContext,
+  ): never {
+    throw recordTechnicalFailure(
+      config.telemetry,
+      createSafeTelemetryEvent(operation, 'MALFORMED_RESPONSE', requestContext),
+      new ClassifiedAdminAuthFailure('MALFORMED_RESPONSE'),
+    );
   }
 
   return {
     async beginPasswordChallenge(input): Promise<PasswordChallengeResult> {
       const operation = 'iam.password.begin';
+      const command = commandContext(input);
       try {
         return await postJson(
           '/v1/admin-auth/password/challenges',
-          input,
+          { identifier: input.identifier, password: input.password },
           operation,
-          async (response, signal) => {
+          command,
+          async (response, signal, requestContext) => {
             if (!response.ok) {
-              recordSafeTelemetry(config.telemetry, {
-                operation,
-                reason: 'UPSTREAM_FAILURE',
-              });
-              throw new InvalidAdminAuthResponseError(
-                'Admin IAM challenge request failed',
+              if (response.status === 401) {
+                let rejection: unknown;
+                try {
+                  rejection = await response.json();
+                } catch (error) {
+                  if (signal.aborted) throw error;
+                  return malformed(operation, requestContext);
+                }
+                if (isPlainObject(rejection) && hasExactKeys(rejection, ['kind', 'reason']) && rejection.kind === 'REJECTED' && rejection.reason === 'INVALID_CREDENTIALS') {
+                  return { ...localDecoyChallenge(config.now), rotateIntent: true };
+                }
+                return malformed(operation, requestContext);
+              }
+              throw recordTechnicalFailure(
+                config.telemetry,
+                createSafeTelemetryEvent(operation, 'UPSTREAM_FAILURE', requestContext),
+                new ClassifiedAdminAuthFailure('UPSTREAM_FAILURE'),
               );
             }
 
@@ -214,10 +296,10 @@ export function createHttpAdminAuthPort(
               if (signal.aborted) {
                 throw error;
               }
-              return malformed(operation);
+              return malformed(operation, requestContext);
             }
-            if (!payload || typeof payload !== 'object') {
-              return malformed(operation);
+            if (!isPlainObject(payload) || !hasExactKeys(payload, ['challengeId', 'expiresInSeconds'])) {
+              return malformed(operation, requestContext);
             }
             const candidate = payload as Partial<{
               challengeId: string;
@@ -227,7 +309,7 @@ export function createHttpAdminAuthPort(
               !isValidAdminMfaChallengeId(candidate.challengeId) ||
               candidate.expiresInSeconds !== ADMIN_MFA_CHALLENGE_TTL_SECONDS
             ) {
-              return malformed(operation);
+              return malformed(operation, requestContext);
             }
 
             return {
@@ -237,33 +319,64 @@ export function createHttpAdminAuthPort(
           },
         );
       } catch (error) {
-        if (
-          !(error instanceof SafeHttpRequestError) &&
-          !(error instanceof InvalidAdminAuthResponseError)
-        ) {
-          recordSafeTelemetry(config.telemetry, {
-            operation,
-            reason: 'UPSTREAM_FAILURE',
-          });
+        if (!consumeTechnicalFailure(error)) {
+          const fallbackContext = createOutboundRequestContext(
+            undefined,
+            () => command.correlationId,
+          );
+          recordSafeTelemetry(config.telemetry, createSafeTelemetryEvent(operation, 'UPSTREAM_FAILURE', fallbackContext));
         }
-        return localDecoyChallenge(config.now);
+        return { ...localDecoyChallenge(config.now), indeterminate: true };
       }
     },
 
     async verifyTotp(input): Promise<TotpVerificationResult> {
       const operation = 'iam.totp.verify';
+      if (!isValidAdminMfaChallengeId(input.challengeId)) throw new Error('Invalid MFA challenge ID');
+      const command = commandContext(input);
       return postJson(
         '/v1/admin-auth/totp/verifications',
-        input,
+        { challengeId: input.challengeId, code: input.code },
         operation,
-        async (response, signal) => {
-          if (!response.ok) {
-            recordSafeTelemetry(config.telemetry, {
-              operation,
-              reason: 'UPSTREAM_FAILURE',
-            });
-            throw new Error('Admin IAM TOTP request failed');
-          }
+        command,
+          async (response, signal, requestContext) => {
+            if (!response.ok) {
+              if (response.status === 401 || response.status === 423) {
+                let rejection: unknown;
+                try {
+                  rejection = await response.json();
+                } catch (error) {
+                  if (signal.aborted) throw error;
+                  return malformed(operation, requestContext);
+                }
+                const currentTime = config.now();
+                if (
+                  isPlainObject(rejection) &&
+                  hasExactKeys(rejection, ['attemptsRemaining', 'kind', 'reason']) &&
+                  response.status === 401 &&
+                  rejection.kind === 'REJECTED' &&
+                  rejection.reason === 'INVALID_CODE' &&
+                  Number.isInteger(rejection.attemptsRemaining) &&
+                  (rejection.attemptsRemaining as number) >= 0
+                ) return { kind: 'REJECTED', attemptsRemaining: rejection.attemptsRemaining as number };
+                if (
+                  isPlainObject(rejection) &&
+                  hasExactKeys(rejection, ['attemptsRemaining', 'kind', 'lockedUntil', 'reason']) &&
+                  response.status === 423 &&
+                  rejection.kind === 'REJECTED' &&
+                  rejection.reason === 'LOCKED' &&
+                  rejection.attemptsRemaining === 0 &&
+                  typeof rejection.lockedUntil === 'number' &&
+                  isValidTtl(rejection.lockedUntil, currentTime, config.maxLockoutTtlMs)
+                ) return { kind: 'REJECTED', attemptsRemaining: 0, lockedUntil: rejection.lockedUntil };
+                return malformed(operation, requestContext);
+              }
+              throw recordTechnicalFailure(
+                config.telemetry,
+                createSafeTelemetryEvent(operation, 'UPSTREAM_FAILURE', requestContext),
+                new ClassifiedAdminAuthFailure('UPSTREAM_FAILURE'),
+              );
+            }
 
           let payload: unknown;
           try {
@@ -272,10 +385,10 @@ export function createHttpAdminAuthPort(
             if (signal.aborted) {
               throw error;
             }
-            return malformed(operation);
+            return malformed(operation, requestContext);
           }
-          if (!payload || typeof payload !== 'object') {
-            return malformed(operation);
+          if (!isPlainObject(payload)) {
+            return malformed(operation, requestContext);
           }
           const candidate = payload as Partial<{
             kind: 'AUTHENTICATED' | 'CONSUMED' | 'REJECTED';
@@ -285,12 +398,17 @@ export function createHttpAdminAuthPort(
             lockedUntil: number;
           }>;
           if (candidate.kind === 'CONSUMED') {
+            if (!hasExactKeys(payload, ['kind'])) return malformed(operation, requestContext);
             return { kind: 'CONSUMED' };
           }
 
           const currentTime = config.now();
           if (candidate.kind === 'REJECTED') {
+            const rejectionKeys = candidate.lockedUntil === undefined
+              ? ['attemptsRemaining', 'kind']
+              : ['attemptsRemaining', 'kind', 'lockedUntil'];
             if (
+              !hasExactKeys(payload, rejectionKeys) ||
               typeof candidate.attemptsRemaining !== 'number' ||
               !Number.isInteger(candidate.attemptsRemaining) ||
               candidate.attemptsRemaining < 0 ||
@@ -301,7 +419,7 @@ export function createHttpAdminAuthPort(
                   config.maxLockoutTtlMs,
                 ))
             ) {
-              return malformed(operation);
+              return malformed(operation, requestContext);
             }
 
             return {
@@ -315,6 +433,7 @@ export function createHttpAdminAuthPort(
 
           if (
             candidate.kind !== 'AUTHENTICATED' ||
+            !hasExactKeys(payload, ['expiresAt', 'kind', 'subject']) ||
             !isAdminAuthenticatedSubject(candidate.subject) ||
             typeof candidate.expiresAt !== 'number' ||
             !isValidTtl(
@@ -323,12 +442,16 @@ export function createHttpAdminAuthPort(
               config.maxSessionTtlMs,
             )
           ) {
-            return malformed(operation);
+            return malformed(operation, requestContext);
           }
 
           return {
             kind: 'AUTHENTICATED',
-            subject: candidate.subject,
+            subject: {
+              dataScope: candidate.subject.dataScope,
+              permissions: [...candidate.subject.permissions],
+              subjectId: candidate.subject.subjectId,
+            },
             expiresAt: candidate.expiresAt,
           };
         },

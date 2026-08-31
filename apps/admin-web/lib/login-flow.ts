@@ -1,6 +1,7 @@
 export type PasswordStepResult = Readonly<{
-  step: 'totp';
+  step: 'password' | 'totp';
   message: string;
+  requiresPreflight?: true;
 }>;
 
 const GENERIC_PASSWORD_RESULT: PasswordStepResult = Object.freeze({
@@ -10,6 +11,14 @@ const GENERIC_PASSWORD_RESULT: PasswordStepResult = Object.freeze({
 
 export function publicPasswordStepResult(): PasswordStepResult {
   return GENERIC_PASSWORD_RESULT;
+}
+
+export function passwordPreflightFailure(): PasswordStepResult {
+  return { step: 'password', message: '无法建立安全登录，请重试' };
+}
+
+export function passwordPreflightRequired(): PasswordStepResult {
+  return { ...passwordPreflightFailure(), requiresPreflight: true };
 }
 
 export type TotpValidationResult =

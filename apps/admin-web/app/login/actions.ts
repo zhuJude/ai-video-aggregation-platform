@@ -12,9 +12,16 @@ import { createHttpAdminAuthPort } from '../../lib/http-admin-auth-port';
 import type { PasswordStepResult } from '../../lib/login-flow';
 import { publicPasswordStepResult } from '../../lib/login-flow';
 import {
+  consumeTechnicalFailure,
+  createSafeTelemetryEvent,
   defaultSafeTelemetry,
   recordSafeTelemetry,
 } from '../../lib/safe-telemetry';
+
+function recordUnclassifiedActionFailure(error: unknown): void {
+  if (consumeTechnicalFailure(error)) return;
+  recordSafeTelemetry(defaultSafeTelemetry, createSafeTelemetryEvent('login.action', 'ACTION_FAILURE'));
+}
 
 async function createHandlers() {
   const cookieStore = await cookies();
@@ -35,7 +42,17 @@ async function createHandlers() {
     cookies: cookiePort,
     challengeSigningKey: process.env.ADMIN_MFA_CHALLENGE_SIGNING_KEY ?? '',
     sessionSigningKey: process.env.ADMIN_SESSION_SIGNING_KEY ?? '',
+    requirePreflight: true,
   });
+}
+
+export async function preparePasswordAction(identifier: string): Promise<Readonly<{ status: 'READY' | 'ERROR' }>> {
+  try {
+    return await (await createHandlers()).preparePassword(identifier);
+  } catch (error) {
+    recordUnclassifiedActionFailure(error);
+    return { status: 'ERROR' };
+  }
 }
 
 export async function submitPasswordAction(
@@ -45,11 +62,8 @@ export async function submitPasswordAction(
   try {
     const handlers = await createHandlers();
     return await handlers.submitPassword(formData);
-  } catch {
-    recordSafeTelemetry(defaultSafeTelemetry, {
-      operation: 'login.action',
-      reason: 'ACTION_FAILURE',
-    });
+  } catch (error) {
+    recordUnclassifiedActionFailure(error);
     return publicPasswordStepResult();
   }
 }
@@ -62,11 +76,8 @@ export async function submitTotpAction(
   try {
     const handlers = await createHandlers();
     result = await handlers.submitTotp(formData);
-  } catch {
-    recordSafeTelemetry(defaultSafeTelemetry, {
-      operation: 'login.action',
-      reason: 'ACTION_FAILURE',
-    });
+  } catch (error) {
+    recordUnclassifiedActionFailure(error);
     return {
       status: 'INVALID_TOTP',
       message: '验证失败，请重试',
