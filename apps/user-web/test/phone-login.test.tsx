@@ -149,4 +149,17 @@ describe('PhoneLoginForm', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('验证码错误');
     expect(phoneInput).toHaveValue('13800138000');
   });
+
+  it('redirects a successful login to the studio workspace', async () => {
+    const user = userEvent.setup();
+    const onAuthenticated = vi.fn();
+
+    render(<PhoneLoginForm onAuthenticated={onAuthenticated} />);
+    await user.type(screen.getByLabelText('手机号'), '13800138000');
+    await user.click(screen.getByRole('button', { name: '获取验证码' }));
+    await user.type(screen.getByLabelText('短信验证码'), '123456');
+    await user.click(screen.getByRole('button', { name: '登录' }));
+
+    expect(onAuthenticated).toHaveBeenCalledWith('/studio');
+  });
 });

@@ -11,6 +11,11 @@ const REQUEST_MESSAGE = '如果该手机号可用，验证码将尽快发送。'
 const REQUEST_ERROR_MESSAGE = '请稍后重试，我们不会透露该手机号是否已注册。';
 
 type PendingAction = 'request' | 'verify' | null;
+type WorkspaceDestination = '/studio';
+
+interface PhoneLoginFormProps {
+  onAuthenticated?: (destination: WorkspaceDestination) => void;
+}
 
 function createIdempotencyKey(action: 'request' | 'verify'): string {
   return `sms-${action}-${crypto.randomUUID()}`;
@@ -28,7 +33,7 @@ function retryAfterSeconds(headers: Headers): number | undefined {
   return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
 }
 
-export function PhoneLoginForm() {
+export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
@@ -112,7 +117,12 @@ export function PhoneLoginForm() {
         idempotencyKey: createIdempotencyKey('verify'),
       });
       setStatusMessage('登录成功，正在进入工作台。');
-      globalThis.location.assign('/');
+      const destination: WorkspaceDestination = '/studio';
+      if (onAuthenticated) {
+        onAuthenticated(destination);
+      } else {
+        globalThis.location.assign(destination);
+      }
     } catch (verifyError) {
       const invalidCode =
         verifyError instanceof ApiClientError &&

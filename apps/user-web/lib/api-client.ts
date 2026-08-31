@@ -1,6 +1,7 @@
 import { ApiErrorSchema, HEADERS, type ApiError } from '@repo/contracts/common';
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export type GatewayPath = `/v1/${string}`;
@@ -85,11 +86,19 @@ async function responsePayload(response: Response): Promise<unknown> {
   }
 }
 
+function normalizeMethod(method: string | undefined): string {
+  const normalizedMethod = (method ?? 'GET').toUpperCase();
+  if (!ALLOWED_METHODS.has(normalizedMethod)) {
+    throw new TypeError(`Unsupported Gateway request method: ${normalizedMethod}`);
+  }
+  return normalizedMethod;
+}
+
 export async function apiClient<T = undefined>(
   path: GatewayPath,
   options: ApiClientOptions = {},
 ): Promise<ApiClientResponse<T>> {
-  const method = options.method ?? 'GET';
+  const method = normalizeMethod(options.method);
   if (WRITE_METHODS.has(method)) {
     const key = 'idempotencyKey' in options ? options.idempotencyKey : undefined;
     if (!key || key.length < 16 || key.length > 128 || !/^[\x20-\x7e]+$/.test(key)) {

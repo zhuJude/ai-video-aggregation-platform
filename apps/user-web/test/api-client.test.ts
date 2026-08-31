@@ -1,7 +1,7 @@
 import type { ApiError } from '@repo/contracts/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { apiClient } from '../lib/api-client';
+import { apiClient, type ApiClientOptions } from '../lib/api-client';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -9,6 +9,22 @@ afterEach(() => {
 });
 
 describe('apiClient', () => {
+  it('normalizes a runtime write method before enforcing its idempotency key', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(Response.json({ accepted: true }, { status: 202 })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const runtimeOptions = {
+      method: 'post',
+      body: { phone: '13800138000' },
+    } as unknown as ApiClientOptions;
+
+    await expect(apiClient('/v1/auth/sms/request', runtimeOptions)).rejects.toThrow(
+      'Writes require a 16–128 character printable idempotency key.',
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('sends browser credentials and request metadata for a write', async () => {
     let capturedRequest: Request | undefined;
     vi.stubGlobal(
