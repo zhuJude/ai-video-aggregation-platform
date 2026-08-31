@@ -76,7 +76,7 @@ WS00 合并之前不得启动 Wave 1。Wave 1 可以全部并行，但不要让�
 
 | 工作包 | 独占目录/文件 |
 |---|---|
-| WS00 | 根配置、`packages/contracts/**`、`packages/capability-schema/**`、`packages/provider-sdk/**`、`packages/service-kit/**`、`packages/testkit/**`、`packages/ui/**`、`infra/local/**`、`.github/workflows/ci.yml` |
+| WS00 | 根配置、初始 `pnpm-lock.yaml`、`packages/contracts/**`、`packages/capability-schema/**`、`packages/provider-sdk/**`、`packages/service-kit/**`、`packages/testkit/**`、`packages/ui/**`、`infra/local/**`、`.github/workflows/ci.yml` |
 | WS09 | `services/edge-gateway/**`、`docs/runbooks/edge-gateway.md` |
 | WS10 | `services/identity-service/**`、`services/iam-service/**`、`docs/runbooks/identity-iam.md` |
 | WS11 | `services/catalog-service/**`、`services/quote-routing-service/**`、`docs/runbooks/catalog-routing.md` |
@@ -87,12 +87,12 @@ WS00 合并之前不得启动 Wave 1。Wave 1 可以全部并行，但不要让�
 | WS16 | `apps/admin-web/**`、`docs/product/admin-web.md` |
 | WS17 | `services/reporting-service/**`、`packages/observability/**`、`docs/runbooks/observability.md` |
 | WS18 | `infra/terraform/**`、`infra/helm/**`、`.github/workflows/deploy-*.yml`、`docs/runbooks/deployment.md` |
-| WS20 | `tests/e2e/**`、`tests/load/**`、`tests/chaos/**`、`docs/reports/**`、`pnpm-lock.yaml`；经评审后可修复跨目录集成问题 |
+| WS20 | `tests/e2e/**`、`tests/load/**`、`tests/chaos/**`、`docs/reports/**`、合并后的最终 `pnpm-lock.yaml`；经评审后可修复跨目录集成问题 |
 
 ### 并行冲突规则
 
 1. Wave 1 窗口不得修改 `packages/contracts`。发现契约缺陷时，在自己的分支新增 `docs/contract-change-requests/WSxx-<name>.md`，由集成窗口集中处理。
-2. Wave 1 窗口可以修改自己目录内的 `package.json`，但使用 `pnpm install --lockfile=false`，不得提交 `pnpm-lock.yaml`。
+2. WS00 负责生成并提交初始 `pnpm-lock.yaml`；Wave 1 窗口可以修改自己目录内的 `package.json`，但使用 `pnpm install --lockfile=false`，不得修改或提交 `pnpm-lock.yaml`；WS20 在全部分支合并后重新生成并提交最终锁文件。
 3. 根 `package.json`、`pnpm-workspace.yaml`、`turbo.json`、TypeScript/ESLint/Prettier 配置由 WS00 独占。
 4. UI 窗口不得修改 `packages/ui`；缺少的通用组件先在各自应用内实现，WS20 再判断是否抽取。
 5. 领域服务不得读取其他服务数据库。跨域需求只能使用冻结契约中的 HTTP 命令或领域事件。
@@ -143,7 +143,7 @@ WS00 完成后，以下契约视为 Wave 1 的只读输入：
 2. docs/superpowers/plans/2026-08-28-00-program-execution-plan.md
 3. 对应的 WS 实施计划
 
-严格遵守文件所有权和冻结契约。使用 test-driven-development，先写失败测试；每个任务完成后运行计划中的验证命令并提交。不要提交 pnpm-lock.yaml，不要修改其他工作包目录。遇到契约缺陷时写 contract-change-request，不要直接修改共享契约。
+严格遵守文件所有权和冻结契约。使用 test-driven-development，先写失败测试；每个任务完成后运行计划中的验证命令并提交。WS00 按计划提交初始 pnpm-lock.yaml；Wave 1 不得修改或提交该文件；WS20 负责最终更新。不要修改其他工作包目录。遇到契约缺陷时写 contract-change-request，不要直接修改共享契约。
 ```
 
 ## 8. Wave 1 合并顺序
