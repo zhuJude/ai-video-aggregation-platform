@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import type { ApiError } from '@repo/contracts/common';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,7 +22,55 @@ const invalidCodeError = {
   retryable: false,
 } satisfies ApiError;
 
-type GatewayHandler = (request: Request) => Response | undefined;
+type GatewayHandler = (request: Request) => Promise<Response> | Response | undefined;
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolvePromise: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve(value) {
+      resolvePromise?.(value);
+    },
+  };
+}
+
+function signalReason(signal: AbortSignal): unknown {
+  return (signal as AbortSignal & { readonly reason?: unknown }).reason;
+}
+
+function settleGatewayResponse(
+  request: Request,
+  pendingResponse: Promise<Response> | Response,
+): Promise<Response> {
+  if (request.signal.aborted) {
+    return Promise.reject(signalReason(request.signal) as Error);
+  }
+
+  return new Promise<Response>((resolve, reject) => {
+    const abort = () => {
+      reject(signalReason(request.signal) as Error);
+    };
+    request.signal.addEventListener('abort', abort, { once: true });
+    void Promise.resolve(pendingResponse).then(
+      (response) => {
+        request.signal.removeEventListener('abort', abort);
+        resolve(response);
+      },
+      (reason: unknown) => {
+        request.signal.removeEventListener('abort', abort);
+        reject(reason as Error);
+      },
+    );
+  });
+}
 
 const requestSmsHandler: GatewayHandler = (request) => {
   if (request.method !== 'POST' || new URL(request.url).pathname !== '/v1/auth/sms/request') {
@@ -69,6 +117,7 @@ export const invalidCodeHandler: GatewayHandler = (request) => {
 };
 
 let handlers: GatewayHandler[] = [];
+let gatewayRequests: Request[] = [];
 
 const gatewayMock = {
   use(handler: GatewayHandler) {
@@ -78,13 +127,15 @@ const gatewayMock = {
 
 beforeEach(() => {
   handlers = [requestSmsHandler, verifySmsHandler];
+  gatewayRequests = [];
   vi.stubGlobal(
     'fetch',
     vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
+      gatewayRequests.push(request);
       for (const handler of handlers) {
         const response = handler(request);
-        if (response) return Promise.resolve(response);
+        if (response) return settleGatewayResponse(request, response);
       }
       return Promise.reject(
         new Error(`Unhandled Gateway request: ${request.method} ${request.url}`),
@@ -118,7 +169,72 @@ describe('PhoneLoginForm', () => {
     await user.type(screen.getByLabelText('手机号'), '13800138000');
     await user.click(screen.getByRole('button', { name: '获取验证码' }));
 
-    expect(screen.getByRole('button', { name: /重新发送/ })).toBeDisabled();
+    const resendButton = screen.getByRole('button', { name: /重新发送/ });
+    expect(resendButton).toBeDisabled();
+    await user.click(resendButton);
+    expect(
+      gatewayRequests.filter((request) => new URL(request.url).pathname === '/v1/auth/sms/request'),
+    ).toHaveLength(1);
+  });
+
+  it('does not issue a duplicate request while SMS delivery is pending', async () => {
+    const user = userEvent.setup();
+    const pendingSms = createDeferred<Response>();
+    gatewayMock.use((request) =>
+      new URL(request.url).pathname === '/v1/auth/sms/request' ? pendingSms.promise : undefined,
+    );
+
+    render(<PhoneLoginForm />);
+    await user.type(screen.getByLabelText('手机号'), '13800138000');
+    await user.click(screen.getByRole('button', { name: '获取验证码' }));
+    const pendingButton = screen.getByRole('button', { name: '正在发送……' });
+    await user.click(pendingButton);
+
+    expect(
+      gatewayRequests.filter((request) => new URL(request.url).pathname === '/v1/auth/sms/request'),
+    ).toHaveLength(1);
+
+    await act(() => {
+      pendingSms.resolve(
+        Response.json(smsRequestAccepted, {
+          status: 202,
+          headers: { 'Retry-After': '60' },
+        }),
+      );
+      return Promise.resolve();
+    });
+  });
+
+  it('does not attach an old SMS challenge to a changed phone', async () => {
+    const user = userEvent.setup();
+    const pendingSms = createDeferred<Response>();
+    gatewayMock.use((request) =>
+      new URL(request.url).pathname === '/v1/auth/sms/request' ? pendingSms.promise : undefined,
+    );
+
+    render(<PhoneLoginForm />);
+    const phoneInput = screen.getByLabelText('手机号');
+    await user.type(phoneInput, '13800138000');
+    await user.click(screen.getByRole('button', { name: '获取验证码' }));
+
+    expect(phoneInput).toBeDisabled();
+    expect(phoneInput).toHaveValue('13800138000');
+
+    await act(() => {
+      pendingSms.resolve(
+        Response.json(smsRequestAccepted, {
+          status: 202,
+          headers: { 'Retry-After': '60' },
+        }),
+      );
+      return Promise.resolve();
+    });
+    expect(await screen.findByRole('button', { name: /重新发送/ })).toBeDisabled();
+
+    await user.clear(phoneInput);
+    await user.type(phoneInput, '13900139000');
+    expect(screen.getByRole('button', { name: '获取验证码' })).toBeEnabled();
+    expect(screen.queryByText(smsRequestAccepted.message)).not.toBeInTheDocument();
   });
 
   it('honors a longer Gateway Retry-After cooldown', async () => {
@@ -143,11 +259,56 @@ describe('PhoneLoginForm', () => {
     const phoneInput = screen.getByLabelText('手机号');
     await user.type(phoneInput, '13800138000');
     await user.click(screen.getByRole('button', { name: '获取验证码' }));
-    await user.type(screen.getByLabelText('短信验证码'), '000000');
+    const codeInput = screen.getByLabelText('短信验证码');
+    await user.type(codeInput, '000000');
     await user.click(screen.getByRole('button', { name: '登录' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('验证码错误');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('验证码错误');
+    expect(alert).toHaveAttribute('id', 'phone-login-error');
+    expect(codeInput).toHaveAttribute('aria-invalid', 'true');
+    expect(codeInput).toHaveAttribute('aria-describedby', 'phone-login-error');
     expect(phoneInput).toHaveValue('13800138000');
+
+    await user.clear(codeInput);
+    await user.type(codeInput, '1');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(codeInput).toHaveAttribute('aria-invalid', 'false');
+    expect(codeInput).not.toHaveAttribute('aria-describedby');
+
+    await user.clear(codeInput);
+    await user.type(codeInput, '000000');
+    await user.click(screen.getByRole('button', { name: '登录' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('验证码错误');
+
+    await user.clear(phoneInput);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(codeInput).toHaveValue('');
+  });
+
+  it('does not complete login after unmounting during verification', async () => {
+    const user = userEvent.setup();
+    const pendingVerification = createDeferred<Response>();
+    const onAuthenticated = vi.fn();
+    gatewayMock.use((request) =>
+      new URL(request.url).pathname === '/v1/auth/sms/verify'
+        ? pendingVerification.promise
+        : undefined,
+    );
+
+    const { unmount } = render(<PhoneLoginForm onAuthenticated={onAuthenticated} />);
+    await user.type(screen.getByLabelText('手机号'), '13800138000');
+    await user.click(screen.getByRole('button', { name: '获取验证码' }));
+    await user.type(screen.getByLabelText('短信验证码'), '123456');
+    await user.click(screen.getByRole('button', { name: '登录' }));
+
+    unmount();
+    await act(() => {
+      pendingVerification.resolve(new Response(null, { status: 204 }));
+      return Promise.resolve();
+    });
+
+    expect(onAuthenticated).not.toHaveBeenCalled();
   });
 
   it('redirects a successful login to the studio workspace', async () => {

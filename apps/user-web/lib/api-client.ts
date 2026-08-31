@@ -1,8 +1,12 @@
 import { ApiErrorSchema, HEADERS, type ApiError } from '@repo/contracts/common';
 
 const REQUEST_TIMEOUT_MS = 10_000;
+// SMS challenges expire after five minutes, so a longer value must not disable the UI forever.
+const MAX_RETRY_AFTER_SECONDS = 300;
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const HTTP_DATE_PATTERN =
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 
 export type GatewayPath = `/v1/${string}`;
 
@@ -62,15 +66,23 @@ function gatewayUrl(path: GatewayPath): string {
   return new URL(path, baseUrl).toString();
 }
 
-function parseRetryAfter(value: string | null): number | undefined {
+export function parseRetryAfter(
+  value: string | null,
+  now: number = Date.now(),
+): number | undefined {
   if (!value) return undefined;
 
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    if (!Number.isSafeInteger(seconds)) return undefined;
+    return Math.min(seconds, MAX_RETRY_AFTER_SECONDS);
+  }
+
+  if (!HTTP_DATE_PATTERN.test(value)) return undefined;
 
   const retryAt = Date.parse(value);
-  if (Number.isNaN(retryAt)) return undefined;
-  return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+  if (Number.isNaN(retryAt) || new Date(retryAt).toUTCString() !== value) return undefined;
+  return Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(0, Math.ceil((retryAt - now) / 1000)));
 }
 
 async function responsePayload(response: Response): Promise<unknown> {
@@ -92,6 +104,10 @@ function normalizeMethod(method: string | undefined): string {
     throw new TypeError(`Unsupported Gateway request method: ${normalizedMethod}`);
   }
   return normalizedMethod;
+}
+
+function signalReason(signal: AbortSignal): unknown {
+  return (signal as AbortSignal & { readonly reason?: unknown }).reason;
 }
 
 export async function apiClient<T = undefined>(
@@ -122,15 +138,35 @@ export async function apiClient<T = undefined>(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort(new DOMException('The Gateway request timed out.', 'TimeoutError'));
-  }, REQUEST_TIMEOUT_MS);
   const abortFromCaller = () => {
-    controller.abort(options.signal?.reason);
+    const reason = options.signal ? signalReason(options.signal) : undefined;
+    controller.abort(reason ?? new DOMException('The caller aborted the request.', 'AbortError'));
   };
-  options.signal?.addEventListener('abort', abortFromCaller, { once: true });
+  let subscribedToCaller = false;
+  if (options.signal?.aborted) {
+    abortFromCaller();
+  } else if (options.signal) {
+    options.signal.addEventListener('abort', abortFromCaller, { once: true });
+    subscribedToCaller = true;
+  }
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  if (!controller.signal.aborted) {
+    timeout = setTimeout(() => {
+      controller.abort(new DOMException('The Gateway request timed out.', 'TimeoutError'));
+    }, REQUEST_TIMEOUT_MS);
+  }
 
   try {
+    if (controller.signal.aborted) {
+      const reason =
+        signalReason(controller.signal) ??
+        new DOMException('The Gateway request was aborted.', 'AbortError');
+      // AbortSignal.reason is intentionally `any` in lib.dom and may be a caller-defined value.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw reason;
+    }
+
     const requestInit: RequestInit = {
       credentials: 'include',
       headers,
@@ -164,7 +200,9 @@ export async function apiClient<T = undefined>(
       status: response.status,
     };
   } finally {
-    clearTimeout(timeout);
-    options.signal?.removeEventListener('abort', abortFromCaller);
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (subscribedToCaller) {
+      options.signal?.removeEventListener('abort', abortFromCaller);
+    }
   }
 }
