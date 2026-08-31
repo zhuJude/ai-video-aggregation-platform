@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RuleStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+enum QuoteMode {
+  SMART
+  PROFESSIONAL
+}
+
+model CostRuleVersion {
+  id               String     @id @db.Uuid
+  modelId          String     @db.Uuid
+  version          Int
+  status           RuleStatus @default(DRAFT)
+  basePoints       BigInt
+  unitPoints       BigInt
+  costDimension    String?
+  configuration    Json
+  effectiveAt      DateTime   @db.Timestamptz(3)
+  publishedAt      DateTime?  @db.Timestamptz(3)
+  publishedBy      String?    @db.Uuid
+  createdAt        DateTime   @default(now()) @db.Timestamptz(3)
+
+  @@unique([modelId, version])
+  @@index([modelId, status, effectiveAt])
+}
+
+model SalePriceRuleVersion {
+  id               String     @id @db.Uuid
+  modelId          String     @db.Uuid
+  version          Int
+  status           RuleStatus @default(DRAFT)
+  ruleType         String
+  fixedPoints      BigInt?
+  marginBasisPoints Int?
+  configuration    Json
+  effectiveAt      DateTime   @db.Timestamptz(3)
+  publishedAt      DateTime?  @db.Timestamptz(3)
+  publishedBy      String?    @db.Uuid
+  createdAt        DateTime   @default(now()) @db.Timestamptz(3)
+
+  @@unique([modelId, version])
+  @@index([modelId, status, effectiveAt])
+}
+
+model RoutePolicyVersion {
+  id                     String     @id @db.Uuid
+  version                Int        @unique
+  status                 RuleStatus @default(DRAFT)
+  qualityWeight          Int
+  speedWeight            Int
+  priceWeight            Int
+  minimumMarginBasisPoints Int
+  configuration          Json
+  effectiveAt            DateTime   @db.Timestamptz(3)
+  publishedAt            DateTime?  @db.Timestamptz(3)
+  publishedBy            String?    @db.Uuid
+  createdAt              DateTime   @default(now()) @db.Timestamptz(3)
+
+  @@index([status, effectiveAt])
+}
+
+model Quote {
+  id                    String    @id @db.Uuid
+  userId                String    @db.Uuid
+  mode                  QuoteMode
+  modelId               String?   @db.Uuid
+  candidateModelIds     String[]  @db.Uuid
+  capabilityVersionId   String    @db.Uuid
+  quotedPoints          BigInt
+  costEstimatePoints    BigInt
+  pricingRuleVersion    Int
+  routingRuleVersion    Int
+  parametersHash        String    @db.Char(64)
+  parametersSnapshot    Json
+  allowFailover         Boolean   @default(false)
+  createdAt             DateTime  @db.Timestamptz(3)
+  expiresAt             DateTime  @db.Timestamptz(3)
+  routeDecision         RouteDecision?
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+model RouteDecision {
+  id                String   @id @db.Uuid
+  quoteId           String?  @unique @db.Uuid
+  selectedModelId   String   @db.Uuid
+  candidateSnapshot Json
+  explanation       Json
+  createdAt         DateTime @db.Timestamptz(3)
+  quote             Quote?   @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+
+  @@index([selectedModelId, createdAt])
+}
+
+model OutboxEvent {
+  id            String    @id @db.Uuid
+  aggregateType String
+  aggregateId   String    @db.Uuid
+  eventType     String
+  payload       Json
+  occurredAt    DateTime  @db.Timestamptz(3)
+  publishedAt   DateTime? @db.Timestamptz(3)
+
+  @@index([publishedAt, occurredAt])
+}
