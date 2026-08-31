@@ -37,6 +37,7 @@ function allowedValue<T extends string>(
 
 function filtersFromSearchParams(searchParams: SearchParams): ModelFilters {
   const filters: ModelFilters = {};
+  const modelId = firstValue(searchParams.model);
   const mode = allowedValue(firstValue(searchParams.mode), modes);
   const providerId = firstValue(searchParams.provider);
   const capability = firstValue(searchParams.capability);
@@ -44,6 +45,7 @@ function filtersFromSearchParams(searchParams: SearchParams): ModelFilters {
   const speed = allowedValue(firstValue(searchParams.speed), speeds);
   const state = allowedValue(firstValue(searchParams.state), states);
 
+  if (modelId) filters.modelId = modelId;
   if (mode) filters.mode = mode;
   if (providerId) filters.providerId = providerId;
   if (capability) filters.capability = capability;
@@ -74,6 +76,17 @@ export default async function ModelsPage({
           </section>
 
           <form className="model-filters" method="get" aria-label="筛选模型">
+            <label>
+              模型
+              <select name="model" defaultValue={filters.modelId ?? ''}>
+                <option value="">全部模型</option>
+                {result.data.modelOptions.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label>
               生成方式
               <select name="mode" defaultValue={filters.mode ?? ''}>

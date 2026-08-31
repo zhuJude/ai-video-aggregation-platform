@@ -49,6 +49,7 @@ export interface HomeResponse {
 }
 
 export interface ModelFilters {
+  modelId?: string;
   mode?: GenerationMode;
   providerId?: string;
   capability?: string;
@@ -57,10 +58,16 @@ export interface ModelFilters {
   state?: ModelState;
 }
 
+export interface ModelOption {
+  id: string;
+  displayName: string;
+}
+
 export interface ModelsResponse {
   items: readonly PublicModel[];
   total: number;
   filters: ModelFilters;
+  modelOptions: readonly ModelOption[];
   providers: readonly ProviderSummary[];
   capabilities: readonly string[];
 }
@@ -311,6 +318,7 @@ class FixturePublicSiteGateway implements PublicSiteGateway {
   getModels(filters: ModelFilters): Promise<GatewayResult<ModelsResponse>> {
     const items = models.filter(
       (model) =>
+        (!filters.modelId || model.id === filters.modelId) &&
         (!filters.mode || model.modes.includes(filters.mode)) &&
         (!filters.providerId || model.provider.id === filters.providerId) &&
         (!filters.capability || model.capabilities.includes(filters.capability)) &&
@@ -324,6 +332,10 @@ class FixturePublicSiteGateway implements PublicSiteGateway {
         items,
         total: items.length,
         filters,
+        modelOptions: models.map((model) => ({
+          id: model.id,
+          displayName: model.displayName,
+        })),
         providers: Object.values(providers),
         capabilities: [...new Set(models.flatMap((model) => model.capabilities))],
       }),
