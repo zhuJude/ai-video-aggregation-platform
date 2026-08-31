@@ -15,7 +15,9 @@ describe('catalog API', () => {
 
   beforeEach(
     async () => {
-      ({ app, store } = await createCatalogApplication());
+      ({ app, store } = await createCatalogApplication({
+        internalServiceToken: 'service-token',
+      }));
       await app.init();
       server = app.getHttpAdapter().getInstance() as FastifyInstance;
       await server.ready();
@@ -185,5 +187,53 @@ describe('catalog API', () => {
     expect(publishResponse.json()).toMatchObject({ status: 'PUBLISHED' });
     expect(retireResponse.statusCode).toBe(201);
     expect(retireResponse.json()).toMatchObject({ status: 'RETIRED' });
+  });
+
+  it('exposes liveness, readiness and Prometheus metrics', async () => {
+    const live = await server.inject({ method: 'GET', url: '/health/live' });
+    const ready = await server.inject({ method: 'GET', url: '/health/ready' });
+    const metrics = await server.inject({ method: 'GET', url: '/metrics' });
+
+    expect(live.statusCode).toBe(200);
+    expect(ready.statusCode).toBe(200);
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.body).toContain('service_up{service="catalog-service"} 1');
+  });
+
+  it('requires service authentication before margin guard disables a model', async () => {
+    store.seedProvider({
+      id: providerId,
+      code: 'mock-provider',
+      displayName: 'Mock Provider',
+      status: 'ACTIVE',
+      credentialRefs: [],
+    });
+    store.seedModel({
+      id: modelId,
+      providerId,
+      code: 'margin-risk',
+      providerModelId: 'mock-v1',
+      displayName: 'Margin risk',
+      modes: ['TEXT_TO_VIDEO'],
+      status: 'ACTIVE',
+      sortOrder: 0,
+      capabilityVersionId,
+      capabilityStatus: 'PUBLISHED',
+    });
+    const unauthorized = await server.inject({
+      method: 'POST',
+      url: `/internal/models/${modelId}/disable`,
+      payload: { reason: 'MARGIN_BELOW_MINIMUM' },
+    });
+    const authorized = await server.inject({
+      method: 'POST',
+      url: `/internal/models/${modelId}/disable`,
+      headers: { authorization: 'Bearer service-token' },
+      payload: { reason: 'MARGIN_BELOW_MINIMUM' },
+    });
+
+    expect(unauthorized.statusCode).toBe(403);
+    expect(authorized.statusCode).toBe(201);
+    expect(authorized.json()).toMatchObject({ id: modelId, status: 'DISABLED' });
   });
 });

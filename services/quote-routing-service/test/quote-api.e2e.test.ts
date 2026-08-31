@@ -132,4 +132,15 @@ describe('quote and routing APIs', () => {
     expect(rolledBack).toMatchObject({ version: 2, status: 'PUBLISHED' });
     expect(rolledBack.payload).toEqual(created.payload);
   });
+
+  it('exposes liveness, readiness and Prometheus metrics', async () => {
+    const live = await server.inject({ method: 'GET', url: '/health/live' });
+    const ready = await server.inject({ method: 'GET', url: '/health/ready' });
+    const metrics = await server.inject({ method: 'GET', url: '/metrics' });
+
+    expect(live.statusCode).toBe(200);
+    expect(ready.statusCode).toBe(200);
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.body).toContain('service_up{service="quote-routing-service"} 1');
+  });
 });

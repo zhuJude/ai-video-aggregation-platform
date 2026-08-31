@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "24.10.1",
+    "@vitest/coverage-v8": "4.1.11",
     "fast-check": "4.9.0",
     "prisma": "7.10.0",
     "typescript": "5.9.3",

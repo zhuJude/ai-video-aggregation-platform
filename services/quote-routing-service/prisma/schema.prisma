@@ -105,6 +105,23 @@ model RouteDecision {
   @@index([selectedModelId, createdAt])
 }
 
+model InboxMessage {
+  messageId   String   @id
+  eventType   String
+  processedAt DateTime @default(now()) @db.Timestamptz(3)
+}
+
+model ProviderHealthSnapshot {
+  providerId     String   @id @db.Uuid
+  sequence       BigInt
+  health         String
+  balanceLow     Boolean
+  quotaExhausted Boolean
+  circuitOpen    Boolean
+  occurredAt     DateTime @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+}
+
 model OutboxEvent {
   id            String    @id @db.Uuid
   aggregateType String

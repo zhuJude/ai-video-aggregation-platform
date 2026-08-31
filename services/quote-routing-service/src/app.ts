@@ -9,6 +9,7 @@ import {
 } from './application/quote.service.js';
 import { RuleVersionStore } from './application/rule-version.store.js';
 import { AdminRoutingController } from './http/admin-routing.controller.js';
+import { OperationalController } from './http/operational.controller.js';
 import { QuotesController } from './http/quotes.controller.js';
 
 function createUuidV7(): string {
@@ -27,7 +28,7 @@ function createUuidV7(): string {
 }
 
 @Module({
-  controllers: [QuotesController, AdminRoutingController],
+  controllers: [QuotesController, AdminRoutingController, OperationalController],
   providers: [
     InMemoryQuoteRepository,
     RuleVersionStore,
