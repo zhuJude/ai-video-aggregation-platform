@@ -138,7 +138,7 @@ resource "alicloud_eip_association" "egress" {
 resource "alicloud_snat_entry" "workloads" {
   count = length(alicloud_vswitch.workload)
 
-  snat_table_id     = var.snat_table_id_override != null ? var.snat_table_id_override : one(alicloud_nat_gateway.egress.snat_table_ids)
+  snat_table_id     = var.snat_table_id_override != null ? var.snat_table_id_override : alicloud_nat_gateway.egress.snat_table_ids
   source_vswitch_id = alicloud_vswitch.workload[count.index].id
   snat_ip           = alicloud_eip_address.egress.ip_address
   snat_entry_name   = "${var.name}-workload-${count.index + 1}"

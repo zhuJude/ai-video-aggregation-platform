@@ -1,3 +1,5 @@
+mock_provider "alicloud" {}
+
 run "production_requires_two_zones" {
   command = plan
 
