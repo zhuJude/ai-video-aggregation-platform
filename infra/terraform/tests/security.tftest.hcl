@@ -23,8 +23,8 @@ run "workload_identities_are_isolated_and_secretless" {
   }
 
   assert {
-    condition     = output.kms_deletion_protection && output.kms_automatic_rotation
-    error_message = "KMS keys require deletion protection and automatic rotation"
+    condition     = output.kms_deletion_protection && output.kms_automatic_rotation && output.secret_manager_private
+    error_message = "KMS keys require deletion protection, rotation and private Secret Manager capacity"
   }
 }
 

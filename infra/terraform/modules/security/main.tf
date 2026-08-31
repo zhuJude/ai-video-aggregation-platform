@@ -23,6 +23,33 @@ variable "account_id" {
   default     = "1234567890123456"
 }
 
+variable "vpc_id" {
+  description = "Private VPC hosting the KMS software instance."
+  type        = string
+  default     = "vpc-security"
+}
+
+variable "vswitch_ids" {
+  description = "Two private vSwitches used by the KMS instance."
+  type        = list(string)
+  default     = ["vsw-kms-a", "vsw-kms-b"]
+
+  validation {
+    condition     = length(distinct(var.vswitch_ids)) >= 2
+    error_message = "KMS requires vSwitches in at least two zones"
+  }
+}
+
+variable "zones" {
+  type    = list(string)
+  default = ["cn-hangzhou-h", "cn-hangzhou-i"]
+
+  validation {
+    condition     = length(distinct(var.zones)) >= 2
+    error_message = "KMS requires at least two zones"
+  }
+}
+
 variable "rrsa_oidc_provider_arn" {
   description = "ACK RRSA OIDC provider ARN; no long-lived access key is accepted."
   type        = string
@@ -97,6 +124,19 @@ locals {
   }
 }
 
+resource "alicloud_kms_instance" "platform" {
+  instance_name               = var.name
+  product_version             = "3"
+  payment_type                = "PayAsYouGo"
+  vpc_id                      = var.vpc_id
+  vswitch_ids                 = var.vswitch_ids
+  zone_ids                    = var.zones
+  log                         = "1"
+  deletion_protection         = true
+  force_delete_without_backup = false
+  tags                        = var.tags
+}
+
 resource "alicloud_kms_key" "platform" {
   description                     = "${var.name} envelope encryption key"
   key_spec                        = "Aliyun_AES_256"
@@ -107,6 +147,7 @@ resource "alicloud_kms_key" "platform" {
   deletion_protection_description = "Production data and Secret Manager references depend on this key"
   pending_window_in_days          = 30
   status                          = "Enabled"
+  dkms_instance_id                = alicloud_kms_instance.platform.id
   tags                            = var.tags
 }
 
@@ -188,6 +229,10 @@ output "terraform_manages_secret_payloads" {
 
 output "secret_delivery_strategy" {
   value = "rrsa-kms-csi"
+}
+
+output "secret_manager_private" {
+  value = alicloud_kms_instance.platform.vpc_id == var.vpc_id
 }
 
 output "kms_deletion_protection" {

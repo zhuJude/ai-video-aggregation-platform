@@ -35,6 +35,9 @@ module "security" {
   name                   = local.stack_name
   region                 = var.region
   account_id             = var.account_id
+  vpc_id                 = module.network.vpc_id
+  vswitch_ids            = module.network.data_vswitch_ids
+  zones                  = var.availability_zones
   rrsa_oidc_provider_arn = var.rrsa_oidc_provider_arn
   oss_bucket_name        = "ai-video-production-assets"
   rocketmq_instance_id   = "rmq-ai-video-production"
