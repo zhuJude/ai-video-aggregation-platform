@@ -1,5 +1,5 @@
 {
-  "name": "@repo/service-kit",
+  "name": "@repo/testkit",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -13,15 +13,7 @@
     "build": "tsc -p tsconfig.json",
     "lint": "eslint src test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
-  },
-  "dependencies": {
-    "@nestjs/common": "12.0.1",
-    "@nestjs/core": "12.0.1",
-    "@repo/contracts": "workspace:*",
-    "fastify": "5.6.2",
-    "reflect-metadata": "0.2.2",
-    "rxjs": "7.8.2"
+    "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --coverage --passWithNoTests"
   }
 }
