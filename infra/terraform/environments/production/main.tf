@@ -72,4 +72,3 @@ output "state_policy" {
     key       = "ai-video-platform/production/terraform.tfstate"
   }
 }
-
