@@ -1,0 +1,85 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Provider health",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min by (provider) (reporting_service_provider_health)",
+          "legendFormat": "{{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Provider p95 latency",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, provider, operation) (rate(reporting_service_provider_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{provider}} {{operation}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Provider errors",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider, status_class) (rate(reporting_service_provider_request_duration_seconds_count{status_class=~\"4xx|5xx\"}[5m]))",
+          "legendFormat": "{{provider}} {{status_class}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Circuit state",
+      "type": "state-timeline",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "provider_circuit_state",
+          "legendFormat": "{{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Balance",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "reporting_service_provider_balance_minor",
+          "legendFormat": "{{provider}} {{currency}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Provider cost",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider) (increase(provider_cost_minor_total[1h]))",
+          "legendFormat": "{{provider}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 40,
+  "tags": ["provider", "operations"],
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "title": "Provider Health and Cost",
+  "uid": "provider-health"
+}

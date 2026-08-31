@@ -1,0 +1,104 @@
+groups:
+  - name: platform-p0
+    interval: 30s
+    rules:
+      - alert: WalletLedgerMismatch
+        expr: max(reporting_service_wallet_reconciliation_mismatch) > 0
+        for: 0m
+        labels:
+          severity: P0
+          owner: finance-platform
+          dedup_key: wallet-ledger-mismatch
+        annotations:
+          summary: Wallet ledger reconciliation is not balanced
+          runbook_url: /docs/runbooks/observability#walletledgermismatch
+          resolve_policy: healthy_window
+          healthy_confirmation: 15m
+      - alert: DuplicatePaymentEffect
+        expr: sum(increase(reporting_service_payment_effects_total{outcome="duplicate_effect"}[5m])) > 0
+        for: 0m
+        labels:
+          severity: P0
+          owner: payments
+          dedup_key: duplicate-payment-effect
+        annotations:
+          summary: A duplicate payment produced a second business effect
+          runbook_url: /docs/runbooks/observability#duplicatepaymenteffect
+          resolve_policy: healthy_window
+          healthy_confirmation: 30m
+      - alert: CoreApiUnavailable
+        expr: min_over_time(up{tier="core"}[2m]) == 0
+        for: 2m
+        labels:
+          severity: P0
+          owner: platform-sre
+          dedup_key: core-api-unavailable
+        annotations:
+          summary: A core platform API is unavailable
+          runbook_url: /docs/runbooks/observability#coreapiunavailable
+          resolve_policy: healthy_window
+          healthy_confirmation: 15m
+
+  - name: platform-p1-p3
+    interval: 30s
+    rules:
+      - alert: PaymentFailureSpike
+        expr: sum(rate(payment_requests_total{status_class=~"4xx|5xx"}[5m])) / clamp_min(sum(rate(payment_requests_total[5m])), 1) > 0.10
+        for: 5m
+        labels:
+          severity: P1
+          owner: payments
+          dedup_key: payment-failure-spike
+        annotations:
+          summary: Payment failures exceed ten percent
+          runbook_url: /docs/runbooks/observability#paymentfailurespike
+      - alert: QueueStalled
+        expr: max(reporting_service_message_lag_seconds{consumer="reporting"}) > 300 and sum(rate(reporting_service_task_effects_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: P1
+          owner: platform-sre
+          dedup_key: reporting-queue-stalled
+        annotations:
+          summary: Reporting queue is lagging without forward progress
+          runbook_url: /docs/runbooks/observability#queuestalled
+      - alert: ProviderBalanceLow
+        expr: min by (provider, currency) (reporting_service_provider_balance_minor) < 100000
+        for: 10m
+        labels:
+          severity: P2
+          owner: provider-operations
+          dedup_key: provider-balance-low
+        annotations:
+          summary: Provider balance is below the operating threshold
+          runbook_url: /docs/runbooks/observability#providerbalancelow
+      - alert: ReportingProjectionLagHigh
+        expr: max(reporting_service_projection_lag_seconds) > 120
+        for: 10m
+        labels:
+          severity: P2
+          owner: data-platform
+          dedup_key: reporting-projection-lag
+        annotations:
+          summary: Reporting projections are stale
+          runbook_url: /docs/runbooks/observability#projection-lag
+      - alert: ReportingProjectionError
+        expr: sum(increase(reporting_service_projection_event_errors_total[10m])) > 0
+        for: 1m
+        labels:
+          severity: P2
+          owner: data-platform
+          dedup_key: reporting-projection-error
+        annotations:
+          summary: Reporting event projection failed
+          runbook_url: /docs/runbooks/observability#poison-event
+      - alert: MarginBelowGuardrail
+        expr: reporting_service_margin_numerator_minor / clamp_min(reporting_service_margin_denominator_minor, 1) < 0.10
+        for: 30m
+        labels:
+          severity: P3
+          owner: finance-operations
+          dedup_key: margin-below-guardrail
+        annotations:
+          summary: Recognized margin is below the operating guardrail
+          runbook_url: /docs/runbooks/observability#marginbelowguardrail
