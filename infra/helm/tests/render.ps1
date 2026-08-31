@@ -45,4 +45,13 @@ $workerManifest = $workerRendered -join "`n"
 if ($workerManifest -notmatch 'kind:\s+ScaledObject') { throw 'KEDA ScaledObject missing' }
 if ($workerManifest -notmatch 'rocketmq') { throw 'RocketMQ KEDA trigger missing' }
 
+$canaryRendered = & helm template canary $chart -f $productionValues `
+  --set ingress.enabled=true `
+  --set ingress.canary.enabled=true `
+  --set ingress.canary.weight=10
+if ($LASTEXITCODE -ne 0) { throw 'helm template ALB canary render failed' }
+$canaryManifest = $canaryRendered -join "`n"
+if ($canaryManifest -notmatch 'alb\.ingress\.kubernetes\.io/canary:\s+"true"') { throw 'ALB canary marker missing' }
+if ($canaryManifest -notmatch 'alb\.ingress\.kubernetes\.io/canary-weight:\s+"10"') { throw 'ALB canary weight missing' }
+
 Write-Host 'Helm render policy tests passed.'

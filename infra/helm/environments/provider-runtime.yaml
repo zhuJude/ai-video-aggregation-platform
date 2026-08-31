@@ -14,5 +14,5 @@ keda:
     endpoint: rocketmq-vpc-endpoint
     topic: delayed-polling
     consumerGroup: provider-runtime
-    lagThreshold: "100"
-    activationLagThreshold: "10"
+    lagThreshold: '100'
+    activationLagThreshold: '10'

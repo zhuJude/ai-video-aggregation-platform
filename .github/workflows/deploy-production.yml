@@ -1,0 +1,287 @@
+name: deploy-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service/repository name to promote
+        required: true
+        type: string
+      commit_sha:
+        description: Full commit SHA approved for release
+        required: true
+        type: string
+      image_digest:
+        description: Immutable sha256 image digest
+        required: true
+        type: string
+      ingress_host:
+        description: Existing stable ALB Ingress host
+        required: true
+        type: string
+      ingress_path:
+        description: Existing stable ALB Ingress path
+        required: true
+        default: /
+        type: string
+      plan_run_id:
+        description: GitHub Actions run containing terraform-plan-production
+        required: true
+        type: string
+      plan_sha256:
+        description: Approved SHA-256 of production.tfplan
+        required: true
+        type: string
+      backup_reference:
+        description: Verified RDS backup ID created before this deployment
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production-${{ inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on:
+      group: ack-vpc
+      labels: linux
+    environment: production
+    timeout-minutes: 120
+    env:
+      ALICLOUD_REGION: cn-hangzhou
+      ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      ACR_INSTANCE_ID: ${{ vars.ACR_INSTANCE_ID }}
+      ACK_CLUSTER_ID: ${{ vars.PRODUCTION_ACK_CLUSTER_ID }}
+      SERVICE: ${{ inputs.service }}
+      DIGEST: ${{ inputs.image_digest }}
+      COMMIT_SHA: ${{ inputs.commit_sha }}
+      PLAN_SHA256: ${{ inputs.plan_sha256 }}
+      BACKUP_REFERENCE: ${{ inputs.backup_reference }}
+      INGRESS_HOST: ${{ inputs.ingress_host }}
+      INGRESS_PATH: ${{ inputs.ingress_path }}
+    steps:
+      - name: Check out approved commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Validate immutable release inputs and budget prerequisite
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SERVICE" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]]
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$COMMIT_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$PLAN_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$BACKUP_REFERENCE" =~ ^[a-zA-Z0-9-]+$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT_SHA"
+          test "${{ vars.BUDGET_ALERTS_ACTIVE }}" = "true"
+
+      - name: Download approved Terraform plan attachment
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-production
+          path: terraform-plan
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify attached Terraform plan checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$PLAN_SHA256" "terraform-plan/production.tfplan" |
+            sha256sum --check --strict
+          test -s terraform-plan/production-plan.txt
+          if grep -Eq '(^|[[:space:]])(destroy|delete)([[:space:]]|$)' terraform-plan/production-plan.txt; then
+            echo 'Destructive infrastructure changes require a separate reviewed change window.' >&2
+            exit 1
+          fi
+
+      - name: Exchange GitHub OIDC for a short-lived production role
+        id: aliyun-oidc
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ vars.PRODUCTION_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALICLOUD_GITHUB_OIDC_PROVIDER_ARN }}
+          role-session-name: production-${{ github.run_id }}
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+
+      - name: Install deployment tools
+        uses: aliyun/setup-aliyun-cli-action@v1
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.21.0
+      - uses: sigstore/cosign-installer@v3.8.2
+        with:
+          cosign-release: v2.4.3
+
+      - name: Configure private ACK context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/kube"
+          aliyun cs describe-cluster-user-kubeconfig \
+            --cluster-id "$ACK_CLUSTER_ID" \
+            --region "$ALICLOUD_REGION" \
+            --private-ip-address true |
+            jq -er '.config' > "$RUNNER_TEMP/kube/config"
+          chmod 600 "$RUNNER_TEMP/kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >> "$GITHUB_ENV"
+
+      - name: Authenticate to private ACR with temporary credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_json="$(aliyun cr GetAuthorizationToken \
+            --InstanceId "$ACR_INSTANCE_ID" \
+            --RegionId "$ALICLOUD_REGION")"
+          username="$(jq -er '.TempUsername // .tempUsername' <<<"$auth_json")"
+          token="$(jq -er '.AuthorizationToken // .authorizationToken' <<<"$auth_json")"
+          printf '%s' "$token" | docker login "$ACR_REGISTRY" --username "$username" --password-stdin
+
+      - name: Verify signature and release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_ref="$ACR_REGISTRY/platform/$SERVICE@$DIGEST"
+          cosign verify "$image_ref" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/deploy-staging.yml@refs/heads/codex/integration$"
+
+      - name: verify-backup is restorable and complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          backup_json="$(aliyun rds DescribeBackups \
+            --RegionId "$ALICLOUD_REGION" \
+            --DBInstanceId "${{ vars.PRODUCTION_RDS_INSTANCE_ID }}" \
+            --BackupId "$BACKUP_REFERENCE")"
+          jq -e --arg backup_id "$BACKUP_REFERENCE" '
+            [.Items.Backup[]? |
+              select((.BackupId | tostring) == $backup_id) |
+              select(.BackupStatus == "Success")] | length == 1
+          ' <<<"$backup_json"
+
+      - name: Run expand-only database migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_ref="$ACR_REGISTRY/platform/$SERVICE@$DIGEST"
+          job="$SERVICE-migrate-${{ github.run_id }}"
+          kubectl delete job "$job" --namespace platform --ignore-not-found
+          kubectl create --namespace platform -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: $job
+          spec:
+            backoffLimit: 1
+            ttlSecondsAfterFinished: 86400
+            template:
+              spec:
+                serviceAccountName: $SERVICE
+                restartPolicy: Never
+                containers:
+                  - name: migrate
+                    image: $image_ref
+                    command: ["/app/bin/migrate", "up", "--expand-only"]
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      runAsNonRoot: true
+                      capabilities:
+                        drop: ["ALL"]
+          EOF
+          kubectl wait --namespace platform --for=condition=complete "job/$job" --timeout=15m
+
+      - name: Canary 10 percent, 50 percent, 100 percent and promote
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          image_ref="$ACR_REGISTRY/platform/$SERVICE@$DIGEST"
+          previous_revision="$(helm history "$SERVICE" --namespace platform -o json |
+            jq -er 'map(select(.status == "deployed")) | last | .revision')"
+          canary_release="$SERVICE-canary"
+          canary_ingress="$SERVICE-canary"
+
+          rollback() {
+            status=$?
+            trap - ERR
+            set +e
+            kubectl annotate ingress "$canary_ingress" --namespace platform \
+              alb.ingress.kubernetes.io/canary-weight="0" --overwrite
+            helm uninstall "$canary_release" --namespace platform --wait
+            helm rollback "$SERVICE" "$previous_revision" --namespace platform --wait --timeout 15m
+            exit "$status"
+          }
+          trap rollback ERR
+
+          values=( -f infra/helm/environments/production.yaml )
+          if [[ "$SERVICE" == "provider-runtime" ]]; then
+            values+=( -f infra/helm/environments/provider-runtime.yaml )
+          fi
+
+          helm upgrade --install "$canary_release" infra/helm/platform-service \
+            --namespace platform "${values[@]}" \
+            --set-string fullnameOverride="$canary_release" \
+            --set-string image.repository="$ACR_REGISTRY/platform/$SERVICE" \
+            --set-string image.digest="$DIGEST" \
+            --set-string serviceAccount.roleArn="${{ vars.PRODUCTION_SERVICE_ROLE_PREFIX }}$SERVICE" \
+            --set ingress.enabled=true \
+            --set-string ingress.host="$INGRESS_HOST" \
+            --set-string ingress.path="$INGRESS_PATH" \
+            --set ingress.canary.enabled=true \
+            --set ingress.canary.weight=10 \
+            --wait --atomic --timeout 15m
+
+          for weight in 10 50 100; do
+            kubectl annotate ingress "$canary_ingress" --namespace platform \
+              alb.ingress.kubernetes.io/canary-weight="$weight" --overwrite
+            kubectl rollout status "deployment/$canary_release" --namespace platform --timeout=10m
+            kubectl exec "deployment/$canary_release" --namespace platform -- \
+              /app/bin/smoke-test --url http://127.0.0.1:3000/health/ready
+            sleep 300
+            curl --fail --show-error --retry 6 --retry-all-errors \
+              "https://$INGRESS_HOST$INGRESS_PATH"
+          done
+
+          helm upgrade "$SERVICE" infra/helm/platform-service \
+            --namespace platform "${values[@]}" \
+            --set-string fullnameOverride="$SERVICE" \
+            --set-string image.repository="$ACR_REGISTRY/platform/$SERVICE" \
+            --set-string image.digest="$DIGEST" \
+            --set-string serviceAccount.roleArn="${{ vars.PRODUCTION_SERVICE_ROLE_PREFIX }}$SERVICE" \
+            --set ingress.enabled=true \
+            --set-string ingress.host="$INGRESS_HOST" \
+            --set-string ingress.path="$INGRESS_PATH" \
+            --set ingress.canary.enabled=false \
+            --wait --atomic --timeout 15m
+          kubectl rollout status "deployment/$SERVICE" --namespace platform --timeout=10m
+          helm uninstall "$canary_release" --namespace platform --wait
+          trap - ERR
+
+      - name: Record production deployment evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf 'commit=%s\n' "$COMMIT_SHA"
+            printf 'service=%s\n' "$SERVICE"
+            printf 'digest=%s\n' "$DIGEST"
+            printf 'terraform_plan_sha256=%s\n' "$PLAN_SHA256"
+            printf 'backup_reference=%s\n' "$BACKUP_REFERENCE"
+          } > "$RUNNER_TEMP/deployment-evidence.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-deployment-${{ github.run_id }}
+          path: ${{ runner.temp }}/deployment-evidence.txt
+          retention-days: 365

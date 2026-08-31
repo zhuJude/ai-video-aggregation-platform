@@ -6,8 +6,8 @@ image:
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
-nameOverride: ""
-fullnameOverride: ""
+nameOverride: ''
+fullnameOverride: ''
 
 serviceAccount:
   create: true
@@ -37,6 +37,15 @@ service:
   type: ClusterIP
   port: 80
   targetPort: 3000
+
+ingress:
+  enabled: false
+  className: alb
+  host: api.example.cn
+  path: /
+  canary:
+    enabled: false
+    weight: 0
 
 containerPort: 3000
 terminationGracePeriodSeconds: 45
@@ -83,7 +92,7 @@ autoscaling:
   targetCPUUtilizationPercentage: 70
   qps:
     enabled: true
-    averageValue: "50"
+    averageValue: '50'
 
 keda:
   enabled: false
@@ -94,11 +103,11 @@ keda:
   prometheus:
     serverAddress: http://ack-prometheus-server.monitoring.svc:9090
   rocketmq:
-    endpoint: ""
+    endpoint: ''
     topic: delayed-polling
     consumerGroup: provider-runtime
-    lagThreshold: "100"
-    activationLagThreshold: "10"
+    lagThreshold: '100'
+    activationLagThreshold: '10'
 
 networkPolicy:
   enabled: true
