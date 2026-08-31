@@ -1,0 +1,132 @@
+replicaCount: 2
+
+image:
+  repository: registry-vpc.cn-hangzhou.aliyuncs.com/platform/service
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  roleArn: acs:ram::1234567890123456:role/ai-video-service
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+containerPort: 3000
+terminationGracePeriodSeconds: 45
+
+probes:
+  startup:
+    path: /health/startup
+    failureThreshold: 30
+    periodSeconds: 5
+  liveness:
+    path: /health/live
+    failureThreshold: 3
+    periodSeconds: 10
+  readiness:
+    path: /health/ready
+    failureThreshold: 3
+    periodSeconds: 5
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+env:
+  - name: NODE_ENV
+    value: production
+
+kmsSecrets:
+  enabled: true
+  secretProviderClass: ai-video-service-kms
+  mountPath: /var/run/secrets/platform
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  qps:
+    enabled: true
+    averageValue: "50"
+
+keda:
+  enabled: false
+  minReplicaCount: 1
+  maxReplicaCount: 50
+  pollingInterval: 15
+  cooldownPeriod: 300
+  prometheus:
+    serverAddress: http://ack-prometheus-server.monitoring.svc:9090
+  rocketmq:
+    endpoint: ""
+    topic: delayed-polling
+    consumerGroup: provider-runtime
+    lagThreshold: "100"
+    activationLagThreshold: "10"
+
+networkPolicy:
+  enabled: true
+  ingressNamespaceLabels:
+    platform.ai-video.io/access: allowed
+  egress:
+    namespaceLabels:
+      platform.ai-video.io/data-access: allowed
+    cidrs:
+      - 10.20.0.0/16
+    providerCidrs:
+      - 100.64.0.0/10
+    ports:
+      - protocol: TCP
+        port: 443
+      - protocol: TCP
+        port: 5432
+      - protocol: TCP
+        port: 6379
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
