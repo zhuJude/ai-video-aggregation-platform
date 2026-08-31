@@ -21,21 +21,25 @@ export interface ServiceTransportResponse {
   readonly statusCode: number;
 }
 
-export type ServiceTransport = (
-  request: ServiceTransportRequest,
-) => Promise<ServiceTransportResponse>;
+export interface ServiceTransport {
+  (request: ServiceTransportRequest): Promise<ServiceTransportResponse>;
+  close?(): Promise<void>;
+}
 
 export interface ServiceClientOptions {
   readonly baseUrl: string;
   readonly circuitFailureThreshold?: number;
   readonly circuitResetMs?: number;
   readonly requestTimeoutMs?: number;
+  readonly onCircuitOpen?: () => void;
+  readonly onTimeout?: () => void;
   readonly transport?: ServiceTransport;
 }
 
 export interface ServiceRequest {
   readonly body?: unknown;
   readonly context: ServiceRequestContext;
+  readonly idempotencyKey?: string;
   readonly method: ServiceMethod;
   readonly path: string;
 }
@@ -69,7 +73,7 @@ function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
 
 function createUndiciTransport(): ServiceTransport {
   const dispatcher = new Agent({ connectTimeout: 500 });
-  return async (input) => {
+  const transport: ServiceTransport = async (input) => {
     const response = await undiciRequest(input.url, {
       ...(input.body === undefined ? {} : { body: input.body }),
       bodyTimeout: 2_000,
@@ -89,6 +93,8 @@ function createUndiciTransport(): ServiceTransport {
     }
     return { body, statusCode: response.statusCode };
   };
+  transport.close = () => dispatcher.destroy();
+  return transport;
 }
 
 export class ServiceClient {
@@ -96,6 +102,8 @@ export class ServiceClient {
   private readonly failureThreshold: number;
   private readonly resetMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly onCircuitOpen: () => void;
+  private readonly onTimeout: () => void;
   private readonly transport: ServiceTransport;
   private consecutiveFailures = 0;
   private openedAt: number | undefined;
@@ -105,6 +113,8 @@ export class ServiceClient {
     this.failureThreshold = options.circuitFailureThreshold ?? 5;
     this.resetMs = options.circuitResetMs ?? 30_000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 2_000;
+    this.onCircuitOpen = options.onCircuitOpen ?? (() => undefined);
+    this.onTimeout = options.onTimeout ?? (() => undefined);
     this.transport = options.transport ?? createUndiciTransport();
   }
 
@@ -127,6 +137,9 @@ export class ServiceClient {
             headers: {
               authorization: `Bearer ${input.context.subjectAssertion}`,
               ...(input.body === undefined ? {} : { 'content-type': 'application/json' }),
+              ...(input.idempotencyKey === undefined
+                ? {}
+                : { 'idempotency-key': input.idempotencyKey }),
               'x-correlation-id': input.context.correlationId,
               'x-trace-id': input.context.traceId,
             },
@@ -151,16 +164,26 @@ export class ServiceClient {
       }
     }
 
+    if (lastError instanceof PublicApiError && !lastError.retryable) {
+      this.consecutiveFailures = 0;
+      throw lastError;
+    }
     this.consecutiveFailures += 1;
     if (this.consecutiveFailures >= this.failureThreshold) {
       this.openedAt = Date.now();
+      this.onCircuitOpen();
     }
     if (lastError instanceof RequestTimeoutError) {
+      this.onTimeout();
       throw new PublicApiError('SERVICE_TIMEOUT', '依赖服务响应超时', true);
     }
     if (lastError instanceof PublicApiError) {
       throw lastError;
     }
     throw new PublicApiError('UPSTREAM_UNAVAILABLE', '依赖服务暂时不可用', true);
+  }
+
+  async close(): Promise<void> {
+    await this.transport.close?.();
   }
 }

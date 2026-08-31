@@ -17,6 +17,7 @@ export interface ReadinessResult {
 
 export interface GatewayAppOptions {
   readonly allowedOrigins?: readonly string[];
+  readonly configure?: (app: FastifyInstance) => Promise<void> | void;
   readonly exposeTestRoutes?: boolean;
   readonly metrics?: GatewayMetrics;
   readonly readiness?: () => Promise<ReadinessResult>;
@@ -102,6 +103,7 @@ export async function createGatewayApp(options: GatewayAppOptions = {}): Promise
   app.get('/metrics', (_request, reply) =>
     Promise.resolve(reply.type('text/plain; version=0.0.4; charset=utf-8').send(metrics.render())),
   );
+  await options.configure?.(app);
   nestApp.useGlobalFilters(new GatewayErrorFilter());
   await nestApp.init();
   await app.ready();

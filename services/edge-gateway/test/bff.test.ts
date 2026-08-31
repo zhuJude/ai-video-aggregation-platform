@@ -79,6 +79,27 @@ describe('ServiceClient', () => {
     ).rejects.toMatchObject({ code: 'UPSTREAM_UNAVAILABLE' });
     expect(transport).toHaveBeenCalledOnce();
   });
+
+  it('does not open the circuit for non-retryable upstream client errors', async () => {
+    const transport: ServiceTransport = vi.fn().mockResolvedValue({
+      body: { code: 'INVALID_REQUEST' },
+      statusCode: 400,
+    });
+    const client = new ServiceClient({
+      baseUrl: 'http://generation.internal',
+      circuitFailureThreshold: 1,
+      transport,
+    });
+
+    await expect(
+      client.request({ context: requestContext, method: 'POST', path: '/v1/tasks' }),
+    ).rejects.toMatchObject({ code: 'UPSTREAM_ERROR', retryable: false });
+    await expect(
+      client.request({ context: requestContext, method: 'POST', path: '/v1/tasks' }),
+    ).rejects.toMatchObject({ code: 'UPSTREAM_ERROR', retryable: false });
+
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('BFF policies', () => {

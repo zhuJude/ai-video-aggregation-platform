@@ -10,7 +10,9 @@ const PUBLIC_ERROR_STATUSES: Readonly<Record<string, number>> = {
   IDEMPOTENCY_CONFLICT: 409,
   IDEMPOTENCY_REQUIRED: 400,
   IDEMPOTENCY_UNAVAILABLE: 503,
+  INVALID_ADMIN_TOKEN: 401,
   INVALID_IDEMPOTENCY_KEY: 400,
+  INVALID_USER_TOKEN: 401,
   NOT_FOUND: 404,
   PAYLOAD_TOO_LARGE: 413,
   RATE_LIMITED: 429,
@@ -32,15 +34,22 @@ export class GatewayErrorFilter implements ExceptionFilter {
     const http = host.switchToHttp();
     const request = http.getRequest<FastifyRequest>();
     const reply = http.getResponse<FastifyReply>();
-    const normalizedError = normalizeFrameworkError(error);
-    const body = toApiError(normalizedError, requestTraceId(request));
-    const statusCode =
-      normalizedError instanceof PublicApiError
-        ? (PUBLIC_ERROR_STATUSES[normalizedError.code] ?? 400)
-        : 500;
-
-    void reply.status(statusCode).type('application/json').send(body);
+    sendGatewayError(error, request, reply);
   }
+}
+
+export function sendGatewayError(
+  error: unknown,
+  request: FastifyRequest,
+  reply: FastifyReply,
+): void {
+  const normalizedError = normalizeFrameworkError(error);
+  const body = toApiError(normalizedError, requestTraceId(request));
+  const statusCode =
+    normalizedError instanceof PublicApiError
+      ? (PUBLIC_ERROR_STATUSES[normalizedError.code] ?? 400)
+      : 500;
+  void reply.status(statusCode).type('application/json').send(body);
 }
 
 function normalizeFrameworkError(error: unknown): unknown {

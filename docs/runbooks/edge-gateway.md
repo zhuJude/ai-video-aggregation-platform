@@ -11,8 +11,9 @@
 - `CORS_ALLOWED_ORIGINS`：逗号分隔的精确 HTTPS Origin。
 - `TRUST_PROXY_CIDRS`：仅列出实际 WAF/ALB 出口 CIDR；禁止配置为任意代理。
 - `REDIS_URL`：Tair/Redis TLS 连接地址。
-- `USER_JWT_PUBLIC_KEYS`、`ADMIN_JWT_PUBLIC_KEYS`：分别固定 identity-service 与 iam-service 的公钥集。
-- `GATEWAY_SIGNING_PRIVATE_KEY`：Gateway 内部主体断言签名密钥的 KMS 注入值。
+- `USER_JWT_PUBLIC_KEYS`、`ADMIN_JWT_PUBLIC_KEYS`：JSON JWKS（`{"keys":[...]}`），分别固定 identity-service 与 iam-service 的非对称公钥；每把密钥必须带唯一 `kid` 和明确 `alg`，不得包含私钥材料。
+- `GATEWAY_SIGNING_PRIVATE_KEY`：单个 JSON JWK，必须包含非对称私钥、唯一 `kid` 和明确 `alg`。Gateway 用它签发 `iss=edge-gateway`、`aud=internal-services`、TTL 60 秒的内部主体断言。
+- `CATALOG_SERVICE_URL`、`GENERATION_SERVICE_URL`、`WALLET_SERVICE_URL`、`NOTIFICATION_SERVICE_URL`、`REPORTING_SERVICE_URL`、`OPERATIONS_SERVICE_URL`：对应内部服务的 HTTP(S) 基址，不得包含用户信息。
 - `SERVICE_DNS_NAMES`：所有必需内部服务 DNS 名称。
 - `HOST`（默认 `0.0.0.0`）与 `PORT`（默认 `3000`）。
 
@@ -47,6 +48,8 @@ P1：全站认证失败、Redis 导致敏感写入不可用、核心内部服务
 
 未知 `kid`、`alg=none`、错误 issuer/audience、缺少 `sid`、管理员缺少权限或数据范围时均拒绝，不临时放宽验证。
 
+用户令牌固定为 `iss=identity-service`、`aud=user-web`；管理员令牌固定为 `iss=iam-service`、`aud=admin-web`。轮换前用实际令牌验证两个 audience 不可交叉使用，并确认内部服务只收到 Gateway 断言而不是浏览器 Bearer Token。
+
 ## Redis/Tair 故障
 
 短信、任务、支付、退款和点数调整必须 fail-closed，返回稳定的可重试错误；目录只读请求允许 fail-open，并增加降级指标。不得改为进程内限流或跳过幂等冲突检查，因为多 Pod 下会产生重复效果。
@@ -60,6 +63,8 @@ P1：全站认证失败、Redis 导致敏感写入不可用、核心内部服务
 ## SSE 饱和或断线
 
 每用户最多五条任务事件流，15 秒心跳，空闲两分钟后发送重连指令并关闭。确认 ALB/WAF 已禁用 SSE 响应缓冲和缓存，空闲超时高于心跳周期，并透传 `Last-Event-ID`。连接数不下降时抓取 Pod 连接指标，验证客户端断开会 abort 上游、清除 heartbeat/idle timer 并释放连接槽；必要时滚动单个异常 Pod。
+
+Gateway 在打开流前调用 generation-service 的 `/internal/v1/tasks/{taskId}/ownership`，随后代理 `/internal/v1/tasks/{taskId}/events`；两次调用都必须携带同一内部主体断言和 Trace/Correlation 元数据。generation-service 发布内部路由时必须校验断言并以主体 `sub` 做所有权判断，不能信任浏览器传入的用户标识。
 
 ## WAF/ALB 代理头
 

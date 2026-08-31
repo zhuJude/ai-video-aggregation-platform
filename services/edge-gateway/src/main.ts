@@ -2,8 +2,20 @@ import { lookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
 import { Redis } from 'ioredis';
 import { createGatewayApp, type ReadinessResult } from './app.js';
+import { registerGatewayRoutes } from './runtime/gateway-routes.js';
+import { GatewayMetrics } from './runtime/metrics.js';
+import { createRuntimeRouteDependencies } from './runtime/runtime-dependencies.js';
 
-interface RuntimeConfig {
+export interface RuntimeServiceUrls {
+  readonly catalog: string;
+  readonly generation: string;
+  readonly notification: string;
+  readonly operations: string;
+  readonly reporting: string;
+  readonly wallet: string;
+}
+
+export interface RuntimeConfig {
   readonly adminJwtPublicKeys: string;
   readonly allowedOrigins: string[];
   readonly gatewaySigningPrivateKey: string;
@@ -11,8 +23,26 @@ interface RuntimeConfig {
   readonly port: number;
   readonly redisUrl: string;
   readonly serviceDnsNames: string[];
+  readonly serviceUrls: RuntimeServiceUrls;
   readonly trustProxyCidrs: string[];
   readonly userJwtPublicKeys: string;
+}
+
+function serviceUrl(env: NodeJS.ProcessEnv, name: string): string {
+  const value = required(env, name);
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.username.length > 0 ||
+      url.password.length > 0
+    ) {
+      throw new Error('untrusted URL');
+    }
+    return url.toString();
+  } catch {
+    throw new Error(`invalid ${name}`);
+  }
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -46,6 +76,14 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     port,
     redisUrl: required(env, 'REDIS_URL'),
     serviceDnsNames,
+    serviceUrls: {
+      catalog: serviceUrl(env, 'CATALOG_SERVICE_URL'),
+      generation: serviceUrl(env, 'GENERATION_SERVICE_URL'),
+      notification: serviceUrl(env, 'NOTIFICATION_SERVICE_URL'),
+      operations: serviceUrl(env, 'OPERATIONS_SERVICE_URL'),
+      reporting: serviceUrl(env, 'REPORTING_SERVICE_URL'),
+      wallet: serviceUrl(env, 'WALLET_SERVICE_URL'),
+    },
     trustProxyCidrs,
     userJwtPublicKeys: required(env, 'USER_JWT_PUBLIC_KEYS'),
   };
@@ -95,14 +133,21 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<v
     maxRetriesPerRequest: 1,
   });
   redis.on('error', () => undefined);
+  void redis.connect().catch(() => undefined);
+  const metrics = new GatewayMetrics();
+  const routeDependencies = await createRuntimeRouteDependencies(config, redis, metrics);
   const app = await createGatewayApp({
     allowedOrigins: config.allowedOrigins,
+    configure: (instance) => {
+      registerGatewayRoutes(instance, routeDependencies);
+      instance.addHook('onClose', async () => {
+        await routeDependencies.close();
+        redis.disconnect(false);
+      });
+    },
+    metrics,
     readiness: createReadinessProbe(config, redis),
     trustProxy: config.trustProxyCidrs,
-  });
-  app.addHook('onClose', () => {
-    redis.disconnect(false);
-    return Promise.resolve();
   });
   await app.listen({ host: config.host, port: config.port });
 
