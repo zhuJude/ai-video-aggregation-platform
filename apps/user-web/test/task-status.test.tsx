@@ -68,7 +68,6 @@ it('reconnects with Last-Event-ID and falls back to polling', async () => {
     .mockRejectedValueOnce(new Error('stream-1'))
     .mockRejectedValueOnce(new Error('stream-2'))
     .mockRejectedValueOnce(new Error('stream-3'))
-    .mockRejectedValueOnce(new Error('stream-4'))
     .mockResolvedValueOnce(
       Response.json({
         ...detailFixture,
@@ -80,8 +79,9 @@ it('reconnects with Last-Event-ID and falls back to polling', async () => {
   render(<TaskStatus taskId="task-1" initial={queuedTask} />);
   await vi.advanceTimersByTimeAsync(1_000);
   await vi.advanceTimersByTimeAsync(2_000);
-  await vi.advanceTimersByTimeAsync(4_000);
   await vi.advanceTimersByTimeAsync(5_000);
+
+  expect(mockFetch).toHaveBeenCalledTimes(4);
 
   const finalInput = mockFetch.mock.calls.at(-1)?.[0];
   const finalUrl =
@@ -92,9 +92,9 @@ it('reconnects with Last-Event-ID and falls back to polling', async () => {
         : finalInput?.url;
   expect(finalUrl).toMatch(/\/v1\/tasks\/task-1$/);
   expect(
-    mockFetch.mock.calls.some(
-      ([, init]) => new Headers(init?.headers).get('Last-Event-ID') === 'event-1',
-    ),
+    mockFetch.mock.calls
+      .slice(0, 3)
+      .every(([, init]) => new Headers(init?.headers).get('Last-Event-ID') === 'event-1'),
   ).toBe(true);
 });
 
@@ -124,14 +124,13 @@ it.each([
   expect(() => parseTaskStatusSnapshot(payload)).toThrow();
 });
 
-it('uses 1s/2s/4s reconnects then polls the Gateway every five seconds', async () => {
+it('falls back after three stream failures then polls the Gateway every five seconds', async () => {
   vi.useFakeTimers();
   const mockFetch = vi
     .fn<typeof fetch>()
     .mockRejectedValueOnce(new Error('stream-1'))
     .mockRejectedValueOnce(new Error('stream-2'))
     .mockRejectedValueOnce(new Error('stream-3'))
-    .mockRejectedValueOnce(new Error('stream-4'))
     .mockResolvedValue(
       Response.json({
         ...detailFixture,
@@ -150,19 +149,13 @@ it('uses 1s/2s/4s reconnects then polls the Gateway every five seconds', async (
   expect(mockFetch).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(2_000);
   expect(mockFetch).toHaveBeenCalledTimes(3);
-  await vi.advanceTimersByTimeAsync(3_999);
+  await vi.advanceTimersByTimeAsync(4_999);
   expect(mockFetch).toHaveBeenCalledTimes(3);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1);
   });
   expect(mockFetch).toHaveBeenCalledTimes(4);
-  await vi.advanceTimersByTimeAsync(4_999);
-  expect(mockFetch).toHaveBeenCalledTimes(4);
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(1);
-  });
-  expect(mockFetch).toHaveBeenCalledTimes(5);
-  const pollInput = mockFetch.mock.calls[4]?.[0];
+  const pollInput = mockFetch.mock.calls[3]?.[0];
   const pollUrl =
     typeof pollInput === 'string'
       ? pollInput
@@ -413,7 +406,7 @@ it('shows exact BigInt financial state, normalized reasons and an accessible tim
   expect(formatTaskDate('2026-08-31T10:00:00.000Z')).toBe('2026-08-31 18:00:00');
 });
 
-it('gates cancellation and prevents duplicate clicks while the command is pending', async () => {
+it('gates cancellation and prevents duplicate clicks while pending or after acceptance', async () => {
   const user = userEvent.setup();
   let resolveCancel!: (value: unknown) => void;
   const cancelTask = vi.fn<TaskGateway['cancelTask']>(
@@ -429,7 +422,13 @@ it('gates cancellation and prevents duplicate clicks while the command is pendin
   expect(cancelTask).toHaveBeenCalledTimes(1);
   expect(cancelTask.mock.calls[0]?.[1].idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
 
-  resolveCancel({ ...detailFixture.statusSnapshot, cancelAllowed: false, revision: 9 });
+  resolveCancel({
+    ok: true,
+    snapshot: { ...detailFixture.statusSnapshot, cancelAllowed: false, revision: 9 },
+  });
+  expect(await screen.findByText(/取消请求已接受/)).toBeVisible();
+  expect(screen.queryByRole('button', { name: '取消任务' })).not.toBeInTheDocument();
+  expect(cancelTask).toHaveBeenCalledTimes(1);
   view.unmount();
   render(
     <TaskDetailView
@@ -478,7 +477,9 @@ it('does not invent a terminal state when cancellation fails', async () => {
 
 it('reuses one cancellation idempotency key after an ambiguous response failure', async () => {
   const user = userEvent.setup();
-  const cancelTask = vi.fn<TaskGateway['cancelTask']>().mockRejectedValue(new Error('network'));
+  const cancelTask = vi
+    .fn<TaskGateway['cancelTask']>()
+    .mockResolvedValue({ ok: false, outcome: 'UNCERTAIN' });
   render(
     <TaskDetailView detail={detailFixture} gateway={{ ...taskGateway, cancelTask }} live={false} />,
   );
@@ -489,6 +490,25 @@ it('reuses one cancellation idempotency key after an ambiguous response failure'
 
   expect(cancelTask).toHaveBeenCalledTimes(2);
   expect(cancelTask.mock.calls[1]?.[1].idempotencyKey).toBe(
+    cancelTask.mock.calls[0]?.[1].idempotencyKey,
+  );
+});
+
+it('uses a fresh cancellation idempotency key after a definitive failure', async () => {
+  const user = userEvent.setup();
+  const cancelTask = vi
+    .fn<TaskGateway['cancelTask']>()
+    .mockResolvedValue({ ok: false, outcome: 'DEFINITIVE_FAILURE' });
+  render(
+    <TaskDetailView detail={detailFixture} gateway={{ ...taskGateway, cancelTask }} live={false} />,
+  );
+
+  await user.click(screen.getByRole('button', { name: '取消任务' }));
+  await screen.findByText(/任务状态未更改/);
+  await user.click(screen.getByRole('button', { name: '取消任务' }));
+
+  expect(cancelTask).toHaveBeenCalledTimes(2);
+  expect(cancelTask.mock.calls[1]?.[1].idempotencyKey).not.toBe(
     cancelTask.mock.calls[0]?.[1].idempotencyKey,
   );
 });
@@ -512,7 +532,10 @@ it('stops a live stream when cancellation supplies a newer API-declared terminal
   render(
     <TaskDetailView
       detail={detailFixture}
-      gateway={{ ...taskGateway, cancelTask: vi.fn().mockResolvedValue(terminal) }}
+      gateway={{
+        ...taskGateway,
+        cancelTask: vi.fn().mockResolvedValue({ ok: true, snapshot: terminal }),
+      }}
     />,
   );
 

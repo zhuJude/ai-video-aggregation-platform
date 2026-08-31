@@ -8,6 +8,14 @@ import type {
   TaskStatusSnapshot,
 } from './types';
 
+export class TaskGatewayCommandError extends Error {
+  readonly outcome = 'DEFINITIVE_FAILURE' as const;
+}
+
+export function classifyCancelTaskError(error: unknown): 'UNCERTAIN' | 'DEFINITIVE_FAILURE' {
+  return error instanceof TaskGatewayCommandError ? error.outcome : 'UNCERTAIN';
+}
+
 const fixtures: readonly TaskDetail[] = [
   {
     id: 'task-1',
@@ -223,12 +231,14 @@ export const taskGateway: TaskGateway = {
 
   async cancelTask(taskId, options): Promise<unknown> {
     if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(options.idempotencyKey)) {
-      throw new Error('INVALID_IDEMPOTENCY_KEY');
+      throw new TaskGatewayCommandError('INVALID_IDEMPOTENCY_KEY');
     }
     const existing = canceledByKey.get(options.idempotencyKey);
     if (existing) return Promise.resolve(structuredClone(existing));
     const task = fixtures.find((candidate) => candidate.id === taskId);
-    if (!task || !task.statusSnapshot.cancelAllowed) throw new Error('CANCEL_NOT_ALLOWED');
+    if (!task || !task.statusSnapshot.cancelAllowed) {
+      throw new TaskGatewayCommandError('CANCEL_NOT_ALLOWED');
+    }
     const canceled: TaskStatusSnapshot = {
       eventId: `${task.id}-cancel-${crypto.randomUUID()}`,
       revision: task.statusSnapshot.revision + 1,

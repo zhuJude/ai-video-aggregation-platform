@@ -7,8 +7,8 @@ import { cancelTaskAction, createRetryDraftAction } from '../../app/tasks/action
 import {
   formatPoints,
   formatTaskDate,
+  parseCancelTaskResult,
   parseRetryDraft,
-  parseTaskStatusSnapshot,
   reduceStatus,
 } from '../../lib/tasks/runtime';
 import type { TaskDetail, TaskGateway } from '../../lib/tasks/types';
@@ -38,19 +38,29 @@ export function TaskDetailView({
   const [retrying, setRetrying] = useState(false);
   const [feedback, setFeedback] = useState<string>();
   const cancelIdempotencyKey = useRef<string | undefined>(undefined);
+  const cancelAccepted = useRef(false);
 
   const cancel = async () => {
-    if (canceling || !status.cancelAllowed) return;
+    if (canceling || cancelAccepted.current || !status.cancelAllowed) return;
     setCanceling(true);
     setFeedback(undefined);
     try {
       cancelIdempotencyKey.current ??= crypto.randomUUID();
-      const next = parseTaskStatusSnapshot(
+      const result = parseCancelTaskResult(
         await gateway.cancelTask(detail.id, {
           idempotencyKey: cancelIdempotencyKey.current,
         }),
       );
-      setStatus((current) => reduceStatus(current, next));
+      if (!result.ok) {
+        if (result.outcome === 'DEFINITIVE_FAILURE') {
+          cancelIdempotencyKey.current = undefined;
+        }
+        setFeedback('取消请求未完成，任务状态未更改，请稍后重试。');
+        return;
+      }
+      cancelAccepted.current = true;
+      cancelIdempotencyKey.current = undefined;
+      setStatus((current) => reduceStatus(current, result.snapshot));
       setFeedback('取消请求已接受，费用将按任务快照规则处理。');
     } catch {
       setFeedback('取消请求未完成，任务状态未更改，请稍后重试。');
@@ -121,7 +131,7 @@ export function TaskDetailView({
       ) : null}
 
       <div className="task-detail-actions">
-        {status.cancelAllowed ? (
+        {status.cancelAllowed && !cancelAccepted.current ? (
           <button disabled={canceling} type="button" onClick={() => void cancel()}>
             {canceling ? '正在提交取消' : '取消任务'}
           </button>

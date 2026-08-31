@@ -1,6 +1,7 @@
 import { TaskStatusSchema } from '@repo/contracts/generation';
 
 import type {
+  CancelTaskResult,
   RetryDraft,
   TaskDetail,
   TaskFilters,
@@ -271,6 +272,22 @@ export function parseRetryDraft(value: unknown): { readonly draftId: string } {
   const draft = requireRecord(value, 'INVALID_RETRY_DRAFT');
   assertOnlyKeys(draft, ['draftId'], 'UNKNOWN_RETRY_DRAFT_FIELD');
   return { draftId: requireString(draft.draftId, 'INVALID_RETRY_DRAFT_ID') };
+}
+
+export function parseCancelTaskResult(value: unknown): CancelTaskResult {
+  const result = requireRecord(value, 'INVALID_CANCEL_RESULT');
+  if (result.ok === true) {
+    assertOnlyKeys(result, ['ok', 'snapshot'], 'UNKNOWN_CANCEL_RESULT_FIELD');
+    return { ok: true, snapshot: parseTaskStatusSnapshot(result.snapshot) };
+  }
+  if (result.ok === false) {
+    assertOnlyKeys(result, ['ok', 'outcome'], 'UNKNOWN_CANCEL_RESULT_FIELD');
+    if (result.outcome !== 'UNCERTAIN' && result.outcome !== 'DEFINITIVE_FAILURE') {
+      throw new Error('INVALID_CANCEL_OUTCOME');
+    }
+    return { ok: false, outcome: result.outcome };
+  }
+  throw new Error('INVALID_CANCEL_RESULT');
 }
 
 export function parseStoredRetryDraft(value: unknown): RetryDraft {

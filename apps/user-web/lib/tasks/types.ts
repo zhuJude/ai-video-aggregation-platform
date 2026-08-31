@@ -18,6 +18,13 @@ export interface TaskStatusSnapshot {
   readonly publicReason?: TaskPublicReason;
 }
 
+export type CancelTaskResult =
+  | { readonly ok: true; readonly snapshot: TaskStatusSnapshot }
+  | {
+      readonly ok: false;
+      readonly outcome: 'UNCERTAIN' | 'DEFINITIVE_FAILURE';
+    };
+
 export type TaskGenerationMode = CapabilityDocument['mode'];
 
 export interface TaskParameterSnapshotItem {
