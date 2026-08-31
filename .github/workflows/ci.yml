@@ -17,3 +17,4 @@ jobs:
       - run: corepack enable
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm verify
+      - run: docker compose -f infra/local/compose.yaml config --quiet
