@@ -25,6 +25,7 @@ import type {
   StudioQuote,
   StudioQuoteRequest,
 } from '../../lib/studio/types';
+import type { RetryDraft } from '../../lib/tasks/types';
 import { CapabilityForm } from './capability-form';
 import { ProMode } from './pro-mode';
 import { QuoteConfirmation } from './quote-confirmation';
@@ -32,6 +33,8 @@ import { SmartMode } from './smart-mode';
 
 interface StudioWorkspaceProps {
   readonly gateway?: StudioGateway;
+  readonly retryDraft?: RetryDraft | undefined;
+  readonly retryDraftRequested?: boolean | undefined;
 }
 
 const INITIAL_SMART_PREFERENCES: SmartPreferences = {
@@ -48,10 +51,25 @@ const INITIAL_PRO_SELECTION: ProSelection = {
   allowEquivalentFallback: false,
 };
 
-export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspaceProps) {
-  const [studioMode, setStudioMode] = useState<'SMART' | 'PRO'>('SMART');
-  const [smartPreferences, setSmartPreferences] = useState(INITIAL_SMART_PREFERENCES);
-  const [proSelection, setProSelection] = useState(INITIAL_PRO_SELECTION);
+export function StudioWorkspace({
+  gateway = defaultGateway,
+  retryDraft,
+  retryDraftRequested = false,
+}: StudioWorkspaceProps) {
+  const initialMode = retryDraft ? 'PRO' : 'SMART';
+  const initialSmartPreferencesRef = useRef<SmartPreferences>(
+    retryDraft
+      ? { ...INITIAL_SMART_PREFERENCES, generationMode: retryDraft.generationMode }
+      : INITIAL_SMART_PREFERENCES,
+  );
+  const initialSmartPreferences = initialSmartPreferencesRef.current;
+  const initialProSelectionRef = useRef<ProSelection>(
+    retryDraft ? { ...INITIAL_PRO_SELECTION, modelId: retryDraft.modelId } : INITIAL_PRO_SELECTION,
+  );
+  const initialProSelection = initialProSelectionRef.current;
+  const [studioMode, setStudioMode] = useState<'SMART' | 'PRO'>(initialMode);
+  const [smartPreferences, setSmartPreferences] = useState(initialSmartPreferences);
+  const [proSelection, setProSelection] = useState(initialProSelection);
   const [providers, setProviders] = useState<readonly StudioProviderOption[]>([]);
   const [models, setModels] = useState<readonly StudioModelOption[]>([]);
   const [document, setDocument] = useState<StudioCapabilityDocument>();
@@ -61,7 +79,7 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
   const [pageError, setPageError] = useState<string>();
   const [quote, setQuote] = useState<StudioQuote>();
   const [quoting, setQuoting] = useState(false);
-  const studioModeRef = useRef<'SMART' | 'PRO'>('SMART');
+  const studioModeRef = useRef<'SMART' | 'PRO'>(initialMode);
   const modelsRef = useRef<readonly StudioModelOption[]>([]);
   const capabilityRequestId = useRef(0);
   const quoteRequestId = useRef(0);
@@ -148,7 +166,10 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
         modelsRef.current = nextModels;
         setProviders(nextProviders);
         setModels(nextModels);
-        const firstActive = nextModels.find((model) => model.status === 'ACTIVE');
+        const draftModel = retryDraft
+          ? nextModels.find((model) => model.id === retryDraft.modelId && model.status === 'ACTIVE')
+          : undefined;
+        const firstActive = draftModel ?? nextModels.find((model) => model.status === 'ACTIVE');
         setProSelection((current) => ({
           ...current,
           providerId: firstActive?.providerId ?? nextProviders[0]?.id ?? '',
@@ -175,13 +196,13 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
           setPageError('工作台配置加载失败，请稍后重试。');
         }
       });
-    void loadSmartCapability(INITIAL_SMART_PREFERENCES);
+    if (studioModeRef.current === 'SMART') void loadSmartCapability(initialSmartPreferences);
     return () => {
       active = false;
       capabilityRequestId.current += 1;
       quoteRequestId.current += 1;
     };
-  }, [gateway, loadProCapability, loadSmartCapability]);
+  }, [gateway, initialSmartPreferences, loadProCapability, loadSmartCapability, retryDraft]);
 
   const handleCapabilityChange = useCallback(
     (values: Readonly<Record<string, unknown>>, result: PreparedCapabilityParameters) => {
@@ -279,6 +300,12 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
         <p>参数由已发布能力 Schema 动态生成；确认报价前不会创建任务或冻结点数。</p>
       </header>
 
+      {retryDraftRequested && !retryDraft ? (
+        <p className="form-feedback form-error" role="alert">
+          这个重试草稿已失效，请从原任务重新创建。
+        </p>
+      ) : null}
+
       <div className="studio-mode-switch" role="group" aria-label="生成模式">
         <button
           aria-pressed={studioMode === 'SMART'}
@@ -327,6 +354,11 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
         ) : document ? (
           <CapabilityForm
             document={document}
+            initialValues={
+              retryDraft?.capabilityVersion === document.capabilityVersion
+                ? retryDraft.parameters
+                : undefined
+            }
             onChange={handleCapabilityChange}
             onValid={handleValid}
           />

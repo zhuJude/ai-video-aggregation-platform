@@ -25,11 +25,32 @@ export { prepareCapabilityParameters, validateForm };
 
 interface CapabilityFormProps {
   readonly document: StudioCapabilityDocument;
+  readonly initialValues?: Readonly<Record<string, unknown>> | undefined;
   readonly onValid: (parameters: Readonly<Record<string, unknown>>) => void;
   readonly onChange?: (
     values: Readonly<Record<string, unknown>>,
     result: PreparedCapabilityParameters,
   ) => void;
+}
+
+function capabilityInitialState(
+  document: StudioCapabilityDocument,
+  initialValues: Readonly<Record<string, unknown>> | undefined,
+) {
+  const automaticFields = new Set<string>();
+  const defaults = defaultCapabilityValues(document, automaticFields);
+  const properties = document.jsonSchema.properties ?? {};
+  const allowedInitial = Object.fromEntries(
+    Object.entries(initialValues ?? {}).filter(([field]) => field in properties),
+  );
+  return {
+    automaticFields,
+    values: normalizeCapabilityValues(
+      document,
+      { ...defaults, ...allowedInitial },
+      automaticFields,
+    ),
+  };
 }
 
 interface FieldSegment {
@@ -115,24 +136,19 @@ function FieldFrame({
   );
 }
 
-export function CapabilityForm({ document, onChange, onValid }: CapabilityFormProps) {
+export function CapabilityForm({
+  document,
+  initialValues,
+  onChange,
+  onValid,
+}: CapabilityFormProps) {
   const unsupported = useMemo(() => auditCapabilityDocument(document), [document]);
-  const [formState, setFormState] = useState(() => {
-    const automaticFields = new Set<string>();
-    return {
-      automaticFields,
-      values: defaultCapabilityValues(document, automaticFields),
-    };
-  });
+  const [formState, setFormState] = useState(() => capabilityInitialState(document, initialValues));
   const { values } = formState;
 
   useEffect(() => {
-    const automaticFields = new Set<string>();
-    setFormState({
-      automaticFields,
-      values: defaultCapabilityValues(document, automaticFields),
-    });
-  }, [document]);
+    setFormState(capabilityInitialState(document, initialValues));
+  }, [document, initialValues]);
 
   const prepared = useMemo(() => prepareCapabilityParameters(document, values), [document, values]);
 
