@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import type { ApiError } from '@repo/contracts/common';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -108,6 +108,25 @@ const retryAfterHandler: GatewayHandler = (request) => {
   });
 };
 
+function createLongRetryAfterHandler(retryAfterSeconds: 301 | 600): GatewayHandler {
+  return (request) => {
+    if (request.method !== 'POST' || new URL(request.url).pathname !== '/v1/auth/sms/request') {
+      return undefined;
+    }
+
+    const responseBody = {
+      code: 'SMS_RATE_LIMITED',
+      message: 'Too many requests.',
+      traceId: '1234567890abcdef1234567890abcdef',
+      retryable: true,
+    } satisfies ApiError;
+    return Response.json(responseBody, {
+      status: 429,
+      headers: { 'Retry-After': String(retryAfterSeconds) },
+    });
+  };
+}
+
 export const invalidCodeHandler: GatewayHandler = (request) => {
   if (request.method !== 'POST' || new URL(request.url).pathname !== '/v1/auth/sms/verify') {
     return undefined;
@@ -146,6 +165,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -250,6 +270,35 @@ describe('PhoneLoginForm', () => {
       '请稍后重试，我们不会透露该手机号是否已注册。',
     );
   });
+
+  it.each([
+    [301, 1],
+    [600, 300],
+  ] as const)(
+    'honors the full %i-second Gateway Retry-After window past five minutes',
+    async (retryAfterSeconds, remainingAfterFiveMinutes) => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+      gatewayMock.use(createLongRetryAfterHandler(retryAfterSeconds));
+
+      render(<PhoneLoginForm />);
+      fireEvent.change(screen.getByLabelText('手机号'), { target: { value: '13800138000' } });
+      fireEvent.click(screen.getByRole('button', { name: '获取验证码' }));
+
+      await act(() => Promise.resolve());
+
+      expect(
+        screen.getByRole('button', { name: `重新发送（${String(retryAfterSeconds)} 秒）` }),
+      ).toBeDisabled();
+
+      await act(() => vi.advanceTimersByTimeAsync(300_000));
+
+      expect(
+        screen.getByRole('button', {
+          name: `重新发送（${String(remainingAfterFiveMinutes)} 秒）`,
+        }),
+      ).toBeDisabled();
+    },
+  );
 
   it('announces an invalid code without clearing the phone', async () => {
     const user = userEvent.setup();

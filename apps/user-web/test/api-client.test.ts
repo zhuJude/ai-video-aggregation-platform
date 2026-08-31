@@ -177,13 +177,17 @@ describe('apiClient', () => {
 describe('parseRetryAfter', () => {
   const now = Date.UTC(2026, 7, 31, 5, 0, 0);
   const futureDate = new Date(now + 90_000).toUTCString();
+  const longFutureDate = new Date(now + 600_000).toUTCString();
   const pastDate = new Date(now - 30_000).toUTCString();
 
   it.each([
     ['accepts digit-only delta seconds', '90', 90],
     ['accepts a future HTTP-date', futureDate, 90],
+    ['preserves a future HTTP-date longer than five minutes', longFutureDate, 600],
     ['maps a past HTTP-date to zero', pastDate, 0],
-    ['caps an excessive valid delta at five minutes', '301', 300],
+    ['preserves a valid delta longer than five minutes', '301', 301],
+    ['preserves a ten-minute delta exactly', '600', 600],
+    ['preserves the largest safe-integer delta exactly', '9007199254740991', 9007199254740991],
     ['rejects fractions', '1.5', undefined],
     ['rejects an explicit plus sign', '+3', undefined],
     ['rejects negative values', '-1', undefined],

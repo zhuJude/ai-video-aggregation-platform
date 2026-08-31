@@ -1,8 +1,6 @@
 import { ApiErrorSchema, HEADERS, type ApiError } from '@repo/contracts/common';
 
 const REQUEST_TIMEOUT_MS = 10_000;
-// SMS challenges expire after five minutes, so a longer value must not disable the UI forever.
-const MAX_RETRY_AFTER_SECONDS = 300;
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const HTTP_DATE_PATTERN =
@@ -75,14 +73,14 @@ export function parseRetryAfter(
   if (/^\d+$/.test(value)) {
     const seconds = Number(value);
     if (!Number.isSafeInteger(seconds)) return undefined;
-    return Math.min(seconds, MAX_RETRY_AFTER_SECONDS);
+    return seconds;
   }
 
   if (!HTTP_DATE_PATTERN.test(value)) return undefined;
 
   const retryAt = Date.parse(value);
   if (Number.isNaN(retryAt) || new Date(retryAt).toUTCString() !== value) return undefined;
-  return Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(0, Math.ceil((retryAt - now) / 1000)));
+  return Math.max(0, Math.ceil((retryAt - now) / 1000));
 }
 
 async function responsePayload(response: Response): Promise<unknown> {
