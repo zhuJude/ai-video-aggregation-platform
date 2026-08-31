@@ -685,22 +685,22 @@ export function isFieldVisible(
 
 export function defaultCapabilityValues(
   document: StudioCapabilityDocument,
+  automaticFields?: Set<string>,
 ): Readonly<Record<string, unknown>> {
   const defaults: Record<string, unknown> = {};
   const properties = document.jsonSchema.properties ?? {};
-  const required = new Set(document.jsonSchema.required ?? []);
   for (const field of document.uiSchema.order) {
     const schema = properties[field];
     if (!schema) continue;
     if (schema.default !== undefined) defaults[field] = schema.default;
-    else if (schema.type === 'boolean' && required.has(field)) defaults[field] = false;
   }
-  return normalizeCapabilityValues(document, defaults);
+  return normalizeCapabilityValues(document, defaults, automaticFields);
 }
 
 export function normalizeCapabilityValues(
   document: StudioCapabilityDocument,
   values: Readonly<Record<string, unknown>>,
+  automaticFields?: Set<string>,
 ): Readonly<Record<string, unknown>> {
   const normalized: Record<string, unknown> = { ...values };
   const properties = document.jsonSchema.properties ?? {};
@@ -714,6 +714,7 @@ export function normalizeCapabilityValues(
         isFieldRequired(document, field, normalized)
       ) {
         normalized[field] = false;
+        automaticFields?.add(field);
         changed = true;
       }
     }
@@ -726,8 +727,10 @@ export function removeCapabilityValue(
   document: StudioCapabilityDocument,
   values: Readonly<Record<string, unknown>>,
   field: string,
+  automaticFields: Set<string>,
 ): Readonly<Record<string, unknown>> {
   let next = Object.fromEntries(Object.entries(values).filter(([key]) => key !== field));
+  automaticFields.delete(field);
   const properties = document.jsonSchema.properties ?? {};
   const dependencies = document.jsonSchema.dependentRequired ?? {};
   const pending = [field];
@@ -739,15 +742,17 @@ export function removeCapabilityValue(
     for (const target of dependencies[trigger] ?? []) {
       if (
         next[target] === false &&
+        automaticFields.has(target) &&
         properties[target]?.type === 'boolean' &&
         !isFieldRequired(document, target, next)
       ) {
         next = Object.fromEntries(Object.entries(next).filter(([key]) => key !== target));
+        automaticFields.delete(target);
         pending.push(target);
       }
     }
   }
-  return normalizeCapabilityValues(document, next);
+  return normalizeCapabilityValues(document, next, automaticFields);
 }
 
 export function prepareCapabilityParameters(

@@ -76,6 +76,38 @@ const imageToVideoCapability = {
   costDimensions: ['duration'],
 } satisfies StudioCapabilityDocument;
 
+function dependentBooleanDocument(options: {
+  readonly chain?: boolean;
+  readonly defaultB?: boolean;
+}): StudioCapabilityDocument {
+  const fields = options.chain ? ['a', 'b', 'c'] : ['a', 'b'];
+  return {
+    schemaVersion: 202012,
+    capabilityVersion: options.chain ? 'dependent-explicit-chain-v1' : 'dependent-explicit-v1',
+    mode: 'TEXT_TO_VIDEO',
+    jsonSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        a: { type: 'string', minLength: 1 },
+        b: { type: 'boolean', ...(options.defaultB ? { default: false } : {}) },
+        ...(options.chain ? { c: { type: 'boolean' as const } } : {}),
+      },
+      dependentRequired: options.chain ? { a: ['b'], b: ['c'] } : { a: ['b'] },
+    },
+    uiSchema: {
+      order: fields,
+      groups: [{ key: 'dependencies', title: '依赖', fields }],
+      fields: {
+        a: { label: '来源字段' },
+        b: { label: '显式开关', widget: 'boolean' },
+        ...(options.chain ? { c: { label: '下游开关', widget: 'boolean' as const } } : {}),
+      },
+    },
+    costDimensions: [],
+  };
+}
+
 describe('CapabilityForm', () => {
   it('renders required enum and conditional fields in UI Schema order', async () => {
     const user = userEvent.setup();
@@ -833,6 +865,42 @@ describe('CapabilityForm', () => {
       },
     };
     expect(defaultCapabilityValues(cycleDocument)).toEqual({ b: false, a: false });
+  });
+
+  it('preserves a user-selected false boolean after its upstream dependency is removed', async () => {
+    const user = userEvent.setup();
+    const onValid = vi.fn();
+    render(<CapabilityForm document={dependentBooleanDocument({})} onValid={onValid} />);
+
+    await user.type(screen.getByLabelText('来源字段'), 'on');
+    await user.click(screen.getByLabelText('显式开关'));
+    await user.click(screen.getByLabelText('显式开关'));
+    await user.clear(screen.getByLabelText('来源字段'));
+
+    await waitFor(() => {
+      expect(onValid).toHaveBeenLastCalledWith({ b: false });
+    });
+  });
+
+  it('keeps an explicit false dependency and its downstream automatic boolean semantics', async () => {
+    const user = userEvent.setup();
+    const onValid = vi.fn();
+    const document = dependentBooleanDocument({ chain: true, defaultB: true });
+    render(<CapabilityForm document={document} onValid={onValid} />);
+
+    await user.type(screen.getByLabelText('来源字段'), 'on');
+    await user.clear(screen.getByLabelText('来源字段'));
+    await waitFor(() => {
+      expect(onValid).toHaveBeenLastCalledWith({ b: false, c: false });
+    });
+
+    await user.type(screen.getByLabelText('来源字段'), 'on');
+    await user.click(screen.getByLabelText('显式开关'));
+    await user.click(screen.getByLabelText('显式开关'));
+    await user.clear(screen.getByLabelText('来源字段'));
+    await waitFor(() => {
+      expect(onValid).toHaveBeenLastCalledWith({ b: false, c: false });
+    });
   });
 
   it('rejects a dependentRequired target that can be hidden while its trigger is present', () => {

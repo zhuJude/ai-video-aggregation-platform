@@ -117,12 +117,21 @@ function FieldFrame({
 
 export function CapabilityForm({ document, onChange, onValid }: CapabilityFormProps) {
   const unsupported = useMemo(() => auditCapabilityDocument(document), [document]);
-  const [values, setValues] = useState<Readonly<Record<string, unknown>>>(() =>
-    defaultCapabilityValues(document),
-  );
+  const [formState, setFormState] = useState(() => {
+    const automaticFields = new Set<string>();
+    return {
+      automaticFields,
+      values: defaultCapabilityValues(document, automaticFields),
+    };
+  });
+  const { values } = formState;
 
   useEffect(() => {
-    setValues(defaultCapabilityValues(document));
+    const automaticFields = new Set<string>();
+    setFormState({
+      automaticFields,
+      values: defaultCapabilityValues(document, automaticFields),
+    });
   }, [document]);
 
   const prepared = useMemo(() => prepareCapabilityParameters(document, values), [document, values]);
@@ -153,11 +162,23 @@ export function CapabilityForm({ document, onChange, onValid }: CapabilityFormPr
       !isFieldVisible(document, error.field, values),
   );
   const updateField = (field: string, value: unknown) => {
-    setValues((current) => {
+    setFormState((current) => {
+      const automaticFields = new Set(current.automaticFields);
+      automaticFields.delete(field);
       if (value === undefined || value === '') {
-        return removeCapabilityValue(document, current, field);
+        return {
+          automaticFields,
+          values: removeCapabilityValue(document, current.values, field, automaticFields),
+        };
       }
-      return normalizeCapabilityValues(document, { ...current, [field]: value });
+      return {
+        automaticFields,
+        values: normalizeCapabilityValues(
+          document,
+          { ...current.values, [field]: value },
+          automaticFields,
+        ),
+      };
     });
   };
 
