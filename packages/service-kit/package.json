@@ -1,0 +1,27 @@
+{
+  "name": "@repo/service-kit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --exclude dist/**",
+    "test:coverage": "vitest run --coverage --exclude dist/**"
+  },
+  "dependencies": {
+    "@nestjs/common": "12.0.1",
+    "@nestjs/core": "12.0.1",
+    "@repo/contracts": "workspace:*",
+    "fastify": "5.12.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  }
+}
