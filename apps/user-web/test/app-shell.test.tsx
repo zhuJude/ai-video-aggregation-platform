@@ -1,13 +1,12 @@
 import '@testing-library/jest-dom/vitest';
 
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { AppShell, LoadingState, type AppShellUser } from '../components/app-shell';
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
 });
 
 describe('AppShell', () => {
@@ -58,23 +57,5 @@ describe('AppShell', () => {
     );
 
     expect(screen.getByRole('status')).toHaveTextContent('正在加载任务');
-  });
-
-  it('contains render errors and announces a recovery action', () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-    function BrokenContent(): never {
-      throw new Error('render failed');
-    }
-
-    render(
-      <AppShell>
-        <BrokenContent />
-      </AppShell>,
-    );
-
-    expect(screen.getByRole('alert')).toHaveTextContent('页面暂时无法显示');
-    expect(screen.getByRole('button', { name: '重新加载' })).toBeVisible();
-    consoleError.mockRestore();
   });
 });

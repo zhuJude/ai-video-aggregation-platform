@@ -47,7 +47,16 @@ body {
 }
 
 a {
-  color: inherit;
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.18em;
+}
+
+.skip-link,
+.brand,
+.sign-in-link,
+.primary-navigation a {
   text-decoration: none;
 }
 
@@ -122,6 +131,7 @@ button {
   gap: var(--space-1);
   width: fit-content;
   border-radius: var(--radius-small);
+  color: inherit;
 }
 
 .brand-mark {

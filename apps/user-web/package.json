@@ -2,6 +2,19 @@
   "name": "@repo/user-web",
   "version": "0.0.0",
   "private": true,
+  "prettier": {
+    "singleQuote": true,
+    "trailingComma": "all",
+    "printWidth": 100,
+    "overrides": [
+      {
+        "files": "next-env.d.ts",
+        "options": {
+          "singleQuote": false
+        }
+      }
+    ]
+  },
   "scripts": {
     "build": "next build",
     "dev": "next dev",

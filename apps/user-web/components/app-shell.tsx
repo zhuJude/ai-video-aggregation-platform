@@ -1,6 +1,7 @@
 'use client';
 
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import Link from 'next/link';
+import type { ReactNode } from 'react';
 
 export interface AppShellUser {
   nickname: string;
@@ -11,14 +12,6 @@ export interface AppShellUser {
 interface AppShellProps {
   children: ReactNode;
   user?: AppShellUser | null;
-}
-
-interface ErrorBoundaryProps {
-  children: ReactNode;
-}
-
-interface ErrorBoundaryState {
-  hasError: boolean;
 }
 
 const destinations = [
@@ -60,49 +53,16 @@ export function EmptyState({
   );
 }
 
-export class AppErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  public override state: ErrorBoundaryState = { hasError: false };
-
-  public static getDerivedStateFromError(): ErrorBoundaryState {
-    return { hasError: true };
-  }
-
-  public override componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error('AppShell content render failed', error, info.componentStack);
-  }
-
-  public override render(): ReactNode {
-    if (this.state.hasError) {
-      return (
-        <section className="state-panel state-panel-error" role="alert">
-          <h1>页面暂时无法显示</h1>
-          <p>请重新加载页面。若问题持续，请稍后再试。</p>
-          <button
-            type="button"
-            onClick={() => {
-              window.location.reload();
-            }}
-          >
-            重新加载
-          </button>
-        </section>
-      );
-    }
-
-    return this.props.children;
-  }
-}
-
 export function AppShell({ children, user = null }: AppShellProps) {
   return (
     <>
-      <a className="skip-link" href="#main-content">
+      <Link className="skip-link" href="#main-content">
         跳到主要内容
-      </a>
+      </Link>
       <div className="app-shell">
         <aside className="app-sidebar" aria-label="工作区侧边栏">
           <div className="app-sidebar-header">
-            <a className="brand" href="/" aria-label="光帧首页">
+            <Link className="brand" href="/" aria-label="光帧首页">
               <span className="brand-mark" aria-hidden="true">
                 光
               </span>
@@ -110,7 +70,7 @@ export function AppShell({ children, user = null }: AppShellProps) {
                 <strong>光帧</strong>
                 <small>AI 视频工作台</small>
               </span>
-            </a>
+            </Link>
 
             {user ? (
               <section className="account-summary" aria-label={`${user.nickname}的点数`}>
@@ -127,9 +87,9 @@ export function AppShell({ children, user = null }: AppShellProps) {
                 </dl>
               </section>
             ) : (
-              <a className="sign-in-link" href="/login">
+              <Link className="sign-in-link" href="/login">
                 登录后查看点数
-              </a>
+              </Link>
             )}
           </div>
 
@@ -137,7 +97,7 @@ export function AppShell({ children, user = null }: AppShellProps) {
             <ul>
               {destinations.map((destination) => (
                 <li key={destination.href}>
-                  <a href={destination.href}>{destination.label}</a>
+                  <Link href={destination.href}>{destination.label}</Link>
                 </li>
               ))}
             </ul>
@@ -145,7 +105,7 @@ export function AppShell({ children, user = null }: AppShellProps) {
         </aside>
 
         <main id="main-content" className="app-content" tabIndex={-1}>
-          <AppErrorBoundary>{children ?? <EmptyState />}</AppErrorBoundary>
+          {children ?? <EmptyState />}
         </main>
       </div>
     </>
