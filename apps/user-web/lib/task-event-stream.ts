@@ -3,6 +3,7 @@ import { HEADERS } from '@repo/contracts/common';
 export interface RawTaskStreamEvent {
   readonly data: unknown;
   readonly eventId: string;
+  readonly eventType: 'message' | 'task.status' | 'task-transition';
 }
 
 export interface TaskEventStreamOptions {
@@ -41,7 +42,7 @@ function consumeFrame(frame: string, onEvent: TaskEventStreamOptions['onEvent'])
     } else if (field === 'data') data.push(value);
   }
   if (data.length === 0) return;
-  if (eventName !== 'message' && eventName !== 'task.status') {
+  if (eventName !== 'message' && eventName !== 'task.status' && eventName !== 'task-transition') {
     throw new Error('INVALID_TASK_EVENT_TYPE');
   }
   if (!eventId) throw new Error('MISSING_TASK_EVENT_ID');
@@ -51,7 +52,7 @@ function consumeFrame(frame: string, onEvent: TaskEventStreamOptions['onEvent'])
   } catch {
     throw new Error('INVALID_TASK_EVENT_JSON');
   }
-  onEvent({ data: payload, eventId });
+  onEvent({ data: payload, eventId, eventType: eventName });
 }
 
 export async function openTaskEventStream(

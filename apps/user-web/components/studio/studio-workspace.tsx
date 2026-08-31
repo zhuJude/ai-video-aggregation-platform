@@ -51,6 +51,30 @@ const INITIAL_PRO_SELECTION: ProSelection = {
   allowEquivalentFallback: false,
 };
 
+function retryDraftMatchesCatalog(
+  draft: RetryDraft,
+  model: StudioModelOption | undefined,
+): model is StudioModelOption {
+  return (
+    model?.status === 'ACTIVE' &&
+    model.providerId === draft.providerId &&
+    model.capabilityVersion === draft.capabilityVersion
+  );
+}
+
+function retryDraftMatchesCapability(
+  draft: RetryDraft,
+  model: StudioModelOption | undefined,
+  document: StudioCapabilityDocument,
+): boolean {
+  return (
+    retryDraftMatchesCatalog(draft, model) &&
+    document.capabilityVersion === draft.capabilityVersion &&
+    document.schemaVersion === draft.capabilitySchemaVersion &&
+    document.mode === draft.generationMode
+  );
+}
+
 export function StudioWorkspace({
   gateway = defaultGateway,
   retryDraft,
@@ -79,6 +103,7 @@ export function StudioWorkspace({
   const [pageError, setPageError] = useState<string>();
   const [quote, setQuote] = useState<StudioQuote>();
   const [quoting, setQuoting] = useState(false);
+  const [validatedRetryDraft, setValidatedRetryDraft] = useState<RetryDraft>();
   const studioModeRef = useRef<'SMART' | 'PRO'>(initialMode);
   const modelsRef = useRef<readonly StudioModelOption[]>([]);
   const capabilityRequestId = useRef(0);
@@ -142,17 +167,31 @@ export function StudioWorkspace({
         if (nextDocument.capabilityVersion !== selectedModel.capabilityVersion) {
           throw new Error('CAPABILITY_VERSION_MISMATCH');
         }
-        if (requestId === capabilityRequestId.current) setDocument(nextDocument);
-      } catch {
+        if (
+          retryDraft?.modelId === modelId &&
+          !retryDraftMatchesCapability(retryDraft, selectedModel, nextDocument)
+        ) {
+          throw new Error('RETRY_DRAFT_INCOMPATIBLE');
+        }
+        if (requestId === capabilityRequestId.current) {
+          setValidatedRetryDraft(retryDraft?.modelId === modelId ? retryDraft : undefined);
+          setDocument(nextDocument);
+        }
+      } catch (error) {
         if (requestId === capabilityRequestId.current) {
           setDocument(undefined);
-          setPageError('所选模型当前不可用，请选择其他可用模型。');
+          setValidatedRetryDraft(undefined);
+          setPageError(
+            error instanceof Error && error.message === 'RETRY_DRAFT_INCOMPATIBLE'
+              ? '重试草稿与当前平台、模型或能力 Schema 不兼容，请从原任务重新创建。'
+              : '所选模型当前不可用，请选择其他可用模型。',
+          );
         }
       } finally {
         if (requestId === capabilityRequestId.current) setLoadingCapability(false);
       }
     },
-    [gateway, invalidateQuote],
+    [gateway, invalidateQuote, retryDraft],
   );
 
   useEffect(() => {
@@ -167,8 +206,15 @@ export function StudioWorkspace({
         setProviders(nextProviders);
         setModels(nextModels);
         const draftModel = retryDraft
-          ? nextModels.find((model) => model.id === retryDraft.modelId && model.status === 'ACTIVE')
+          ? nextModels.find((model) => model.id === retryDraft.modelId)
           : undefined;
+        if (retryDraft && !retryDraftMatchesCatalog(retryDraft, draftModel)) {
+          setValidatedRetryDraft(undefined);
+          setProSelection(INITIAL_PRO_SELECTION);
+          setLoadingCapability(false);
+          setPageError('重试草稿与当前平台、模型或能力 Schema 不兼容，请从原任务重新创建。');
+          return;
+        }
         const firstActive = draftModel ?? nextModels.find((model) => model.status === 'ACTIVE');
         setProSelection((current) => ({
           ...current,
@@ -355,8 +401,15 @@ export function StudioWorkspace({
           <CapabilityForm
             document={document}
             initialValues={
-              retryDraft?.capabilityVersion === document.capabilityVersion
-                ? retryDraft.parameters
+              validatedRetryDraft &&
+              validatedRetryDraft.providerId === proSelection.providerId &&
+              validatedRetryDraft.modelId === proSelection.modelId &&
+              retryDraftMatchesCapability(
+                validatedRetryDraft,
+                models.find((model) => model.id === proSelection.modelId),
+                document,
+              )
+                ? validatedRetryDraft.parameters
                 : undefined
             }
             onChange={handleCapabilityChange}

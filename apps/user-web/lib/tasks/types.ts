@@ -88,8 +88,10 @@ export interface TaskPage {
 export interface RetryDraft {
   readonly id: string;
   readonly generationMode: TaskGenerationMode;
+  readonly providerId: string;
   readonly modelId: string;
   readonly capabilityVersion: string;
+  readonly capabilitySchemaVersion: number;
   readonly parameters: Readonly<Record<string, unknown>>;
 }
 

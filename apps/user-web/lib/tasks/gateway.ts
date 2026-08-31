@@ -1,4 +1,4 @@
-import { saveRetryDraft } from '../studio/retry-drafts';
+import { FIXTURE_SESSION_OWNER_ID, saveRetryDraft } from '../studio/retry-drafts';
 import type {
   RetryDraft,
   TaskDetail,
@@ -182,7 +182,14 @@ const cursorOffsets = new Map<string, number>([
   ['eyJwYWdlIjoyfQ', 2],
 ]);
 const PAGE_SIZE = 2;
-const canceledByKey = new Map<string, TaskStatusSnapshot>();
+const canceledByKey = new Map<
+  string,
+  {
+    readonly fingerprint: string;
+    readonly snapshot: TaskStatusSnapshot;
+    readonly taskId: string;
+  }
+>();
 
 function matches(task: TaskDetail, filters: TaskFilters): boolean {
   if (filters.status && task.statusSnapshot.status !== filters.status) return false;
@@ -233,8 +240,14 @@ export const taskGateway: TaskGateway = {
     if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(options.idempotencyKey)) {
       throw new TaskGatewayCommandError('INVALID_IDEMPOTENCY_KEY');
     }
+    const fingerprint = JSON.stringify({ operation: 'cancel', taskId });
     const existing = canceledByKey.get(options.idempotencyKey);
-    if (existing) return Promise.resolve(structuredClone(existing));
+    if (existing) {
+      if (existing.taskId !== taskId || existing.fingerprint !== fingerprint) {
+        throw new TaskGatewayCommandError('IDEMPOTENCY_CONFLICT');
+      }
+      return Promise.resolve(structuredClone(existing.snapshot));
+    }
     const task = fixtures.find((candidate) => candidate.id === taskId);
     if (!task || !task.statusSnapshot.cancelAllowed) {
       throw new TaskGatewayCommandError('CANCEL_NOT_ALLOWED');
@@ -251,7 +264,7 @@ export const taskGateway: TaskGateway = {
         message: '取消请求已接受，费用将按任务快照规则处理。',
       },
     };
-    canceledByKey.set(options.idempotencyKey, canceled);
+    canceledByKey.set(options.idempotencyKey, { fingerprint, snapshot: canceled, taskId });
     return Promise.resolve(structuredClone(canceled));
   },
 
@@ -261,11 +274,13 @@ export const taskGateway: TaskGateway = {
     const draft: RetryDraft = {
       id: crypto.randomUUID(),
       generationMode: task.generationMode,
+      providerId: task.modelSnapshot.providerId,
       modelId: task.modelSnapshot.modelId,
       capabilityVersion: task.modelSnapshot.capabilityVersion,
+      capabilitySchemaVersion: 202012,
       parameters: structuredClone(task.parametersSnapshot),
     };
-    saveRetryDraft(draft);
+    saveRetryDraft(draft, { ownerId: FIXTURE_SESSION_OWNER_ID });
     return Promise.resolve({ draftId: draft.id });
   },
 };

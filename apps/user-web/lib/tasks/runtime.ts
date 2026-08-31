@@ -1,4 +1,7 @@
+import { PointsStringSchema, UtcDateTimeSchema } from '@repo/contracts/common';
 import { TaskStatusSchema } from '@repo/contracts/generation';
+
+import type { RawTaskStreamEvent } from '../task-event-stream';
 
 import type {
   CancelTaskResult,
@@ -38,9 +41,9 @@ function assertOnlyKeys(
 }
 
 function parsePoints(value: unknown): string {
-  const points = requireString(value, 'INVALID_TASK_POINTS');
-  if (!/^\d+$/.test(points)) throw new Error('INVALID_TASK_POINTS');
-  return points;
+  const parsed = PointsStringSchema.safeParse(value);
+  if (!parsed.success) throw new Error('INVALID_TASK_POINTS');
+  return parsed.data;
 }
 
 function parseGenerationMode(value: unknown): TaskGenerationMode {
@@ -71,27 +74,68 @@ function parseRevision(record: Record<string, unknown>): number {
 }
 
 function parseIsoInstant(value: unknown): string {
-  const instant = requireString(value, 'INVALID_TASK_UPDATED_AT');
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z$/.exec(instant);
-  const parsed = Date.parse(instant);
-  if (!match || !Number.isFinite(parsed)) {
-    throw new Error('INVALID_TASK_UPDATED_AT');
+  const parsed = UtcDateTimeSchema.safeParse(value);
+  if (!parsed.success) throw new Error('INVALID_TASK_UPDATED_AT');
+  return parsed.data;
+}
+
+const TRANSITION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+const ALLOWED_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
+  QUOTED: ['RESERVED'],
+  RESERVED: ['QUEUED', 'REFUNDED'],
+  QUEUED: ['SUBMITTING', 'CANCELED', 'EXPIRED'],
+  SUBMITTING: ['RUNNING', 'FAILED'],
+  RUNNING: ['SUCCEEDED', 'FAILED', 'CANCELED', 'EXPIRED'],
+  SUCCEEDED: ['SETTLED'],
+  FAILED: ['REFUNDED'],
+  CANCELED: ['REFUNDED', 'SETTLED'],
+  EXPIRED: ['REFUNDED'],
+  SETTLED: [],
+  REFUNDED: [],
+};
+
+export function parseTaskStreamEvent(
+  event: RawTaskStreamEvent,
+  expectedTaskId: string,
+  current: TaskStatusSnapshot,
+): TaskStatusSnapshot {
+  if (event.eventType === 'message' || event.eventType === 'task.status') {
+    return parseTaskStatusSnapshot(event.data, event.eventId);
   }
-  const date = new Date(parsed);
-  const parts = [
-    date.getUTCFullYear(),
-    date.getUTCMonth() + 1,
-    date.getUTCDate(),
-    date.getUTCHours(),
-    date.getUTCMinutes(),
-    date.getUTCSeconds(),
-    date.getUTCMilliseconds(),
-  ];
-  const expected = [...match.slice(1, 7).map((part) => Number(part)), Number(match[7] || '0')];
-  if (parts.some((part, index) => part !== expected[index])) {
-    throw new Error('INVALID_TASK_UPDATED_AT');
+  const transition = requireRecord(event.data, 'INVALID_TASK_TRANSITION_EVENT');
+  assertOnlyKeys(
+    transition,
+    ['transitionId', 'taskId', 'taskVersion', 'status', 'occurredAt'],
+    'UNKNOWN_TASK_TRANSITION_FIELD',
+  );
+  const transitionId = requireString(transition.transitionId, 'INVALID_TASK_TRANSITION_ID');
+  if (!TRANSITION_ID_PATTERN.test(transitionId)) throw new Error('INVALID_TASK_TRANSITION_ID');
+  if (transition.taskId !== expectedTaskId) throw new Error('TASK_TRANSITION_TASK_MISMATCH');
+  if (!Number.isSafeInteger(transition.taskVersion) || (transition.taskVersion as number) < 0) {
+    throw new Error('INVALID_TASK_REVISION');
   }
-  return instant;
+  const revision = transition.taskVersion as number;
+  if (event.eventId !== `${String(revision)}:${transitionId}`) {
+    throw new Error('TASK_EVENT_ID_MISMATCH');
+  }
+  const parsedStatus = TaskStatusSchema.safeParse(transition.status);
+  if (!parsedStatus.success) throw new Error('INVALID_TASK_STATUS');
+  if (
+    revision > current.revision &&
+    !ALLOWED_TRANSITIONS[current.status].includes(parsedStatus.data)
+  ) {
+    throw new Error('INVALID_TASK_TRANSITION');
+  }
+  return {
+    eventId: event.eventId,
+    revision,
+    status: parsedStatus.data,
+    terminal: parsedStatus.data === 'SETTLED' || parsedStatus.data === 'REFUNDED',
+    cancelAllowed: parsedStatus.data === 'QUEUED' || parsedStatus.data === 'RUNNING',
+    updatedAt: parseIsoInstant(transition.occurredAt),
+  };
 }
 
 export function parseTaskStatusSnapshot(
@@ -294,14 +338,27 @@ export function parseStoredRetryDraft(value: unknown): RetryDraft {
   const draft = requireRecord(value, 'INVALID_RETRY_DRAFT');
   assertOnlyKeys(
     draft,
-    ['id', 'generationMode', 'modelId', 'capabilityVersion', 'parameters'],
+    [
+      'id',
+      'generationMode',
+      'providerId',
+      'modelId',
+      'capabilityVersion',
+      'capabilitySchemaVersion',
+      'parameters',
+    ],
     'UNKNOWN_RETRY_DRAFT_FIELD',
   );
+  if (!Number.isSafeInteger(draft.capabilitySchemaVersion)) {
+    throw new Error('INVALID_RETRY_CAPABILITY_SCHEMA_VERSION');
+  }
   return {
     id: requireString(draft.id, 'INVALID_RETRY_DRAFT_ID'),
     generationMode: parseGenerationMode(draft.generationMode),
+    providerId: requireString(draft.providerId, 'INVALID_RETRY_PROVIDER_ID'),
     modelId: requireString(draft.modelId, 'INVALID_RETRY_MODEL_ID'),
     capabilityVersion: requireString(draft.capabilityVersion, 'INVALID_RETRY_CAPABILITY_VERSION'),
+    capabilitySchemaVersion: draft.capabilitySchemaVersion as number,
     parameters: { ...requireRecord(draft.parameters, 'INVALID_RETRY_PARAMETERS') },
   };
 }

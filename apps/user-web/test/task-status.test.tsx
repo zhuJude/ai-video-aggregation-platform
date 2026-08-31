@@ -7,8 +7,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { TaskStatus } from '../components/tasks/task-status';
 import { TaskDetailView } from '../components/tasks/task-detail-view';
 import { TaskList } from '../components/tasks/task-list';
+import { StudioWorkspace } from '../components/studio/studio-workspace';
 import StudioPage from '../app/studio/page';
 import { openTaskEventStream } from '../lib/task-event-stream';
+import { readRetryDraft, saveRetryDraft } from '../lib/studio/retry-drafts';
 import { taskGateway } from '../lib/tasks/gateway';
 import {
   formatPoints,
@@ -16,6 +18,7 @@ import {
   parseTaskDetail,
   parseTaskPage,
   parseRetryDraft,
+  parseTaskStreamEvent,
   parseTaskStatusSnapshot,
   reduceStatus,
 } from '../lib/tasks/runtime';
@@ -113,6 +116,27 @@ it('discards old and duplicate revisions without guessing from timestamps', () =
 
   expect(reduceStatus(current, { ...runningEvent, revision: 6 })).toBe(current);
   expect(reduceStatus(settledTask, misleadingOldEvent)).toBe(settledTask);
+});
+
+it('parses a valid old WS13 transition so the reducer discards it without reconnecting', () => {
+  const transitionId = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b1';
+  const oldTransition = parseTaskStreamEvent(
+    {
+      eventType: 'task-transition',
+      eventId: `8:${transitionId}`,
+      data: {
+        transitionId,
+        taskId: 'task-1',
+        taskVersion: 8,
+        status: 'RUNNING',
+        occurredAt: '2026-08-31T08:08:00Z',
+      },
+    },
+    'task-1',
+    settledTask,
+  );
+
+  expect(reduceStatus(settledTask, oldTransition)).toBe(settledTask);
 });
 
 it.each([
@@ -256,7 +280,7 @@ it('parses CRLF, comments and multi-line SSE data while sending credentials and 
     }),
   ).rejects.toThrow('TASK_EVENT_STREAM_CLOSED');
 
-  expect(received).toEqual([{ data: runningEvent, eventId: 'event-8' }]);
+  expect(received).toEqual([{ data: runningEvent, eventId: 'event-8', eventType: 'task.status' }]);
   expect(request?.credentials).toBe('include');
   expect(request?.headers.get('accept')).toBe('text/event-stream');
   expect(request?.headers.get('Last-Event-ID')).toBe('event-7');
@@ -296,6 +320,108 @@ it('fails closed on malformed SSE JSON without applying an event', async () => {
   expect(cancel).toHaveBeenCalledTimes(1);
 });
 
+it('accepts the WS13 task-transition SSE protocol forwarded unchanged by WS09', async () => {
+  const transitionId = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b1';
+  const data = {
+    transitionId,
+    taskId: 'task-1',
+    taskVersion: 3,
+    status: 'RUNNING',
+    occurredAt: '2026-08-31T08:00:00.123456Z',
+  };
+  const received: unknown[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          `event: task-transition\nid: 3:${transitionId}\ndata: ${JSON.stringify(data)}\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+      ),
+  );
+
+  await expect(
+    openTaskEventStream('task-1', {
+      onEvent: (event) => received.push(event),
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow('TASK_EVENT_STREAM_CLOSED');
+  expect(received).toEqual([{ data, eventId: `3:${transitionId}`, eventType: 'task-transition' }]);
+});
+
+it('applies a WS13 transition using the server version and known state contract', async () => {
+  const transitionId = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b1';
+  const signal = { current: undefined as AbortSignal | undefined };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      signal.current = init?.signal ?? undefined;
+      return Promise.resolve(
+        new Response(
+          `event: task-transition\nid: 9:${transitionId}\ndata: ${JSON.stringify({
+            transitionId,
+            taskId: 'task-1',
+            taskVersion: 9,
+            status: 'SETTLED',
+            occurredAt: '2026-08-31T08:09:00.1Z',
+          })}\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+      );
+    }),
+  );
+
+  render(
+    <TaskStatus
+      taskId="task-1"
+      initial={{
+        ...queuedTask,
+        eventId: `8:${transitionId}`,
+        revision: 8,
+        status: 'SUCCEEDED',
+        cancelAllowed: false,
+      }}
+    />,
+  );
+  expect(await screen.findByText('已结算')).toBeVisible();
+  expect(signal.current?.aborted).toBe(true);
+});
+
+it('counts malformed payloads as failures and polls after the third failure', async () => {
+  vi.useFakeTimers();
+  const malformed = () =>
+    new Response(
+      'event: task.status\nid: bad-event\ndata: {"eventId":"bad-event","status":"UNKNOWN"}\n\n',
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+  const mockFetch = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(malformed())
+    .mockResolvedValueOnce(malformed())
+    .mockResolvedValueOnce(malformed())
+    .mockResolvedValueOnce(Response.json({ ...detailFixture, statusSnapshot: queuedTask }));
+  vi.stubGlobal('fetch', mockFetch);
+
+  const view = render(<TaskStatus taskId="task-1" initial={queuedTask} />);
+  await vi.advanceTimersByTimeAsync(1_000);
+  await vi.advanceTimersByTimeAsync(2_000);
+  await vi.advanceTimersByTimeAsync(5_000);
+
+  expect(mockFetch).toHaveBeenCalledTimes(4);
+  const pollInput = mockFetch.mock.calls[3]?.[0];
+  const pollUrl =
+    typeof pollInput === 'string'
+      ? pollInput
+      : pollInput instanceof URL
+        ? pollInput.toString()
+        : pollInput?.url;
+  expect(pollUrl).toMatch(/\/v1\/tasks\/task-1$/);
+  view.unmount();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 it('preserves an SSE frame when CRLF is split across network chunks', async () => {
   const received: unknown[] = [];
   const payload = JSON.stringify(runningEvent);
@@ -323,7 +449,7 @@ it('preserves an SSE frame when CRLF is split across network chunks', async () =
       signal: new AbortController().signal,
     }),
   ).rejects.toThrow('TASK_EVENT_STREAM_CLOSED');
-  expect(received).toEqual([{ data: runningEvent, eventId: 'event-8' }]);
+  expect(received).toEqual([{ data: runningEvent, eventId: 'event-8', eventType: 'task.status' }]);
 });
 
 const detailFixture: TaskDetail = {
@@ -564,7 +690,22 @@ it('parses typed fixture filters/cursors and rejects unsafe point payloads', asy
 
   const malformed = { ...detailFixture, quotedPoints: '1.5' };
   expect(() => parseTaskDetail(malformed)).toThrow('INVALID_TASK_POINTS');
+  expect(() => parseTaskDetail({ ...detailFixture, quotedPoints: '01' })).toThrow(
+    'INVALID_TASK_POINTS',
+  );
   expect(parseTaskDetail(await taskGateway.getTask('task-1')).taskNumber).toBe('T20260831-0001');
+});
+
+it('mirrors the frozen UtcDateTime precision and UTC-only semantics', () => {
+  expect(
+    parseTaskStatusSnapshot({ ...queuedTask, updatedAt: '2026-08-31T10:00:00.1Z' }).updatedAt,
+  ).toBe('2026-08-31T10:00:00.1Z');
+  expect(
+    parseTaskStatusSnapshot({ ...queuedTask, updatedAt: '2026-08-31T10:00:00.123456Z' }).updatedAt,
+  ).toBe('2026-08-31T10:00:00.123456Z');
+  expect(() =>
+    parseTaskStatusSnapshot({ ...queuedTask, updatedAt: '2026-08-31T18:00:00+08:00' }),
+  ).toThrow('INVALID_TASK_UPDATED_AT');
 });
 
 it('rejects internal/provider error fields instead of exposing them as public reasons', () => {
@@ -581,4 +722,64 @@ it('resolves an opaque server-side retry draft in Studio without URL parameters'
   render(await StudioPage({ searchParams: Promise.resolve({ draft: draftId }) }));
 
   expect(await screen.findByLabelText('起始图片')).toHaveValue('asset-21');
+});
+
+it('binds retry drafts to an owner, expires them and consumes them once', () => {
+  const draft = {
+    id: 'draft-security-boundary',
+    generationMode: 'IMAGE_TO_VIDEO' as const,
+    providerId: 'mock-provider-east',
+    modelId: 'mock-cinema-v2',
+    capabilityVersion: 'cap-image-v7',
+    capabilitySchemaVersion: 202012,
+    parameters: { image: 'asset-private' },
+  };
+  saveRetryDraft(draft, { now: 1_000, ownerId: 'session-a', ttlMs: 5_000 });
+
+  expect(readRetryDraft(draft.id, { now: 2_000, ownerId: 'session-b' })).toBeUndefined();
+  expect(readRetryDraft(draft.id, { now: 2_000, ownerId: 'session-a' })).toEqual(draft);
+  expect(readRetryDraft(draft.id, { now: 2_001, ownerId: 'session-a' })).toBeUndefined();
+
+  saveRetryDraft(
+    { ...draft, id: 'draft-expired' },
+    { now: 10_000, ownerId: 'session-a', ttlMs: 1 },
+  );
+  expect(readRetryDraft('draft-expired', { now: 10_002, ownerId: 'session-a' })).toBeUndefined();
+});
+
+it.each([
+  ['provider', { providerId: 'other-provider' }],
+  ['model', { modelId: 'missing-model' }],
+  ['schema', { capabilitySchemaVersion: 201909 }],
+] as const)(
+  'fails closed when a retry draft has mismatched %s identity',
+  async (_kind, mismatch) => {
+    render(
+      <StudioWorkspace
+        retryDraft={{
+          id: 'draft-incompatible',
+          generationMode: 'IMAGE_TO_VIDEO',
+          providerId: 'mock-provider-east',
+          modelId: 'mock-cinema-v2',
+          capabilityVersion: 'cap-image-v7',
+          capabilitySchemaVersion: 202012,
+          parameters: { image: 'asset-private', duration: 5, motion: 'natural' },
+          ...mismatch,
+        }}
+        retryDraftRequested
+      />,
+    );
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('重试草稿');
+    expect(screen.queryByDisplayValue('asset-private')).not.toBeInTheDocument();
+  },
+);
+
+it('binds cancellation idempotency cache entries to the task fingerprint', async () => {
+  const key = crypto.randomUUID();
+  const first = await taskGateway.cancelTask('task-1', { idempotencyKey: key });
+  await expect(taskGateway.cancelTask('task-2', { idempotencyKey: key })).rejects.toMatchObject({
+    outcome: 'DEFINITIVE_FAILURE',
+  });
+  await expect(taskGateway.cancelTask('task-1', { idempotencyKey: key })).resolves.toEqual(first);
 });

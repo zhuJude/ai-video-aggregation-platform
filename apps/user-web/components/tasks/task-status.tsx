@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { apiClient } from '../../lib/api-client';
 import { openTaskEventStream } from '../../lib/task-event-stream';
-import { parseTaskDetail, parseTaskStatusSnapshot, reduceStatus } from '../../lib/tasks/runtime';
+import { parseTaskDetail, parseTaskStreamEvent, reduceStatus } from '../../lib/tasks/runtime';
 import type { TaskStatusSnapshot } from '../../lib/tasks/types';
 
 const BACKOFF_MS = [1_000, 2_000] as const;
@@ -52,9 +52,9 @@ export function TaskStatus({ initial, onChange, taskId }: TaskStatusProps) {
     let activeStream: AbortController | undefined;
     let failures = 0;
 
-    const apply = (next: TaskStatusSnapshot) => {
+    const apply = (next: TaskStatusSnapshot): boolean => {
       const reduced = reduceStatus(currentRef.current, next);
-      if (reduced === currentRef.current) return;
+      if (reduced === currentRef.current) return false;
       currentRef.current = reduced;
       setSnapshot(reduced);
       onChangeRef.current?.(reduced);
@@ -63,6 +63,7 @@ export function TaskStatus({ initial, onChange, taskId }: TaskStatusProps) {
         if (retryTimer) clearTimeout(retryTimer);
         if (pollTimer) clearTimeout(pollTimer);
       }
+      return true;
     };
 
     const schedulePoll = () => {
@@ -90,8 +91,8 @@ export function TaskStatus({ initial, onChange, taskId }: TaskStatusProps) {
         lastEventId: currentRef.current.eventId,
         signal: activeStream.signal,
         onEvent: (event) => {
-          failures = 0;
-          apply(parseTaskStatusSnapshot(event.data, event.eventId));
+          const next = parseTaskStreamEvent(event, taskId, currentRef.current);
+          if (apply(next)) failures = 0;
         },
       })
         .catch(() => {
