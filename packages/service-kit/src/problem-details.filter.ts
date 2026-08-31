@@ -1,24 +1,39 @@
-import type { ApiError } from '@repo/contracts/common';
+import { ApiErrorSchema, type ApiError } from '@repo/contracts/common';
+
+export class PublicApiError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+  readonly details: Record<string, unknown> | undefined;
+
+  constructor(
+    code: string,
+    message: string,
+    retryable = false,
+    details?: Record<string, unknown>,
+  ) {
+    super(ApiErrorSchema.shape.message.parse(message));
+    this.name = 'PublicApiError';
+    this.code = ApiErrorSchema.shape.code.parse(code);
+    this.retryable = retryable;
+    this.details = details;
+  }
+}
 
 export function toApiError(error: unknown, traceId: string): ApiError {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    typeof error.code === 'string'
-  ) {
-    return {
+  if (error instanceof PublicApiError) {
+    return ApiErrorSchema.parse({
       code: error.code,
-      message: '请求无法完成',
-      retryable: false,
+      message: error.message,
+      retryable: error.retryable,
       traceId,
-    };
+      ...(error.details === undefined ? {} : { details: error.details }),
+    });
   }
 
-  return {
+  return ApiErrorSchema.parse({
     code: 'INTERNAL_ERROR',
     message: '系统暂时不可用',
     retryable: true,
     traceId,
-  };
+  });
 }
