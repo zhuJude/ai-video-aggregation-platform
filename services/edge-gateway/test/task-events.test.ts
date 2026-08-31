@@ -28,9 +28,9 @@ describe('task event streams', () => {
     const ownership: TaskOwnershipVerifier = { isOwned: vi.fn().mockResolvedValue(false) };
     const route = new TaskEventsRoute(ownership, new FakeStreamSource());
 
-    await expect(
-      route.open({ taskId: 'other-task', userId: 'user-1' }),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(route.open({ taskId: 'other-task', userId: 'user-1' })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
   });
 
   it('forwards Last-Event-ID on reconnect and disables buffering and caching', async () => {

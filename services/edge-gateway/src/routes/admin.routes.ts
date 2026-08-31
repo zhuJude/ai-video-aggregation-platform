@@ -38,7 +38,10 @@ export interface AdminBffClients {
 export class AdminBff {
   constructor(private readonly clients: AdminBffClients) {}
 
-  async overview(subject: AdminSubject, context: ServiceRequestContext): Promise<{
+  async overview(
+    subject: AdminSubject,
+    context: ServiceRequestContext,
+  ): Promise<{
     activeAlerts: object | null;
     partial: string[];
     reporting: object | null;

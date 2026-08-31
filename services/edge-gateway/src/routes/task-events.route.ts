@@ -65,10 +65,7 @@ export class TaskEventsRoute {
     if (!(await this.ownership.isOwned(input.taskId, input.userId))) {
       throw new PublicApiError('NOT_FOUND', '任务不存在', false);
     }
-    if (
-      input.lastEventId !== undefined &&
-      !/^[\x20-\x7e]{1,256}$/.test(input.lastEventId)
-    ) {
+    if (input.lastEventId !== undefined && !/^[\x20-\x7e]{1,256}$/.test(input.lastEventId)) {
       throw new PublicApiError('BAD_REQUEST', 'Last-Event-ID 格式无效', false);
     }
     const active = this.activeConnections(input.userId);

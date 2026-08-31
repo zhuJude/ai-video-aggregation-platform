@@ -17,10 +17,7 @@ return -1
 `;
 
 export type IdempotentRoute =
-  | 'payment-create'
-  | 'point-adjustment'
-  | 'refund-create'
-  | 'task-create';
+  'payment-create' | 'point-adjustment' | 'refund-create' | 'task-create';
 
 export interface IdempotencyClaim {
   readonly body: unknown;

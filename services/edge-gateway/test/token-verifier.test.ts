@@ -13,12 +13,10 @@ describe('TokenVerifier', () => {
   let verifier: TokenVerifier;
 
   beforeAll(async () => {
-    ({ privateKey: browserPrivateKey, publicKey: browserPublicKey } = await generateKeyPair(
-      'EdDSA',
-    ));
-    ({ privateKey: internalPrivateKey, publicKey: internalPublicKey } = await generateKeyPair(
-      'EdDSA',
-    ));
+    ({ privateKey: browserPrivateKey, publicKey: browserPublicKey } =
+      await generateKeyPair('EdDSA'));
+    ({ privateKey: internalPrivateKey, publicKey: internalPublicKey } =
+      await generateKeyPair('EdDSA'));
     verifier = new TokenVerifier({
       user: {
         issuer: 'identity-service',

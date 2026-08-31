@@ -6,11 +6,7 @@ export interface RedisScriptClient {
 }
 
 export type RatePolicyName =
-  | 'catalog-read'
-  | 'payment-write'
-  | 'point-adjustment'
-  | 'sms'
-  | 'task-write';
+  'catalog-read' | 'payment-write' | 'point-adjustment' | 'sms' | 'task-write';
 
 export interface RateLimitIdentity {
   readonly deviceId?: string;
@@ -77,7 +73,9 @@ function hashedIdentity(identity: RateLimitIdentity): string {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, value]) => `${name}:${value}`)
     .join('|');
-  return createHash('sha256').update(normalized || 'anonymous').digest('hex');
+  return createHash('sha256')
+    .update(normalized || 'anonymous')
+    .digest('hex');
 }
 
 function parseRedisResult(result: unknown): [number, number] {

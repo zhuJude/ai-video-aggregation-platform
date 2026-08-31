@@ -1,4 +1,4 @@
-import { Catch, type ArgumentsHost, type ExceptionFilter } from '@nestjs/common';
+import { Catch, HttpException, type ArgumentsHost, type ExceptionFilter } from '@nestjs/common';
 import { HEADERS } from '@repo/contracts/common';
 import { PublicApiError, toApiError } from '@repo/service-kit';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -12,6 +12,7 @@ const PUBLIC_ERROR_STATUSES: Readonly<Record<string, number>> = {
   IDEMPOTENCY_UNAVAILABLE: 503,
   INVALID_IDEMPOTENCY_KEY: 400,
   NOT_FOUND: 404,
+  PAYLOAD_TOO_LARGE: 413,
   RATE_LIMITED: 429,
   RATE_LIMIT_UNAVAILABLE: 503,
   SERVICE_TIMEOUT: 504,
@@ -22,9 +23,7 @@ const PUBLIC_ERROR_STATUSES: Readonly<Record<string, number>> = {
 
 function requestTraceId(request: FastifyRequest): string {
   const value = request.headers[HEADERS.traceId];
-  return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value)
-    ? value
-    : '0'.repeat(32);
+  return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value) ? value : '0'.repeat(32);
 }
 
 @Catch()
@@ -33,10 +32,35 @@ export class GatewayErrorFilter implements ExceptionFilter {
     const http = host.switchToHttp();
     const request = http.getRequest<FastifyRequest>();
     const reply = http.getResponse<FastifyReply>();
-    const body = toApiError(error, requestTraceId(request));
+    const normalizedError = normalizeFrameworkError(error);
+    const body = toApiError(normalizedError, requestTraceId(request));
     const statusCode =
-      error instanceof PublicApiError ? (PUBLIC_ERROR_STATUSES[error.code] ?? 400) : 500;
+      normalizedError instanceof PublicApiError
+        ? (PUBLIC_ERROR_STATUSES[normalizedError.code] ?? 400)
+        : 500;
 
     void reply.status(statusCode).type('application/json').send(body);
   }
+}
+
+function normalizeFrameworkError(error: unknown): unknown {
+  if (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    error.code === 'FST_ERR_CTP_BODY_TOO_LARGE'
+  ) {
+    return new PublicApiError('PAYLOAD_TOO_LARGE', '请求体超过大小限制', false);
+  }
+  if (error instanceof HttpException) {
+    const status = error.getStatus();
+    if (status === 404) return new PublicApiError('NOT_FOUND', '请求的资源不存在', false);
+    if (status === 413) {
+      return new PublicApiError('PAYLOAD_TOO_LARGE', '请求体超过大小限制', false);
+    }
+    if (status >= 400 && status < 500) {
+      return new PublicApiError('BAD_REQUEST', '请求无法处理', false);
+    }
+  }
+  return error;
 }

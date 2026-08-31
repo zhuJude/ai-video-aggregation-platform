@@ -47,7 +47,7 @@ describe('ServiceClient', () => {
     const requests: ServiceTransportRequest[] = [];
     const transport: ServiceTransport = vi.fn(
       (request: ServiceTransportRequest): Promise<ServiceTransportResponse> => {
-      requests.push(request);
+        requests.push(request);
         if (requests.length === 1) return Promise.reject(new Error('temporary reset'));
         return Promise.resolve({ body: { models: [] }, statusCode: 200 });
       },

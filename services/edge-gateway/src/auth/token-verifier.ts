@@ -1,11 +1,5 @@
 import { PermissionKeySchema } from '@repo/contracts/iam';
-import {
-  decodeProtectedHeader,
-  jwtVerify,
-  SignJWT,
-  type CryptoKey,
-  type JWTPayload,
-} from 'jose';
+import { decodeProtectedHeader, jwtVerify, SignJWT, type CryptoKey, type JWTPayload } from 'jose';
 import type {
   AdminSubject,
   AuthenticatedSubject,
@@ -62,7 +56,9 @@ function requireAdminClaims(payload: JWTPayload): {
   if (!Array.isArray(payload.permissions)) {
     throw new Error('missing permissions');
   }
-  const permissions = payload.permissions.map((permission) => PermissionKeySchema.parse(permission));
+  const permissions = payload.permissions.map((permission) =>
+    PermissionKeySchema.parse(permission),
+  );
   const dataScope = payload.dataScope;
   if (typeof dataScope !== 'string' || !DATA_SCOPES.has(dataScope as DataScope)) {
     throw new Error('invalid data scope');

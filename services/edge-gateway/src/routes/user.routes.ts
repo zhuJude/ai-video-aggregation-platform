@@ -30,7 +30,10 @@ function settledValue(result: PromiseSettledResult<object>): object | null {
 export class UserBff {
   constructor(private readonly clients: UserBffClients) {}
 
-  async dashboard(subject: UserSubject, context: ServiceRequestContext): Promise<{
+  async dashboard(
+    subject: UserSubject,
+    context: ServiceRequestContext,
+  ): Promise<{
     messages: object | null;
     partial: string[];
     recentTasks: object | null;
