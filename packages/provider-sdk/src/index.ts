@@ -18,9 +18,7 @@ export interface VideoProviderAdapter {
   readonly code: string;
   validateConfiguration(): Promise<{ valid: boolean; issues: string[] }>;
   getHealth(): Promise<{ status: 'UP' | 'DEGRADED' | 'DOWN'; latencyMs: number }>;
-  createTask(
-    input: CanonicalCreateTask,
-  ): Promise<{ providerTaskId: string; state: ProviderState }>;
+  createTask(input: CanonicalCreateTask): Promise<{ providerTaskId: string; state: ProviderState }>;
   queryTask(input: { providerTaskId: string }): Promise<ProviderResult>;
   cancelTask?(input: { providerTaskId: string }): Promise<ProviderResult>;
   verifyCallback(input: {

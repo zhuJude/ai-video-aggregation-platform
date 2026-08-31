@@ -1,5 +1,13 @@
 import type { VideoProviderAdapter } from './index.js';
 
+const providerStates: ReadonlySet<unknown> = new Set([
+  'ACCEPTED',
+  'RUNNING',
+  'SUCCEEDED',
+  'FAILED',
+  'CANCELED',
+]);
+
 export async function runAdapterConformance(adapter: VideoProviderAdapter): Promise<string[]> {
   const issues: string[] = [];
   const configuration = await adapter.validateConfiguration();
@@ -23,8 +31,8 @@ export async function runAdapterConformance(adapter: VideoProviderAdapter): Prom
   }
 
   const queried = await adapter.queryTask({ providerTaskId: created.providerTaskId });
-  if (!queried.state) {
-    issues.push('queryTask returned no state');
+  if (!providerStates.has(queried.state)) {
+    issues.push('queryTask returned an invalid state');
   }
 
   const callback = await adapter.verifyCallback({ headers: {}, body: {} });

@@ -6,13 +6,7 @@ import {
   UuidSchema,
 } from '../common/index.js';
 
-export const PaymentStatusSchema = z.enum([
-  'PENDING',
-  'PAID',
-  'CLOSED',
-  'REFUNDED',
-  'FAILED',
-]);
+export const PaymentStatusSchema = z.enum(['PENDING', 'PAID', 'CLOSED', 'REFUNDED', 'FAILED']);
 export const RechargeOrderSchema = z.object({
   id: UuidSchema,
   userId: UuidSchema,

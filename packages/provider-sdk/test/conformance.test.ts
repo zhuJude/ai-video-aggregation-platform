@@ -3,26 +3,26 @@ import { runAdapterConformance, type VideoProviderAdapter } from '../src/index.j
 
 const adapter: VideoProviderAdapter = {
   code: 'fake',
-  async validateConfiguration() {
-    return { valid: true, issues: [] };
+  validateConfiguration() {
+    return Promise.resolve({ valid: true, issues: [] });
   },
-  async getHealth() {
-    return { status: 'UP', latencyMs: 5 };
+  getHealth() {
+    return Promise.resolve({ status: 'UP', latencyMs: 5 });
   },
-  async createTask(input) {
-    return { providerTaskId: `p-${input.taskId}`, state: 'ACCEPTED' };
+  createTask(input) {
+    return Promise.resolve({ providerTaskId: `p-${input.taskId}`, state: 'ACCEPTED' });
   },
-  async queryTask() {
-    return {
+  queryTask() {
+    return Promise.resolve({
       state: 'SUCCEEDED',
       resultUrls: ['https://example.invalid/result.mp4'],
-    };
+    });
   },
-  async verifyCallback() {
-    return { valid: true, payload: {} };
+  verifyCallback() {
+    return Promise.resolve({ valid: true, payload: {} });
   },
-  async normalizeCallback() {
-    return { state: 'SUCCEEDED', resultUrls: [] };
+  normalizeCallback() {
+    return Promise.resolve({ state: 'SUCCEEDED', resultUrls: [] });
   },
 };
 

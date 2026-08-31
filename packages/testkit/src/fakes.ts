@@ -13,7 +13,8 @@ export class FakeClock {
 export class InMemoryEventBus {
   readonly events: unknown[] = [];
 
-  async publish(event: unknown): Promise<void> {
+  publish(event: unknown): Promise<void> {
     this.events.push(structuredClone(event));
+    return Promise.resolve();
   }
 }
