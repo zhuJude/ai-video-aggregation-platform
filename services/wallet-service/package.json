@@ -1,0 +1,23 @@
+{
+  "name": "@repo/wallet-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --exclude dist/**",
+    "test:coverage": "vitest run --coverage --exclude dist/**"
+  },
+  "dependencies": {
+    "@prisma/client": "7.10.0",
+    "@repo/contracts": "workspace:*",
+    "@repo/service-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "4.1.11",
+    "fast-check": "4.9.0",
+    "prisma": "7.10.0"
+  }
+}

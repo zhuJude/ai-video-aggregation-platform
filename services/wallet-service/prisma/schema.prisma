@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum WalletAccountKind {
+  USER_AVAILABLE
+  USER_FROZEN
+  PLATFORM_LIABILITY
+  PLATFORM_CONSUMED
+  ADJUSTMENT
+}
+
+enum LedgerTransactionKind {
+  CREDIT
+  RESERVE
+  SETTLE
+  RELEASE
+  ADJUST
+  REPAIR
+  REFUND
+}
+
+enum ReconciliationStatus {
+  RUNNING
+  MATCHED
+  MISMATCHED
+  REPAIRED
+}
+
+model WalletAccount {
+  id        String            @id @db.Uuid
+  ownerId   String            @db.VarChar(80)
+  kind      WalletAccountKind
+  createdAt DateTime          @default(now()) @db.Timestamptz(3)
+  entries   LedgerEntry[]
+  snapshot  BalanceSnapshot?
+
+  @@unique([ownerId, kind])
+  @@index([ownerId])
+}
+
+model LedgerTransaction {
+  id          String                @id @db.Uuid
+  businessKey String                @unique @db.VarChar(120)
+  kind        LedgerTransactionKind
+  userId      String?               @db.Uuid
+  reason      String?               @db.VarChar(240)
+  traceId     String                @db.VarChar(64)
+  createdAt   DateTime              @default(now()) @db.Timestamptz(3)
+  entries     LedgerEntry[]
+
+  @@index([userId, createdAt])
+}
+
+model LedgerEntry {
+  id            String            @id @db.Uuid
+  transactionId String            @db.Uuid
+  accountId     String            @db.Uuid
+  delta         BigInt
+  createdAt     DateTime          @default(now()) @db.Timestamptz(3)
+  transaction   LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  account       WalletAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([transactionId])
+  @@index([accountId, createdAt])
+}
+
+model BalanceSnapshot {
+  accountId String        @id @db.Uuid
+  balance   BigInt
+  version   BigInt        @default(0)
+  updatedAt DateTime      @updatedAt @db.Timestamptz(3)
+  account   WalletAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+}
+
+model OutboxEvent {
+  id            String    @id @db.Uuid
+  aggregateType String    @db.VarChar(80)
+  aggregateId   String    @db.VarChar(80)
+  eventType     String    @db.VarChar(120)
+  payload       Json
+  traceId       String    @db.VarChar(64)
+  occurredAt    DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime? @db.Timestamptz(3)
+  attempts      Int       @default(0)
+
+  @@index([publishedAt, occurredAt])
+}
+
+model InboxMessage {
+  messageId   String   @id @db.VarChar(120)
+  consumer    String   @db.VarChar(120)
+  processedAt DateTime @default(now()) @db.Timestamptz(3)
+  result      Json?
+
+  @@unique([messageId, consumer])
+}
+
+model ReconciliationRun {
+  id            String               @id @db.Uuid
+  status        ReconciliationStatus
+  startedAt     DateTime             @default(now()) @db.Timestamptz(3)
+  completedAt   DateTime?            @db.Timestamptz(3)
+  mismatchCount Int                  @default(0)
+  summary       Json?
+}
