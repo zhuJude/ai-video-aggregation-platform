@@ -1,5 +1,17 @@
 import { Counter, Gauge, Histogram, Registry, type Metric } from 'prom-client';
 
+export interface CounterHandle<T extends string> {
+  inc(labels: Record<T, string | number>, value?: number): void;
+}
+
+export interface GaugeHandle<T extends string> {
+  set(labels: Record<T, string | number>, value: number): void;
+}
+
+export interface HistogramHandle<T extends string> {
+  observe(labels: Record<T, string | number>, value: number): void;
+}
+
 const FORBIDDEN_LABELS = new Set([
   'userid',
   'taskid',

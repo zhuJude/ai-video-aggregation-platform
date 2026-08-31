@@ -2,7 +2,6 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import type { ExportService, ExportReport } from '../application/export.service.js';
 import type {
   DailyMetric,
-  InMemoryProjectionStore,
   ModelDailyMetric,
   ProviderDailyMetric,
   UserSegmentMetric,
@@ -34,6 +33,16 @@ interface JsonTotals {
   failedTasks: number;
   taskDurationMsTotal: string;
   taskDurationSamples: number;
+}
+
+type MaybePromise<T> = T | Promise<T>;
+
+export interface ReportProjectionReader {
+  allDailyMetrics(): MaybePromise<DailyMetric[]>;
+  allProviderDailyMetrics(): MaybePromise<ProviderDailyMetric[]>;
+  allModelDailyMetrics(): MaybePromise<ModelDailyMetric[]>;
+  allUserSegmentMetrics(): MaybePromise<UserSegmentMetric[]>;
+  checkpoint(): MaybePromise<{ projectedThrough: string } | undefined>;
 }
 
 function parseDate(value: string | undefined, name: string): string {
@@ -115,21 +124,26 @@ export class ReportError extends Error {
 
 export class ReportQueryService {
   constructor(
-    private readonly store: InMemoryProjectionStore,
+    private readonly store: ReportProjectionReader,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  overview(range: ReportRange): Record<string, unknown> {
-    const daily = this.store.allDailyMetrics().filter((metric) => includesDate(metric.date, range));
-    return this.envelope({ totals: aggregateDaily(daily), daily: daily.map(this.serializeDaily) });
+  async overview(range: ReportRange): Promise<Record<string, unknown>> {
+    const daily = (await this.store.allDailyMetrics()).filter((metric) =>
+      includesDate(metric.date, range),
+    );
+    return await this.envelope({
+      totals: aggregateDaily(daily),
+      daily: daily.map(this.serializeDaily),
+    });
   }
 
-  finance(range: ReportRange): Record<string, unknown> {
+  async finance(range: ReportRange): Promise<Record<string, unknown>> {
     const totals = aggregateDaily(
-      this.store.allDailyMetrics().filter((metric) => includesDate(metric.date, range)),
+      (await this.store.allDailyMetrics()).filter((metric) => includesDate(metric.date, range)),
     );
     const denominator = BigInt(totals.marginDenominatorMinor);
-    return this.envelope({
+    return await this.envelope({
       totals,
       marginRate:
         denominator === 0n
@@ -138,22 +152,24 @@ export class ReportQueryService {
     });
   }
 
-  providers(range: ReportRange): Record<string, unknown> {
-    return this.envelope({
-      items: this.groupProviders(this.store.allProviderDailyMetrics(), range),
+  async providers(range: ReportRange): Promise<Record<string, unknown>> {
+    return await this.envelope({
+      items: this.groupProviders(await this.store.allProviderDailyMetrics(), range),
     });
   }
 
-  models(range: ReportRange): Record<string, unknown> {
-    return this.envelope({ items: this.groupModels(this.store.allModelDailyMetrics(), range) });
+  async models(range: ReportRange): Promise<Record<string, unknown>> {
+    return await this.envelope({
+      items: this.groupModels(await this.store.allModelDailyMetrics(), range),
+    });
   }
 
-  tasks(range: ReportRange): Record<string, unknown> {
+  async tasks(range: ReportRange): Promise<Record<string, unknown>> {
     const totals = aggregateDaily(
-      this.store.allDailyMetrics().filter((metric) => includesDate(metric.date, range)),
+      (await this.store.allDailyMetrics()).filter((metric) => includesDate(metric.date, range)),
     );
     const totalTasks = totals.successfulTasks + totals.failedTasks;
-    return this.envelope({
+    return await this.envelope({
       successfulTasks: totals.successfulTasks,
       failedTasks: totals.failedTasks,
       successRate: totalTasks === 0 ? null : totals.successfulTasks / totalTasks,
@@ -164,26 +180,28 @@ export class ReportQueryService {
     });
   }
 
-  users(range: ReportRange): Record<string, unknown> {
-    return this.envelope({ items: this.groupUsers(this.store.allUserSegmentMetrics(), range) });
+  async users(range: ReportRange): Promise<Record<string, unknown>> {
+    return await this.envelope({
+      items: this.groupUsers(await this.store.allUserSegmentMetrics(), range),
+    });
   }
 
-  alertSummary(): Record<string, unknown> {
-    return this.envelope({ items: [] });
+  async alertSummary(): Promise<Record<string, unknown>> {
+    return await this.envelope({ items: [] });
   }
 
-  exportRows(
+  async exportRows(
     report: ExportReport,
     range: ReportRange,
-  ): Array<Record<string, string | number | null>> {
-    const result = this.report(report, range);
+  ): Promise<Array<Record<string, string | number | null>>> {
+    const result = await this.report(report, range);
     const payload = JSON.stringify(result, (_key, value: unknown) =>
       typeof value === 'bigint' ? value.toString() : value,
     );
     return [{ report, from: range.from, to: range.to, timezone: TIMEZONE, payload }];
   }
 
-  report(report: ExportReport, range: ReportRange): Record<string, unknown> {
+  report(report: ExportReport, range: ReportRange): Promise<Record<string, unknown>> {
     switch (report) {
       case 'overview':
         return this.overview(range);
@@ -200,8 +218,8 @@ export class ReportQueryService {
     }
   }
 
-  private envelope(payload: Record<string, unknown>): Record<string, unknown> {
-    const checkpoint = this.store.checkpoint();
+  private async envelope(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const checkpoint = await this.store.checkpoint();
     const projectedThrough = checkpoint?.projectedThrough ?? null;
     const lagSeconds =
       projectedThrough === null
@@ -298,15 +316,15 @@ export function buildReportingApp(dependencies: {
   } as const;
 
   for (const [name, handler] of Object.entries(reportHandlers)) {
-    app.get(`/internal/reports/${name}`, (request) => {
+    app.get(`/internal/reports/${name}`, async (request) => {
       requirePermission(request, 'reports:read');
-      return handler(validateRange(request.query as RangeQuery));
+      return await handler(validateRange(request.query as RangeQuery));
     });
   }
-  app.get('/internal/reports/alert-summary', (request) => {
+  app.get('/internal/reports/alert-summary', async (request) => {
     requirePermission(request, 'reports:read');
     validateRange(request.query as RangeQuery);
-    return dependencies.queries.alertSummary();
+    return await dependencies.queries.alertSummary();
   });
   app.post('/internal/reports/exports', async (request, reply) => {
     requirePermission(request, 'reports:export');

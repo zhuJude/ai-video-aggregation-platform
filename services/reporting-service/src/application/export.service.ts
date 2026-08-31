@@ -95,7 +95,7 @@ export class ExportService {
     if (job === undefined || job.status !== 'QUEUED') return false;
     job.status = 'RUNNING';
     try {
-      const rows = this.queries.exportRows(job.report, job.range);
+      const rows = await this.queries.exportRows(job.report, job.range);
       const completedAt = this.now();
       const expiresAt = new Date(completedAt.getTime() + 15 * 60 * 1000).toISOString();
       const datePrefix = completedAt.toISOString().slice(0, 10).replaceAll('-', '/');
