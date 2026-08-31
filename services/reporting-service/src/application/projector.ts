@@ -399,6 +399,10 @@ export class InMemoryProjectionStore {
     return { ...metric };
   }
 
+  allProviderDailyMetrics(version = this.active): ProviderDailyMetric[] {
+    return [...this.requiredVersion(version).providers.values()].map((metric) => ({ ...metric }));
+  }
+
   modelDailyMetric(date: string, modelId: string, version = this.active): ModelDailyMetric {
     const metric =
       this.requiredVersion(version).models.get(dimensionKey(date, modelId)) ??
@@ -406,11 +410,19 @@ export class InMemoryProjectionStore {
     return { ...metric };
   }
 
+  allModelDailyMetrics(version = this.active): ModelDailyMetric[] {
+    return [...this.requiredVersion(version).models.values()].map((metric) => ({ ...metric }));
+  }
+
   userSegmentMetric(date: string, segment: string, version = this.active): UserSegmentMetric {
     const metric =
       this.requiredVersion(version).segments.get(dimensionKey(date, segment)) ??
       emptySegment(date, segment);
     return { ...metric };
+  }
+
+  allUserSegmentMetrics(version = this.active): UserSegmentMetric[] {
+    return [...this.requiredVersion(version).segments.values()].map((metric) => ({ ...metric }));
   }
 
   realtimeCounter(key: string, version = this.active): bigint {
