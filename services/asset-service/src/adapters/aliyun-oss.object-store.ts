@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Readable, Transform, type TransformCallback } from 'node:stream';
+import { Transform, type Readable, type TransformCallback } from 'node:stream';
 import OSS from 'ali-oss';
 import type { ObjectStore } from '../ports/object-store.js';
 
@@ -29,7 +29,6 @@ export interface AliyunOssObjectStoreConfig {
   }) => Promise<StsCredentials>;
   secretResolver: (kmsReference: string) => Promise<string>;
   now?: () => Date;
-  fetchImplementation?: typeof fetch;
 }
 
 export class ObjectStoreConfigurationError extends Error {
@@ -43,14 +42,12 @@ export class AliyunOssObjectStore implements ObjectStore {
   readonly #config: AliyunOssObjectStoreConfig;
   readonly #cdnBaseUrl: URL;
   readonly #now: () => Date;
-  readonly #fetch: typeof fetch;
 
   constructor(config: AliyunOssObjectStoreConfig) {
     validateConfiguration(config);
     this.#config = config;
     this.#cdnBaseUrl = new URL(config.cdnBaseUrl);
     this.#now = config.now ?? (() => new Date());
-    this.#fetch = config.fetchImplementation ?? fetch;
   }
 
   async createUpload(input: {
@@ -166,64 +163,31 @@ export class AliyunOssObjectStore implements ObjectStore {
     await client.delete(objectKey);
   }
 
-  async copyFromUrl(input: {
-    sourceUrl: string;
+  /** Private KMS streaming sink used only by the pinned provider-result transport. */
+  async putStream(input: {
     destinationKey: string;
+    contentType: string;
     maxBytes: bigint;
-    allowedHosts: string[];
+    stream: Readable;
   }): Promise<{ sizeBytes: bigint; contentType: string; checksum?: string }> {
     validateObjectKey(input.destinationKey);
-    const source = validateSourceUrl(input.sourceUrl, input.allowedHosts);
-    const response = await this.#fetch(source, {
-      method: 'GET',
-      redirect: 'manual',
-      signal: AbortSignal.timeout(20_000),
-      headers: { Accept: 'image/*,video/*,application/octet-stream' },
-    });
-    if (!response.ok || response.body === null) {
-      throw new Error(`Source fetch failed with HTTP ${String(response.status)}`);
-    }
-    const declaredLength = response.headers.get('content-length');
-    if (
-      declaredLength !== null &&
-      /^\d+$/.test(declaredLength) &&
-      BigInt(declaredLength) > input.maxBytes
-    ) {
-      await response.body.cancel();
-      throw new Error('Source object exceeds the configured size limit');
-    }
-    const contentType = response.headers
-      .get('content-type')
-      ?.split(';', 1)[0]
-      ?.trim()
-      .toLowerCase();
-    if (contentType === undefined || contentType.length === 0) {
-      await response.body.cancel();
-      throw new Error('Source response is missing a content type');
-    }
-
     const client = this.#makeClient(await this.#getStsCredentials());
     const limiter = new ByteLimitTransform(input.maxBytes);
-    const sourceStream = Readable.from(response.body as unknown as AsyncIterable<Uint8Array>);
     try {
-      await client.putStream(input.destinationKey, sourceStream.pipe(limiter), {
-        mime: contentType,
+      await client.putStream(input.destinationKey, input.stream.pipe(limiter), {
+        mime: input.contentType,
         headers: {
           'x-oss-server-side-encryption': 'KMS',
           'x-oss-server-side-encryption-key-id': this.#config.kmsKeyReference,
+          'x-oss-forbid-overwrite': 'true',
         },
       });
-      const actual = await this.head(input.destinationKey);
-      if (actual.sizeBytes > input.maxBytes) {
-        throw new Error('Copied object exceeds the configured size limit');
-      }
-      return actual;
+      const stored = await this.head(input.destinationKey);
+      if (stored.sizeBytes > input.maxBytes) throw new Error('Copied object exceeds the configured size limit');
+      return stored;
     } catch (error) {
-      try {
-        await client.delete(input.destinationKey);
-      } catch {
-        // The caller records deletion retry state when immediate cleanup is unavailable.
-      }
+      input.stream.destroy(error instanceof Error ? error : undefined);
+      try { await client.delete(input.destinationKey); } catch { /* durable cleanup is scheduled by the importer */ }
       throw error;
     }
   }
@@ -334,21 +298,6 @@ function validateObjectKey(objectKey: string): void {
   ) {
     throw new Error('Invalid OSS object key');
   }
-}
-
-function validateSourceUrl(sourceUrl: string, allowedHosts: string[]): URL {
-  const url = new URL(sourceUrl);
-  const allowed = new Set(allowedHosts.map((host) => host.trim().toLowerCase()));
-  if (
-    url.protocol !== 'https:' ||
-    url.username.length > 0 ||
-    url.password.length > 0 ||
-    url.hash.length > 0 ||
-    !allowed.has(url.hostname.toLowerCase())
-  ) {
-    throw new Error('Source URL is not permitted');
-  }
-  return url;
 }
 
 function toSafePositiveNumber(value: bigint, label: string): number {

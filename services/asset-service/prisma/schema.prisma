@@ -47,8 +47,13 @@ model Asset {
   updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
   uploadSession    UploadSession?
   deletions        AssetDeletion[]
+  resultImport     ResultImport?
+  temporaryExpiresAt DateTime?     @db.Timestamptz(3)
+  failedTemporaryExpiresAt DateTime? @db.Timestamptz(3)
 
   @@index([ownerId, status, createdAt])
+  @@index([temporaryExpiresAt])
+  @@index([failedTemporaryExpiresAt])
 }
 
 model UploadSession {
@@ -70,13 +75,51 @@ model UploadSession {
 
 model AssetDeletion {
   id          String   @id @db.Uuid
-  assetId     String   @db.Uuid
+  assetId     String   @unique @db.Uuid
   objectKey   String
   scheduledAt DateTime @default(now()) @db.Timestamptz(3)
   deletedAt   DateTime? @db.Timestamptz(3)
   attempts    Int      @default(0)
   lastError   String?
+  claimToken  String?
+  leaseUntil  DateTime? @db.Timestamptz(3)
   asset       Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([deletedAt, scheduledAt])
+}
+
+model ResultImport {
+  id             String   @id @db.Uuid
+  idempotencyKey String   @unique
+  ownerId        String   @db.Uuid
+  providerId     String
+  authorizationId String  @db.Uuid
+  reservedObjectKey String?
+  assetId        String?  @unique @db.Uuid
+  status         String   @default("RESERVED")
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  importedAt     DateTime? @db.Timestamptz(3)
+  failedAt       DateTime? @db.Timestamptz(3)
+  attempts       Int      @default(0)
+  lastError      String?
+  claimToken     String?
+  leaseUntil     DateTime? @db.Timestamptz(3)
+  asset          Asset?   @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId, status, createdAt])
+}
+
+model AssetCleanup {
+  id        String   @id @db.Uuid
+  objectKey String   @unique
+  reason    String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  scheduledAt DateTime @default(now()) @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+  attempts  Int      @default(0)
+  lastError String?
+  claimToken String?
+  leaseUntil DateTime? @db.Timestamptz(3)
 
   @@index([deletedAt, scheduledAt])
 }
@@ -92,7 +135,39 @@ model OutboxEvent {
   publishedAt   DateTime?    @db.Timestamptz(3)
   attempts      Int          @default(0)
   lastError     String?
+  claimToken    String?
+  leaseUntil    DateTime?    @db.Timestamptz(3)
+  nextAttemptAt DateTime     @default(now()) @db.Timestamptz(3)
 
+  @@index([status, nextAttemptAt])
   @@index([status, occurredAt])
   @@index([aggregateType, aggregateId])
+}
+
+model ProviderResultAuthorization {
+  id                 String   @id @db.Uuid
+  providerId         String
+  providerTaskId     String
+  ownerId            String   @db.Uuid
+  allowedHosts       Json
+  expectedMimeType   String
+  expectedSizeBytes  BigInt
+  expectedChecksum   String?
+  originalFileName   String
+  status             String   @default("AWAITING_RESULT")
+  expiresAt          DateTime @db.Timestamptz(3)
+  createdAt          DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([providerId, providerTaskId])
+  @@index([status, expiresAt])
+}
+
+model ProviderCallbackNonce {
+  providerId String
+  nonce      String
+  expiresAt  DateTime @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@id([providerId, nonce])
+  @@index([expiresAt])
 }

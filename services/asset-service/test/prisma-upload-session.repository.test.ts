@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unsafe-assignment -- focused in-memory Prisma seams deliberately resolve synchronously. */
 import { describe, expect, it, vi } from 'vitest';
 import {
   PrismaUploadSessionRepository,
@@ -49,6 +50,17 @@ function makePrismaSeam(sessionUpdateCount: number) {
 }
 
 describe('PrismaUploadSessionRepository', () => {
+  it('persists a 24-hour temporary retention timestamp when a direct upload completes', async () => {
+    const updates: unknown[] = [];
+    const repository = new PrismaUploadSessionRepository({
+      $transaction: async (work: never) => (work as unknown as (tx: unknown) => Promise<unknown>)({
+        uploadSession: { findFirst: async () => ({ assetId: 'asset' }), updateMany: async () => ({ count: 1 }) },
+        asset: { updateMany: async (input: unknown) => { updates.push(input); return { count: 1 }; }, findUnique: async () => ({ id: 'asset', ownerId: 'owner', kind: 'UPLOAD', objectKey: 'uploads/a', originalFileName: 'a.png', mimeType: 'image/png', sizeBytes: 1n, checksum: null, status: 'AVAILABLE' }) },
+      }),
+    } as never);
+    await repository.completePending({ sessionId: 'session', ownerId: 'owner', completedAt: new Date('2026-08-31T00:00:00.000Z') });
+    expect(updates[0]).toMatchObject({ data: { temporaryExpiresAt: new Date('2026-09-01T00:00:00.000Z') } });
+  });
   it('atomically completes a pending owned unexpired session once', async () => {
     const seam = makePrismaSeam(1);
     const repository = new PrismaUploadSessionRepository(seam.client as PrismaUploadSessionClient);
@@ -66,10 +78,10 @@ describe('PrismaUploadSessionRepository', () => {
       },
       data: { status: 'COMPLETED', completedAt },
     });
-    expect(seam.asset.updateMany).toHaveBeenCalledWith({
+    expect(seam.asset.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: assetId, ownerId, status: 'PENDING' },
-      data: { status: 'AVAILABLE', availableAt: completedAt, checksum: 'sha256:example' },
-    });
+      data: expect.objectContaining({ status: 'AVAILABLE', availableAt: completedAt, checksum: 'sha256:example', temporaryExpiresAt: new Date('2026-09-01T00:00:00.000Z') }),
+    }));
   });
 
   it('returns null when a replay loses the conditional session update', async () => {
@@ -131,9 +143,11 @@ describe('PrismaUploadSessionRepository', () => {
     });
     expect(seam.asset.updateMany).toHaveBeenCalledWith({
       where: { id: assetId, ownerId, status: 'PENDING' },
-      data: { status: 'DELETING' },
+      data: { status: 'DELETING', failedTemporaryExpiresAt: new Date('2026-09-07T00:00:00.000Z') },
     });
-    expect(seam.assetDeletion.create).toHaveBeenCalledTimes(1);
+    expect(seam.assetDeletion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ scheduledAt: new Date('2026-09-07T00:00:00.000Z') }) as unknown,
+    });
   });
 
   it('rolls rejection work back by failing the transaction when deletion persistence fails', async () => {

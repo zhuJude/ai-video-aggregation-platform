@@ -137,13 +137,6 @@ function makeObjectStore(): TestObjectStore {
     createDownload,
     delete: deleteObject,
     readPrefix,
-    copyFromUrl: vi.fn(() =>
-      Promise.resolve({
-        contentType: 'image/png',
-        sizeBytes: 200n,
-        checksum: 'sha256:example',
-      }),
-    ),
     createUploadSpy: createUpload,
     headSpy: head,
     createDownloadSpy: createDownload,
