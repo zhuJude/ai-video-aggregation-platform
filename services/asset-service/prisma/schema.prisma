@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AssetKind {
+  UPLOAD
+  RESULT
+  THUMBNAIL
+}
+
+enum AssetStatus {
+  PENDING
+  AVAILABLE
+  DELETING
+  DELETED
+}
+
+enum UploadSessionStatus {
+  PENDING
+  COMPLETED
+  EXPIRED
+  REJECTED
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+model Asset {
+  id               String          @id @db.Uuid
+  ownerId          String          @db.Uuid
+  kind             AssetKind
+  status           AssetStatus     @default(PENDING)
+  objectKey        String          @unique
+  originalFileName String
+  mimeType         String
+  sizeBytes        BigInt
+  checksum         String?
+  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
+  availableAt      DateTime?       @db.Timestamptz(3)
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
+  uploadSession    UploadSession?
+  deletions        AssetDeletion[]
+
+  @@index([ownerId, status, createdAt])
+}
+
+model UploadSession {
+  id                String              @id @db.Uuid
+  ownerId           String              @db.Uuid
+  assetId           String              @unique @db.Uuid
+  objectKey         String              @unique
+  expectedMimeType  String
+  expectedSizeBytes BigInt
+  status            UploadSessionStatus @default(PENDING)
+  expiresAt         DateTime            @db.Timestamptz(3)
+  completedAt       DateTime?           @db.Timestamptz(3)
+  createdAt         DateTime            @default(now()) @db.Timestamptz(3)
+  asset             Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, status, expiresAt])
+  @@index([status, expiresAt])
+}
+
+model AssetDeletion {
+  id          String   @id @db.Uuid
+  assetId     String   @db.Uuid
+  objectKey   String
+  scheduledAt DateTime @default(now()) @db.Timestamptz(3)
+  deletedAt   DateTime? @db.Timestamptz(3)
+  attempts    Int      @default(0)
+  lastError   String?
+  asset       Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([deletedAt, scheduledAt])
+}
+
+model OutboxEvent {
+  id            String       @id @db.Uuid
+  aggregateType String
+  aggregateId   String       @db.Uuid
+  eventType     String
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  occurredAt    DateTime     @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime?    @db.Timestamptz(3)
+  attempts      Int          @default(0)
+  lastError     String?
+
+  @@index([status, occurredAt])
+  @@index([aggregateType, aggregateId])
+}
