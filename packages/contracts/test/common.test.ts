@@ -23,9 +23,7 @@ describe('common contracts', () => {
   });
 
   it('accepts only UTC timestamps ending in Z', () => {
-    expect(UtcDateTimeSchema.parse('2026-08-28T00:00:00.000Z')).toBe(
-      '2026-08-28T00:00:00.000Z',
-    );
+    expect(UtcDateTimeSchema.parse('2026-08-28T00:00:00.000Z')).toBe('2026-08-28T00:00:00.000Z');
     expect(() => UtcDateTimeSchema.parse('2026-08-28T08:00:00.000+08:00')).toThrow();
   });
 

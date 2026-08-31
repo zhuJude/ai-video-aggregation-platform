@@ -5,12 +5,7 @@ export class PublicApiError extends Error {
   readonly retryable: boolean;
   readonly details: Record<string, unknown> | undefined;
 
-  constructor(
-    code: string,
-    message: string,
-    retryable = false,
-    details?: Record<string, unknown>,
-  ) {
+  constructor(code: string, message: string, retryable = false, details?: Record<string, unknown>) {
     super(ApiErrorSchema.shape.message.parse(message));
     this.name = 'PublicApiError';
     this.code = ApiErrorSchema.shape.code.parse(code);
