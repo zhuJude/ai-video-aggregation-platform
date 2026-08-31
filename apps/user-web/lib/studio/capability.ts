@@ -146,8 +146,8 @@ function auditRequiredReferences(
   for (const field of schema.required ?? []) {
     if (!(field in properties)) unsupported.add(`${path || '$'}.required.${field}:unknown-field`);
   }
-  if (schema.dependentRequired) {
-    unsupported.add(`${path || '$'}.dependentRequired:unsupported-rendering`);
+  if (path && schema.dependentRequired) {
+    unsupported.add(`${path}.dependentRequired:root-only`);
   }
   for (const keyword of ['allOf', 'anyOf', 'oneOf'] as const) {
     schema[keyword]?.forEach((child, index) => {
@@ -182,7 +182,9 @@ interface RequirementPredicate {
 }
 
 function predicateFromIf(schema: StudioJsonSchema): RequirementPredicate | undefined {
-  const entries = Object.entries(schema.properties ?? {});
+  const entries = Object.entries(schema.properties ?? {}).filter(
+    ([, fieldSchema]) => fieldSchema.const !== undefined || fieldSchema.enum?.length,
+  );
   if (entries.length !== 1) return undefined;
   const [field, fieldSchema] = entries[0] ?? [];
   if (!field || !fieldSchema) return undefined;
@@ -191,25 +193,117 @@ function predicateFromIf(schema: StudioJsonSchema): RequirementPredicate | undef
   return undefined;
 }
 
+function complementPredicate(
+  predicate: RequirementPredicate | undefined,
+  properties: Readonly<Record<string, StudioJsonSchema>>,
+): RequirementPredicate | undefined {
+  if (!predicate) return undefined;
+  const domain = properties[predicate.field]?.enum;
+  if (!domain) return undefined;
+  const excluded = new Set(predicate.values.map(valueKey));
+  return {
+    field: predicate.field,
+    values: domain.filter((value) => !excluded.has(valueKey(value))),
+  };
+}
+
 function requirementPredicates(
   schema: StudioJsonSchema,
   target: string,
+  properties: Readonly<Record<string, StudioJsonSchema>>,
   activePredicate?: RequirementPredicate,
 ): readonly (RequirementPredicate | undefined)[] {
   const predicates: (RequirementPredicate | undefined)[] = [];
   if (schema.required?.includes(target)) predicates.push(activePredicate);
-  for (const keyword of ['allOf', 'anyOf', 'oneOf'] as const) {
+  for (const child of schema.allOf ?? []) {
+    predicates.push(...requirementPredicates(child, target, properties, activePredicate));
+  }
+  for (const keyword of ['anyOf', 'oneOf'] as const) {
     for (const child of schema[keyword] ?? []) {
-      predicates.push(...requirementPredicates(child, target, activePredicate));
+      predicates.push(
+        ...requirementPredicates(
+          child,
+          target,
+          properties,
+          predicateFromIf(child) ?? activePredicate,
+        ),
+      );
     }
   }
   if (schema.if) {
+    const ifPredicate = predicateFromIf(schema.if);
     if (schema.then) {
-      predicates.push(...requirementPredicates(schema.then, target, predicateFromIf(schema.if)));
+      predicates.push(...requirementPredicates(schema.then, target, properties, ifPredicate));
     }
-    if (schema.else) predicates.push(...requirementPredicates(schema.else, target));
+    if (schema.else) {
+      predicates.push(
+        ...requirementPredicates(
+          schema.else,
+          target,
+          properties,
+          complementPredicate(ifPredicate, properties),
+        ),
+      );
+    }
   }
   return predicates;
+}
+
+function predicateMatches(
+  predicate: RequirementPredicate | undefined,
+  values: Readonly<Record<string, unknown>>,
+): boolean {
+  if (!predicate) return true;
+  const current = values[predicate.field] as JsonSchemaValue | undefined;
+  return predicate.values.some((value) => valueKey(value) === valueKey(current ?? null));
+}
+
+function schemaRequiresField(
+  schema: StudioJsonSchema,
+  field: string,
+  values: Readonly<Record<string, unknown>>,
+  properties: Readonly<Record<string, StudioJsonSchema>>,
+): boolean {
+  if (schema.required?.includes(field)) return true;
+  if (
+    Object.entries(schema.dependentRequired ?? {}).some(
+      ([trigger, targets]) => values[trigger] !== undefined && targets.includes(field),
+    )
+  ) {
+    return true;
+  }
+  if (schema.allOf?.some((branch) => schemaRequiresField(branch, field, values, properties))) {
+    return true;
+  }
+  for (const keyword of ['anyOf', 'oneOf'] as const) {
+    if (
+      schema[keyword]?.some(
+        (branch) =>
+          predicateMatches(predicateFromIf(branch), values) &&
+          schemaRequiresField(branch, field, values, properties),
+      )
+    ) {
+      return true;
+    }
+  }
+  if (schema.if) {
+    const activeBranch = validateForm(schema.if, values).valid ? schema.then : schema.else;
+    if (activeBranch && schemaRequiresField(activeBranch, field, values, properties)) return true;
+  }
+  return false;
+}
+
+export function isFieldRequired(
+  document: StudioCapabilityDocument,
+  field: string,
+  values: Readonly<Record<string, unknown>>,
+): boolean {
+  return schemaRequiresField(
+    document.jsonSchema,
+    field,
+    values,
+    document.jsonSchema.properties ?? {},
+  );
 }
 
 function visibilityCoversPredicate(
@@ -241,6 +335,11 @@ export function auditCapabilityDocument(document: StudioCapabilityDocument): rea
   if (document.jsonSchema.type !== 'object') unsupported.add('$.type:root-must-be-object');
   const properties = document.jsonSchema.properties ?? {};
   const propertyNames = Object.keys(properties);
+  for (const [field, schema] of Object.entries(properties)) {
+    if (!schema.type || !SUPPORTED_FIELD_TYPES.has(schema.type)) {
+      unsupported.add(`properties.${field}.type:explicit-supported-type-required`);
+    }
+  }
   const orderCounts = new Map<string, number>();
   for (const field of document.uiSchema.order) {
     orderCounts.set(field, (orderCounts.get(field) ?? 0) + 1);
@@ -318,13 +417,39 @@ export function auditCapabilityDocument(document: StudioCapabilityDocument): rea
     ) {
       unsupported.add(`uiSchema.conditions.${condition.field}:predicate-type-mismatch`);
     }
-    const requiredPredicates = requirementPredicates(document.jsonSchema, condition.field);
+    const requiredPredicates = requirementPredicates(
+      document.jsonSchema,
+      condition.field,
+      properties,
+    );
     if (
       requiredPredicates.some(
         (predicate) => !predicate || !visibilityCoversPredicate(condition, predicate),
       )
     ) {
       unsupported.add(`uiSchema.conditions.${condition.field}:hidden-when-required`);
+    }
+  }
+
+  for (const [trigger, targets] of Object.entries(document.jsonSchema.dependentRequired ?? {})) {
+    if (!(trigger in properties) || !orderCounts.has(trigger)) {
+      unsupported.add(`$.dependentRequired.${trigger}:unknown-or-unrendered-trigger`);
+    }
+    for (const target of targets) {
+      if (!(target in properties) || !orderCounts.has(target)) {
+        unsupported.add(`$.dependentRequired.${trigger}.${target}:unknown-or-unrendered-target`);
+        continue;
+      }
+      const visibility = document.uiSchema.conditions?.find(
+        (condition) => condition.field === target,
+      );
+      if (visibility) {
+        const domain = properties[trigger]?.enum;
+        const predicate = domain ? { field: trigger, values: domain } : undefined;
+        if (!predicate || !visibilityCoversPredicate(visibility, predicate)) {
+          unsupported.add(`$.dependentRequired.${trigger}.${target}:hidden-when-required`);
+        }
+      }
     }
   }
 
@@ -367,7 +492,10 @@ function validatorFor(schema: StudioJsonSchema): ValidateFunction {
 }
 
 function fieldFromError(error: ErrorObject): string | undefined {
-  if (error.keyword === 'required' && 'missingProperty' in error.params) {
+  if (
+    (error.keyword === 'required' || error.keyword === 'dependentRequired') &&
+    'missingProperty' in error.params
+  ) {
     return String(error.params.missingProperty);
   }
   if (error.keyword === 'additionalProperties' && 'additionalProperty' in error.params) {
@@ -445,19 +573,35 @@ export function prepareCapabilityParameters(
   document: StudioCapabilityDocument,
   values: Readonly<Record<string, unknown>>,
 ): PreparedCapabilityParameters {
-  const required = new Set(document.jsonSchema.required ?? []);
+  const normalizedValues: Record<string, unknown> = { ...values };
+  const properties = document.jsonSchema.properties ?? {};
+  for (const field of document.uiSchema.order) {
+    if (
+      normalizedValues[field] === undefined &&
+      properties[field]?.type === 'boolean' &&
+      isFieldVisible(document, field, normalizedValues) &&
+      isFieldRequired(document, field, normalizedValues)
+    ) {
+      normalizedValues[field] = false;
+    }
+  }
   const hiddenOptional = new Set<string>();
   for (const field of document.uiSchema.order) {
-    if (!required.has(field) && !isFieldVisible(document, field, values)) {
+    if (
+      !isFieldRequired(document, field, normalizedValues) &&
+      !isFieldVisible(document, field, normalizedValues)
+    ) {
       hiddenOptional.add(field);
     }
   }
   const order = new Set(document.uiSchema.order);
   const parameters = Object.fromEntries(
-    Object.entries(values).filter(([field]) => order.has(field) && !hiddenOptional.has(field)),
+    Object.entries(normalizedValues).filter(
+      ([field]) => order.has(field) && !hiddenOptional.has(field),
+    ),
   );
   const unknownValues = Object.fromEntries(
-    Object.entries(values).filter(([field]) => !order.has(field)),
+    Object.entries(normalizedValues).filter(([field]) => !order.has(field)),
   );
 
   const validation = validateForm(document.jsonSchema, { ...parameters, ...unknownValues });

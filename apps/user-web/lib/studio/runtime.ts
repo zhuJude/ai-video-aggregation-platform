@@ -1,6 +1,7 @@
 import { CapabilityDocumentSchema } from '@repo/capability-schema';
 
 import type {
+  JsonSchemaValue,
   StudioCapabilityDocument,
   StudioJsonSchema,
   StudioModelOption,
@@ -9,6 +10,8 @@ import type {
   StudioQuoteRequest,
   StudioTaskAccepted,
 } from './types';
+
+export const SMART_ROUTING_PROMISE = '智能路由将在已报价点数内选择满足偏好的可用模型';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -29,6 +32,15 @@ function requireStringArray(value: unknown, code: string): readonly string[] {
     throw new Error(code);
   }
   return value;
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  code: string,
+): void {
+  const allowedKeys = new Set(allowed);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) throw new Error(code);
 }
 
 function assertSchemaNode(value: unknown): asserts value is StudioJsonSchema {
@@ -79,10 +91,12 @@ function assertSchemaNode(value: unknown): asserts value is StudioJsonSchema {
 
 function assertUiSchema(value: unknown): void {
   const ui = requireRecord(value, 'INVALID_CAPABILITY_UI');
+  assertExactKeys(ui, ['order', 'groups', 'fields', 'conditions'], 'UNKNOWN_CAPABILITY_UI_KEY');
   requireStringArray(ui.order, 'INVALID_CAPABILITY_ORDER');
   if (!Array.isArray(ui.groups)) throw new Error('INVALID_CAPABILITY_GROUPS');
   for (const rawGroup of ui.groups) {
     const group = requireRecord(rawGroup, 'INVALID_CAPABILITY_GROUP');
+    assertExactKeys(group, ['key', 'title', 'fields'], 'UNKNOWN_CAPABILITY_GROUP_KEY');
     requireString(group.key, 'INVALID_CAPABILITY_GROUP_KEY');
     requireString(group.title, 'INVALID_CAPABILITY_GROUP_TITLE');
     requireStringArray(group.fields, 'INVALID_CAPABILITY_GROUP_FIELDS');
@@ -91,6 +105,11 @@ function assertUiSchema(value: unknown): void {
     const fields = requireRecord(ui.fields, 'INVALID_CAPABILITY_UI_FIELDS');
     for (const rawMetadata of Object.values(fields)) {
       const metadata = requireRecord(rawMetadata, 'INVALID_CAPABILITY_UI_FIELD');
+      assertExactKeys(
+        metadata,
+        ['label', 'widget', 'help', 'placeholder', 'unit', 'options'],
+        'UNKNOWN_CAPABILITY_FIELD_KEY',
+      );
       for (const key of ['label', 'widget', 'help', 'placeholder', 'unit'] as const) {
         if (metadata[key] !== undefined && typeof metadata[key] !== 'string') {
           throw new Error('INVALID_CAPABILITY_UI_FIELD');
@@ -100,6 +119,7 @@ function assertUiSchema(value: unknown): void {
         if (!Array.isArray(metadata.options)) throw new Error('INVALID_CAPABILITY_OPTIONS');
         for (const rawOption of metadata.options) {
           const option = requireRecord(rawOption, 'INVALID_CAPABILITY_OPTION');
+          assertExactKeys(option, ['value', 'label'], 'UNKNOWN_CAPABILITY_OPTION_KEY');
           requireString(option.label, 'INVALID_CAPABILITY_OPTION_LABEL');
           if (
             !['string', 'number', 'boolean'].includes(typeof option.value) &&
@@ -115,8 +135,14 @@ function assertUiSchema(value: unknown): void {
     if (!Array.isArray(ui.conditions)) throw new Error('INVALID_CAPABILITY_CONDITIONS');
     for (const rawCondition of ui.conditions) {
       const condition = requireRecord(rawCondition, 'INVALID_CAPABILITY_CONDITION');
+      assertExactKeys(condition, ['field', 'when'], 'UNKNOWN_CAPABILITY_CONDITION_KEY');
       requireString(condition.field, 'INVALID_CAPABILITY_CONDITION_FIELD');
       const when = requireRecord(condition.when, 'INVALID_CAPABILITY_CONDITION_WHEN');
+      assertExactKeys(
+        when,
+        ['field', 'equals', 'notEquals', 'in'],
+        'UNKNOWN_CAPABILITY_CONDITION_WHEN_KEY',
+      );
       requireString(when.field, 'INVALID_CAPABILITY_CONDITION_DEPENDENCY');
       if (when.in !== undefined && !Array.isArray(when.in)) {
         throw new Error('INVALID_CAPABILITY_CONDITION_VALUES');
@@ -178,6 +204,11 @@ export function assertCatalogConsistency(
 export function parseCapability(value: unknown): StudioCapabilityDocument {
   if (!CapabilityDocumentSchema.safeParse(value).success) throw new Error('INVALID_CAPABILITY');
   const raw = requireRecord(value, 'INVALID_CAPABILITY');
+  assertExactKeys(
+    raw,
+    ['schemaVersion', 'capabilityVersion', 'mode', 'jsonSchema', 'uiSchema', 'costDimensions'],
+    'UNKNOWN_CAPABILITY_KEY',
+  );
   requireString(raw.capabilityVersion, 'INVALID_CAPABILITY_VERSION');
   assertSchemaNode(raw.jsonSchema);
   assertUiSchema(raw.uiSchema);
@@ -239,7 +270,46 @@ function parseQuoteShape(value: unknown): StudioQuote {
   return value as StudioQuote;
 }
 
-export function parseQuote(value: unknown, request: StudioQuoteRequest): StudioQuote {
+function summaryValue(document: StudioCapabilityDocument, field: string, value: unknown): string {
+  const option = document.uiSchema.fields?.[field]?.options?.find(
+    (candidate) => candidate.value === (value as JsonSchemaValue),
+  );
+  if (option) return option.label;
+  if (typeof value === 'boolean') return value ? '开启' : '关闭';
+  return String(value);
+}
+
+function deriveParameterSummary(
+  document: StudioCapabilityDocument,
+  parameters: Readonly<Record<string, unknown>>,
+): StudioQuote['parameterSummary'] {
+  const summary = document.uiSchema.order.flatMap((field) => {
+    const value = parameters[field];
+    if (value === undefined) return [];
+    const metadata = document.uiSchema.fields?.[field];
+    const item = {
+      key: field,
+      label: metadata?.label ?? document.jsonSchema.properties?.[field]?.title ?? field,
+      value: summaryValue(document, field, value),
+    };
+    return [metadata?.unit ? { ...item, unit: metadata.unit } : item];
+  });
+  const summaryKeys = new Set(summary.map((item) => item.key));
+  if (
+    summaryKeys.size !== summary.length ||
+    Object.keys(parameters).some((field) => !summaryKeys.has(field))
+  ) {
+    throw new Error('QUOTE_SUMMARY_DERIVATION_MISMATCH');
+  }
+  return summary;
+}
+
+export function parseQuote(
+  value: unknown,
+  request: StudioQuoteRequest,
+  document: StudioCapabilityDocument,
+  exactModel?: StudioModelOption,
+): StudioQuote {
   const quote = parseQuoteShape(value);
   if (
     quote.capabilityVersion !== request.capabilityVersion ||
@@ -256,7 +326,19 @@ export function parseQuote(value: unknown, request: StudioQuoteRequest): StudioQ
   ) {
     throw new Error('QUOTE_ROUTING_MISMATCH');
   }
-  return quote;
+  const routing: StudioQuote['routing'] =
+    request.routing.kind === 'SMART'
+      ? { kind: 'SMART_ROUTING', promise: SMART_ROUTING_PROMISE }
+      : exactModel?.id === request.routing.modelId
+        ? { kind: 'EXACT_MODEL', modelId: exactModel.id, modelName: exactModel.name }
+        : (() => {
+            throw new Error('QUOTE_MODEL_CATALOG_MISMATCH');
+          })();
+  return {
+    ...quote,
+    routing,
+    parameterSummary: deriveParameterSummary(document, request.parameters),
+  };
 }
 
 export function parseTaskAccepted(value: unknown): StudioTaskAccepted {

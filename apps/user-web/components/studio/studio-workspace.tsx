@@ -235,8 +235,9 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
       setPageError('请先修正可见参数中的错误，再获取报价。');
       return;
     }
+    const selectedModel =
+      studioMode === 'PRO' ? models.find((model) => model.id === proSelection.modelId) : undefined;
     if (studioMode === 'PRO') {
-      const selectedModel = models.find((model) => model.id === proSelection.modelId);
       if (!selectedModel || selectedModel.status !== 'ACTIVE') {
         setPageError('专业模式必须选择一个当前可用的精确模型。');
         return;
@@ -254,7 +255,12 @@ export function StudioWorkspace({ gateway = defaultGateway }: StudioWorkspacePro
             ? { kind: 'SMART', preferences: smartPreferences }
             : { kind: 'EXACT_MODEL', ...proSelection },
       };
-      const nextQuote = parseQuote(await gateway.quote(quoteRequest), quoteRequest);
+      const nextQuote = parseQuote(
+        await gateway.quote(quoteRequest),
+        quoteRequest,
+        document,
+        selectedModel,
+      );
       if (requestId === quoteRequestId.current) setQuote(nextQuote);
     } catch {
       if (requestId === quoteRequestId.current) {

@@ -15,6 +15,7 @@ import { SmartMode } from '../components/studio/smart-mode';
 import { StudioWorkspace } from '../components/studio/studio-workspace';
 import { auditCapabilityDocument, defaultCapabilityValues } from '../lib/studio/capability';
 import { studioGateway } from '../lib/studio/gateway';
+import { parseCapability } from '../lib/studio/runtime';
 import type {
   StudioCapabilityDocument,
   StudioCreateTaskRequest,
@@ -345,6 +346,16 @@ describe('CapabilityForm', () => {
         },
       ],
       [
+        'missing field type',
+        {
+          ...imageToVideoCapability,
+          jsonSchema: {
+            ...imageToVideoCapability.jsonSchema,
+            properties: { ...baseProperties, duration: {} },
+          },
+        },
+      ],
+      [
         'widget and type mismatch',
         {
           ...imageToVideoCapability,
@@ -376,7 +387,20 @@ describe('CapabilityForm', () => {
           ...imageToVideoCapability,
           jsonSchema: {
             ...imageToVideoCapability.jsonSchema,
-            dependentRequired: { motion: ['customMotion'] },
+            dependentRequired: { motion: ['ghost'] },
+          },
+        },
+      ],
+      [
+        'nested dependentRequired cannot be safely rendered',
+        {
+          ...imageToVideoCapability,
+          jsonSchema: {
+            ...imageToVideoCapability.jsonSchema,
+            allOf: [
+              ...imageToVideoCapability.jsonSchema.allOf,
+              { dependentRequired: { motion: ['customMotion'] } },
+            ],
           },
         },
       ],
@@ -385,6 +409,72 @@ describe('CapabilityForm', () => {
     for (const [name, document] of invalidDocuments) {
       expect.soft(auditCapabilityDocument(document), name).not.toEqual([]);
     }
+  });
+
+  it('rejects unknown capability and UI instruction keys at every runtime layer', () => {
+    const cases: readonly unknown[] = [
+      { ...imageToVideoCapability, vendorInstruction: true },
+      {
+        ...imageToVideoCapability,
+        uiSchema: { ...imageToVideoCapability.uiSchema, hidden: ['image'] },
+      },
+      {
+        ...imageToVideoCapability,
+        uiSchema: {
+          ...imageToVideoCapability.uiSchema,
+          groups: imageToVideoCapability.uiSchema.groups.map((group, index) =>
+            index === 0 ? { ...group, collapsible: true } : group,
+          ),
+        },
+      },
+      {
+        ...imageToVideoCapability,
+        uiSchema: {
+          ...imageToVideoCapability.uiSchema,
+          fields: {
+            ...imageToVideoCapability.uiSchema.fields,
+            image: { ...imageToVideoCapability.uiSchema.fields.image, readOnly: true },
+          },
+        },
+      },
+      {
+        ...imageToVideoCapability,
+        uiSchema: {
+          ...imageToVideoCapability.uiSchema,
+          fields: {
+            ...imageToVideoCapability.uiSchema.fields,
+            motion: {
+              ...imageToVideoCapability.uiSchema.fields.motion,
+              options: imageToVideoCapability.uiSchema.fields.motion.options.map((option, index) =>
+                index === 0 ? { ...option, icon: 'spark' } : option,
+              ),
+            },
+          },
+        },
+      },
+      {
+        ...imageToVideoCapability,
+        uiSchema: {
+          ...imageToVideoCapability.uiSchema,
+          conditions: imageToVideoCapability.uiSchema.conditions.map((condition) => ({
+            ...condition,
+            priority: 1,
+          })),
+        },
+      },
+      {
+        ...imageToVideoCapability,
+        uiSchema: {
+          ...imageToVideoCapability.uiSchema,
+          conditions: imageToVideoCapability.uiSchema.conditions.map((condition) => ({
+            ...condition,
+            when: { ...condition.when, hidden: true },
+          })),
+        },
+      },
+    ];
+
+    for (const value of cases) expect.soft(() => parseCapability(value)).toThrow();
   });
 
   it('only initializes and emits renderable ordered fields while rejecting injected values', () => {
@@ -434,6 +524,171 @@ describe('CapabilityForm', () => {
     await waitFor(() => {
       expect(onValid).toHaveBeenCalledWith({ consent: false });
     });
+  });
+
+  it('supports finite if/then/else required fields with matching visibility predicates', async () => {
+    const user = userEvent.setup();
+    const document: StudioCapabilityDocument = {
+      schemaVersion: 202012,
+      capabilityVersion: 'finite-if-else-v1',
+      mode: 'TEXT_TO_VIDEO',
+      jsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          mode: { type: 'string', enum: ['custom', 'normal'], default: 'custom' },
+          customPrompt: { type: 'string', minLength: 2 },
+          normalPrompt: { type: 'string', minLength: 2 },
+        },
+        required: ['mode'],
+        if: { properties: { mode: { const: 'custom' } }, required: ['mode'] },
+        then: { required: ['customPrompt'] },
+        else: { required: ['normalPrompt'] },
+      },
+      uiSchema: {
+        order: ['mode', 'customPrompt', 'normalPrompt'],
+        groups: [
+          { key: 'mode', title: '模式', fields: ['mode'] },
+          { key: 'prompt', title: '描述', fields: ['customPrompt', 'normalPrompt'] },
+        ],
+        fields: {
+          mode: {
+            label: '提示模式',
+            options: [
+              { value: 'custom', label: '自定义' },
+              { value: 'normal', label: '普通' },
+            ],
+          },
+          customPrompt: { label: '自定义提示' },
+          normalPrompt: { label: '普通提示' },
+        },
+        conditions: [
+          { field: 'customPrompt', when: { field: 'mode', equals: 'custom' } },
+          { field: 'normalPrompt', when: { field: 'mode', notEquals: 'custom' } },
+        ],
+      },
+      costDimensions: [],
+    };
+
+    expect(auditCapabilityDocument(document)).toEqual([]);
+    render(<CapabilityForm document={document} onValid={vi.fn()} />);
+    expect(screen.getByLabelText('自定义提示')).toHaveAttribute('aria-required', 'true');
+    expect(screen.queryByLabelText('普通提示')).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('提示模式'), 'normal');
+    expect(screen.queryByLabelText('自定义提示')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('普通提示')).toHaveAttribute('aria-required', 'true');
+  });
+
+  it('supports a finite discriminated oneOf branch with target schemas beside the discriminator', async () => {
+    const user = userEvent.setup();
+    const document: StudioCapabilityDocument = {
+      schemaVersion: 202012,
+      capabilityVersion: 'finite-one-of-v1',
+      mode: 'TEXT_TO_VIDEO',
+      jsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kind: { type: 'string', enum: ['image', 'text'], default: 'image' },
+          imagePrompt: { type: 'string', minLength: 2 },
+          textPrompt: { type: 'string', minLength: 2 },
+        },
+        required: ['kind'],
+        oneOf: [
+          {
+            properties: { kind: { const: 'image' }, imagePrompt: { minLength: 2 } },
+            required: ['imagePrompt'],
+          },
+          {
+            properties: { kind: { const: 'text' }, textPrompt: { minLength: 2 } },
+            required: ['textPrompt'],
+          },
+        ],
+      },
+      uiSchema: {
+        order: ['kind', 'imagePrompt', 'textPrompt'],
+        groups: [
+          { key: 'kind', title: '类型', fields: ['kind'] },
+          { key: 'prompt', title: '描述', fields: ['imagePrompt', 'textPrompt'] },
+        ],
+        fields: {
+          kind: {
+            label: '素材类型',
+            options: [
+              { value: 'image', label: '图片' },
+              { value: 'text', label: '文字' },
+            ],
+          },
+          imagePrompt: { label: '图片提示' },
+          textPrompt: { label: '文字提示' },
+        },
+        conditions: [
+          { field: 'imagePrompt', when: { field: 'kind', equals: 'image' } },
+          { field: 'textPrompt', when: { field: 'kind', equals: 'text' } },
+        ],
+      },
+      costDimensions: [],
+    };
+
+    expect(auditCapabilityDocument(document)).toEqual([]);
+    render(<CapabilityForm document={document} onValid={vi.fn()} />);
+    expect(screen.getByLabelText('图片提示')).toHaveAttribute('aria-required', 'true');
+    await user.selectOptions(screen.getByLabelText('素材类型'), 'text');
+    expect(screen.getByLabelText('文字提示')).toHaveAttribute('aria-required', 'true');
+  });
+
+  it('supports visible dependentRequired targets and initializes required booleans to false', async () => {
+    const user = userEvent.setup();
+    const document: StudioCapabilityDocument = {
+      schemaVersion: 202012,
+      capabilityVersion: 'dependent-required-v1',
+      mode: 'TEXT_TO_VIDEO',
+      jsonSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          trigger: { type: 'string', minLength: 1 },
+          dependentFlag: { type: 'boolean' },
+        },
+        dependentRequired: { trigger: ['dependentFlag'] },
+      },
+      uiSchema: {
+        order: ['trigger', 'dependentFlag'],
+        groups: [{ key: 'dependency', title: '依赖', fields: ['trigger', 'dependentFlag'] }],
+        fields: {
+          trigger: { label: '触发值' },
+          dependentFlag: { label: '依赖开关', widget: 'boolean' },
+        },
+      },
+      costDimensions: [],
+    };
+    const onValid = vi.fn();
+
+    expect(auditCapabilityDocument(document)).toEqual([]);
+    expect(validateForm(document.jsonSchema, { trigger: 'on' }).errors).toEqual([
+      expect.objectContaining({ field: 'dependentFlag', keyword: 'dependentRequired' }),
+    ]);
+    render(<CapabilityForm document={document} onValid={onValid} />);
+    expect(screen.getByLabelText('依赖开关')).not.toHaveAttribute('aria-required');
+
+    await user.type(screen.getByLabelText('触发值'), 'on');
+    expect(screen.getByLabelText('依赖开关')).toHaveAttribute('aria-required', 'true');
+    expect(screen.getByLabelText('依赖开关')).not.toBeChecked();
+    await waitFor(() => {
+      expect(onValid).toHaveBeenCalledWith({ trigger: 'on', dependentFlag: false });
+    });
+  });
+
+  it('rejects a dependentRequired target that can be hidden while its trigger is present', () => {
+    const document: StudioCapabilityDocument = {
+      ...imageToVideoCapability,
+      jsonSchema: {
+        ...imageToVideoCapability.jsonSchema,
+        dependentRequired: { motion: ['customMotion'] },
+      },
+    };
+    expect(auditCapabilityDocument(document)).not.toEqual([]);
   });
 
   it('omits hidden optional fields but keeps visible invalid values as blocking errors', () => {
@@ -1094,4 +1349,69 @@ it('clears an exact capability when switching to a provider without active model
     screen.queryByText(`能力版本 ${imageToVideoCapability.capabilityVersion}`),
   ).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: '获取准确报价' })).toBeDisabled();
+});
+
+it('derives exact-model quote presentation from the catalog and capability snapshot', async () => {
+  const user = userEvent.setup();
+  const quoteResponse = vi.fn<StudioGateway['quote']>().mockImplementation((request) =>
+    Promise.resolve({
+      ...quote,
+      id: 'exact-bound-quote',
+      routing: {
+        kind: 'EXACT_MODEL',
+        modelId: 'model-active',
+        modelName: '伪造模型名称',
+      },
+      capabilityVersion: request.capabilityVersion,
+      parameters: request.parameters,
+      parameterSummary: [{ key: 'wrong', label: '错误摘要', value: '错误值' }],
+      expiresAt: '2099-08-31T10:01:30.000Z',
+    }),
+  );
+  render(<StudioWorkspace gateway={testGateway({ quote: quoteResponse })} />);
+  await screen.findByText(`能力版本 ${imageToVideoCapability.capabilityVersion}`);
+  fireEvent.click(screen.getByRole('button', { name: '专业模式' }));
+  const image = await screen.findByLabelText('起始图片');
+  await user.type(image, 'asset-bound');
+  const quoteButton = screen.getByRole('button', { name: '获取准确报价' });
+  await waitFor(() => {
+    expect(quoteButton).toBeEnabled();
+  });
+  await user.click(quoteButton);
+
+  expect(await screen.findByText('精确模型')).toBeVisible();
+  expect(screen.queryByText('伪造模型名称')).not.toBeInTheDocument();
+  expect(screen.queryByText(/错误摘要/)).not.toBeInTheDocument();
+  expect(screen.getByText(/起始图片 asset-bound/)).toBeVisible();
+  expect(screen.getByText(/时长 5 秒/)).toBeVisible();
+  expect(screen.getByText(/运动模式 自然运动/)).toBeVisible();
+});
+
+it('uses the platform Smart promise and derives a complete unique summary', async () => {
+  const user = userEvent.setup();
+  const quoteResponse = vi.fn<StudioGateway['quote']>().mockImplementation((request) =>
+    Promise.resolve({
+      ...workspaceQuote,
+      id: 'smart-bound-quote',
+      routing: { kind: 'SMART_ROUTING', promise: '不可信路由文案' },
+      capabilityVersion: request.capabilityVersion,
+      parameters: request.parameters,
+      parameterSummary: [],
+    }),
+  );
+  render(<StudioWorkspace gateway={testGateway({ quote: quoteResponse })} />);
+  await user.type(await screen.findByLabelText('起始图片'), 'asset-smart');
+  const quoteButton = screen.getByRole('button', { name: '获取准确报价' });
+  await waitFor(() => {
+    expect(quoteButton).toBeEnabled();
+  });
+  await user.click(quoteButton);
+
+  expect(await screen.findByText(/智能路由将在已报价点数内选择满足偏好的可用模型/)).toBeVisible();
+  expect(screen.queryByText('不可信路由文案')).not.toBeInTheDocument();
+  const summary = screen.getByRole('heading', { name: '参数摘要' }).parentElement;
+  expect(summary).toHaveTextContent('起始图片 asset-smart');
+  expect(summary).toHaveTextContent('时长 5 秒');
+  expect(summary).toHaveTextContent('运动模式 自然运动');
+  expect(summary?.querySelectorAll('.parameter-summary p')).toHaveLength(3);
 });

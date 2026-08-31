@@ -6,6 +6,7 @@ import {
   auditCapabilityDocument,
   defaultCapabilityValues,
   errorsForField,
+  isFieldRequired,
   isFieldVisible,
   prepareCapabilityParameters,
   validateForm,
@@ -58,28 +59,6 @@ function fieldSegments(document: StudioCapabilityDocument): readonly FieldSegmen
     else segments.push({ key: group.key, title: group.title, fields: [field] });
   }
   return segments;
-}
-
-function schemaRequiresField(
-  schema: StudioJsonSchema,
-  field: string,
-  values: Readonly<Record<string, unknown>>,
-): boolean {
-  if (schema.required?.includes(field)) return true;
-  if (schema.allOf?.some((branch) => schemaRequiresField(branch, field, values))) return true;
-  if (schema.if) {
-    const activeBranch = validateForm(schema.if, values).valid ? schema.then : schema.else;
-    if (activeBranch && schemaRequiresField(activeBranch, field, values)) return true;
-  }
-  return false;
-}
-
-function isRequired(
-  document: StudioCapabilityDocument,
-  field: string,
-  values: Readonly<Record<string, unknown>>,
-): boolean {
-  return schemaRequiresField(document.jsonSchema, field, values);
 }
 
 function FieldFrame({
@@ -190,7 +169,7 @@ export function CapabilityForm({ document, onChange, onValid }: CapabilityFormPr
 
     const meta = document.uiSchema.fields?.[field] ?? {};
     const label = meta.label ?? schema.title ?? field;
-    const required = isRequired(document, field, values);
+    const required = isFieldRequired(document, field, values);
     const fieldErrors = errorsForField(prepared.errors, field);
     const error = fieldErrors[0]?.message;
     const describedBy = [meta.help ? `${field}-help` : null, error ? `${field}-error` : null]
