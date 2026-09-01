@@ -643,11 +643,33 @@ export class PrismaAdminAuthRepository implements AdminAuthRepository {
   disableAdminAccess(
     adminId: string,
     now: Date,
-  ): Promise<'disabled' | 'not_found'> {
+  ): Promise<'disabled' | 'not_found' | 'last_super_admin'> {
     return this.prisma.$transaction(async (transaction) => {
       void now;
-      await acquireLocks(transaction, [`iam:admin:${adminId}`]);
+      await acquireLocks(transaction, [
+        'iam:authorization-graph',
+        'iam:super-admin',
+        `iam:admin:${adminId}`,
+      ]);
       if (!(await lockAdminRow(transaction, adminId))) return 'not_found' as const;
+      const admin = await transaction.adminUser.findUnique({
+        where: { id: adminId },
+        select: { status: true },
+      });
+      if (!admin) return 'not_found' as const;
+      const protectedAssignment = await transaction.adminRole.findFirst({
+        where: { adminId, role: { protected: true } },
+        select: { adminId: true },
+      });
+      if (admin.status === 'ACTIVE' && protectedAssignment) {
+        const activeSuperAdmins = await transaction.adminUser.count({
+          where: {
+            status: 'ACTIVE',
+            roles: { some: { role: { protected: true } } },
+          },
+        });
+        if (activeSuperAdmins <= 1) return 'last_super_admin' as const;
+      }
       const databaseTime = await loadDatabaseClock(transaction);
       await transaction.adminUser.updateMany({
         where: { id: adminId, status: 'ACTIVE' },

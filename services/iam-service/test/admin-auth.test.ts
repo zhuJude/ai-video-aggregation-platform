@@ -2,8 +2,10 @@ import { generate } from 'otplib';
 import { describe, expect, it, vi } from 'vitest';
 
 import { LocalAesGcmSecretCipher } from '../src/adapters/local-aes-gcm-secret.cipher.js';
+import { MemoryAdminAccessCoordinator } from '../src/adapters/memory-admin-access.coordinator.js';
 import { MemoryAdminAuthRepository } from '../src/adapters/memory-admin-auth.repository.js';
 import { MemoryAdminLoginThrottle } from '../src/adapters/memory-admin-login-throttle.js';
+import { MemoryIamAdministrationRepository } from '../src/adapters/memory-iam-administration.repository.js';
 import { OtplibTotpProvider } from '../src/adapters/otplib-totp.provider.js';
 import { AdminAuthService } from '../src/application/admin-auth.service.js';
 import type { PasswordHasher } from '../src/ports/password-hasher.js';
@@ -52,8 +54,12 @@ function fixture(
   let nowMs = Date.UTC(2026, 8, 1, 8, 0, 0);
   let randomSequence = 0;
   let uuidSequence = 10;
-  const repository = new MemoryAdminAuthRepository([
-    {
+  const coordinator = new MemoryAdminAccessCoordinator();
+  new MemoryIamAdministrationRepository({
+    admins: [{ id: ADMIN_ID, email: 'ops@example.com', status: 'ACTIVE' }],
+  }, coordinator);
+  const repository = new MemoryAdminAuthRepository(
+    [{
       id: ADMIN_ID,
       email: 'ops@example.com',
       passwordHash: 'hash:correct-password',
@@ -66,8 +72,9 @@ function fixture(
       mfaFailureCount: 0,
       mfaFailureWindowStartedAt: null,
       mfaLockedUntil: null,
-    },
-  ]);
+    }],
+    coordinator,
+  );
   const passwordHasher = new FakePasswordHasher();
   const service = new AdminAuthService({
     repository,
@@ -593,6 +600,67 @@ describe('AdminAuthService', () => {
     });
   });
 
+  it('refuses to disable the last active protected administrator', async () => {
+    const f = fixture();
+    const detached = new MemoryAdminAuthRepository([
+      await requiredAdmin(f.repository.findAdminById(ADMIN_ID)),
+    ]);
+    await expect(detached.disableAdminAccess(ADMIN_ID, f.now())).rejects.toMatchObject({
+      code: 'ADMIN_DISABLE_COORDINATOR_UNAVAILABLE',
+    });
+    const coordinator = new MemoryAdminAccessCoordinator();
+    const management = new MemoryIamAdministrationRepository({
+      admins: [{ id: ADMIN_ID, email: 'ops@example.com', status: 'ACTIVE' }],
+    }, coordinator);
+    const bootstrap = await management.bootstrapSuperAdmin({
+      adminId: ADMIN_ID,
+      roleId: '0198fabc-1234-7abc-8abc-000000000099',
+      audit: {
+        id: '0198fabc-1234-7abc-8abc-000000000098',
+        action: 'super-admin.bootstrap',
+        resourceType: 'admin',
+        resourceId: ADMIN_ID,
+        outcome: 'SUCCESS',
+        context: {
+          actorId: null,
+          ipAddress: '127.0.0.1',
+          userAgent: 'admin-auth-test',
+          traceId: 'a'.repeat(32),
+          correlationId: '0198fabc-1234-7abc-8abc-000000000097',
+          occurredAt: f.now(),
+        },
+      },
+    });
+    expect(bootstrap.kind).toBe('created');
+    const repository = new MemoryAdminAuthRepository(
+      [await requiredAdmin(f.repository.findAdminById(ADMIN_ID))],
+      coordinator,
+    );
+    const service = new AdminAuthService({
+      repository,
+      passwordHasher: f.passwordHasher,
+      dummyPasswordHash: DUMMY_HASH,
+      secretCipher: new LocalAesGcmSecretCipher(Buffer.alloc(32, 7)),
+      totpProvider: new OtplibTotpProvider(),
+      accessTokenIssuer: { issue: () => Promise.resolve('jwt') },
+      loginThrottle: {
+        reserve: (subject) => Promise.resolve({ subject, token: 'permit' }),
+        commitFailure: () => Promise.resolve(),
+        commitSuccess: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+      },
+      cleanupObserver: { recordCleanupFailure: () => {} },
+      recoveryCodePepperKeyring: {
+        current: { version: 'v1', key: Buffer.alloc(32, 3) },
+      },
+    });
+
+    await expect(service.disableAdminAccess(ADMIN_ID)).rejects.toMatchObject({
+      code: 'LAST_SUPER_ADMIN_PROTECTED',
+    });
+    await expect(repository.findAdminById(ADMIN_ID)).resolves.toMatchObject({ status: 'ACTIVE' });
+  });
+
   it('accepts retained recovery pepper versions while new generations use current and invalidate old codes', async () => {
     const old = fixture({
       pepperKeyring: { current: { version: 'v1', key: Buffer.alloc(32, 1) } },
@@ -661,4 +729,10 @@ function requiredCode(codes: readonly string[], index: number): string {
   const code = codes[index];
   if (!code) throw new Error('EXPECTED_RECOVERY_CODE');
   return code;
+}
+
+async function requiredAdmin<T>(value: Promise<T | null>): Promise<T> {
+  const record = await value;
+  if (!record) throw new Error('EXPECTED_ADMIN');
+  return record;
 }

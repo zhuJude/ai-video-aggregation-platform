@@ -59,6 +59,9 @@ function fakePrisma() {
       update: vi.fn().mockResolvedValue(admin),
       count: vi.fn().mockResolvedValue(1),
     },
+    adminRole: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
     mfaRecoveryCode: {
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       createMany: vi.fn().mockResolvedValue({ count: 10 }),
@@ -388,6 +391,7 @@ describe('PrismaAdminAuthRepository transactional contract', () => {
 
   it('atomically disables an administrator and revokes only that administrator sessions', async () => {
     const disabled = fakePrisma();
+    disabled.transaction.adminUser.findUnique.mockResolvedValue(admin);
     disabled.transaction.adminSession.findMany.mockResolvedValue([
       { id: '0198fabc-1234-7abc-8abc-000000000210' },
     ]);

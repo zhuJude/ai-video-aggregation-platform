@@ -15,10 +15,22 @@ describe('conditional integration safety contract', () => {
       join(import.meta.dirname, 'redis-admin-login-throttle.test.ts'),
       'utf8',
     );
+    const rbacPostgres = readFileSync(
+      join(import.meta.dirname, 'prisma-rbac.integration.test.ts'),
+      'utf8',
+    );
 
-    expect(postgres).toContain("process.env['IAM_TEST_DATABASE_URL']");
-    expect(postgres).not.toContain("process.env['IAM_DATABASE_URL']");
-    expect(postgres).not.toMatch(/\.deleteMany\(\s*\)/);
+    for (const source of [postgres, rbacPostgres]) {
+      expect(source).toContain("process.env['IAM_TEST_DATABASE_URL']");
+      expect(source).not.toContain("process.env['IAM_DATABASE_URL']");
+      expect(source).not.toMatch(/\.deleteMany\(\s*\)/);
+    }
+    expect(rbacPostgres).toContain('finally');
+    expect(rbacPostgres).toContain('DROP DATABASE');
+    expect(rbacPostgres).toContain('cleanupIsolatedDatabase(false)');
+    expect(rbacPostgres).toContain('cleanupIsolatedDatabase(true)');
+    expect(rbacPostgres).toContain('await connected.$disconnect()');
+    expect(rbacPostgres).toContain('await administrative.end()');
     expect(redis).toContain("process.env['IAM_TEST_REDIS_URL']");
     expect(redis).not.toContain("process.env['IAM_REDIS_URL']");
     expect(redis).not.toMatch(/\.(?:flushdb|flushall|scan|keys)\s*\(/i);

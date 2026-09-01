@@ -8,6 +8,7 @@ import type {
   MfaChallengeState,
   RotateAdminSessionResult,
 } from '../application/admin-auth.repository.js';
+import type { MemoryAdminAccessCoordinator } from './memory-admin-access.coordinator.js';
 
 interface MutableAdmin {
   id: string;
@@ -77,8 +78,17 @@ export class MemoryAdminAuthRepository implements AdminAuthRepository {
   private readonly recoveryCodes = new Map<string, MutableRecoveryCode>();
   private tail: Promise<void> = Promise.resolve();
 
-  constructor(admins: readonly AdminAccountRecord[] = []) {
+  constructor(
+    admins: readonly AdminAccountRecord[] = [],
+    private readonly coordinator?: MemoryAdminAccessCoordinator,
+  ) {
     for (const admin of admins) this.admins.set(admin.id, { ...admin });
+    coordinator?.registerAuth({
+      exists: (adminId) => this.admins.has(adminId),
+      commit: (adminId, now) => {
+        this.disableAuthState(adminId, now);
+      },
+    });
   }
 
   findAdminByEmail(email: string): Promise<AdminAccountRecord | null> {
@@ -472,26 +482,9 @@ export class MemoryAdminAuthRepository implements AdminAuthRepository {
   disableAdminAccess(
     adminId: string,
     now: Date,
-  ): Promise<'disabled' | 'not_found'> {
-    return this.exclusive(() => {
-      const admin = this.admins.get(adminId);
-      if (!admin) return 'not_found';
-      admin.status = 'DISABLED';
-      for (const session of this.sessions.values()) {
-        if (session.adminId !== adminId) continue;
-        if (session.status === 'PENDING') {
-          const challenge = session.pendingChallengeId
-            ? [...this.challenges.values()].find(
-                (candidate) => candidate.id === session.pendingChallengeId,
-              )
-            : undefined;
-          this.cancelMfaReservation(session, challenge, now);
-        } else if (session.status === 'ACTIVE' && !session.revokedAt) {
-          session.revokedAt = now;
-        }
-      }
-      return 'disabled';
-    });
+  ): Promise<'disabled' | 'not_found' | 'last_super_admin'> {
+    if (this.coordinator) return this.coordinator.disableAdminAccess(adminId, now);
+    return Promise.reject(stableError('ADMIN_DISABLE_COORDINATOR_UNAVAILABLE'));
   }
 
   cleanupExpiredPendingSessions(now: Date, limit = 100): Promise<number> {
@@ -652,7 +645,27 @@ export class MemoryAdminAuthRepository implements AdminAuthRepository {
     }
   }
 
+  private disableAuthState(adminId: string, now: Date): void {
+    const admin = this.admins.get(adminId);
+    if (!admin) throw stableError('ADMIN_DISABLE_STATE_MISMATCH');
+    admin.status = 'DISABLED';
+    for (const session of this.sessions.values()) {
+      if (session.adminId !== adminId) continue;
+      if (session.status === 'PENDING') {
+        const challenge = session.pendingChallengeId
+          ? [...this.challenges.values()].find(
+              (candidate) => candidate.id === session.pendingChallengeId,
+            )
+          : undefined;
+        this.cancelMfaReservation(session, challenge, now);
+      } else if (session.status === 'ACTIVE' && !session.revokedAt) {
+        session.revokedAt = now;
+      }
+    }
+  }
+
   private async exclusive<T>(operation: () => T | Promise<T>): Promise<T> {
+    if (this.coordinator) return this.coordinator.runExclusive(operation);
     const previous = this.tail;
     let release!: () => void;
     this.tail = new Promise<void>((resolve) => {
@@ -674,4 +687,8 @@ function normalizeCleanupLimit(limit: number): number {
     });
   }
   return limit;
+}
+
+function stableError(code: string): Error & { code: string } {
+  return Object.assign(new Error(code), { code });
 }

@@ -54,4 +54,21 @@ describe('IAM persistence migration', () => {
     expect(sql).toContain('ADD COLUMN "mfa_locked_until" TIMESTAMP(3)');
     expect(sql).toContain('CHECK ("mfa_failure_count" >= 0)');
   });
+
+  it('adds append-only audit outcomes and database-enforced super-admin guards', () => {
+    const sql = readFileSync(
+      join(
+        import.meta.dirname,
+        '../prisma/migrations/20260901050000_rbac_audit_protection/migration.sql',
+      ),
+      'utf8',
+    );
+    expect(sql).toContain('ADD COLUMN "outcome" TEXT NOT NULL DEFAULT \'SUCCESS\'');
+    expect(sql).toContain('ADD COLUMN "reason_code" TEXT');
+    expect(sql).toContain('CREATE TRIGGER "admin_users_protect_last_super_admin"');
+    expect(sql).toContain('CREATE TRIGGER "admin_roles_protect_last_super_admin"');
+    expect(sql).toContain('CREATE TRIGGER "roles_protect_system_role"');
+    expect(sql).toContain('CREATE TRIGGER "role_permissions_protect_system_role"');
+    expect(sql).toContain("pg_advisory_xact_lock(hashtextextended('iam:super-admin', 0))");
+  });
 });

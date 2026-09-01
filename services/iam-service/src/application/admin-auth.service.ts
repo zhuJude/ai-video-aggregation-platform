@@ -329,7 +329,9 @@ export class AdminAuthService {
 
   async disableAdminAccess(adminId: string): Promise<'disabled' | 'not_found'> {
     assertUuidV7(adminId, 'INVALID_ADMIN_ID');
-    return this.repository.disableAdminAccess(adminId, this.now());
+    const result = await this.repository.disableAdminAccess(adminId, this.now());
+    if (result === 'last_super_admin') throw stableError('LAST_SUPER_ADMIN_PROTECTED');
+    return result;
   }
 
   private async completeSecondFactor(

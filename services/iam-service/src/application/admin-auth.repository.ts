@@ -167,6 +167,9 @@ export interface AdminAuthRepository {
    * The only supported administrator-disable primitive. Access-token consumers must still
    * enforce the persisted session/admin state on every privileged request.
    */
-  disableAdminAccess(adminId: string, now: Date): Promise<'disabled' | 'not_found'>;
+  disableAdminAccess(
+    adminId: string,
+    now: Date,
+  ): Promise<'disabled' | 'not_found' | 'last_super_admin'>;
   cleanupExpiredPendingSessions(now: Date, limit?: number): Promise<number>;
 }

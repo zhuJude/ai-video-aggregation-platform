@@ -145,6 +145,8 @@ model AuditEvent {
   resourceId    String?  @map("resource_id")
   before        Json?
   after         Json?
+  outcome       String   @default("SUCCESS")
+  reasonCode    String?  @map("reason_code")
   ipAddress     String   @map("ip_address")
   userAgent     String   @map("user_agent")
   traceId       String   @map("trace_id") @db.Char(32)
@@ -156,5 +158,6 @@ model AuditEvent {
   @@index([occurredAt])
   @@index([actorId, occurredAt])
   @@index([resourceType, resourceId, occurredAt])
+  @@index([outcome, occurredAt])
   @@map("audit_events")
 }
