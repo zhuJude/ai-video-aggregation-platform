@@ -19,6 +19,7 @@ export interface IamAdministrationServiceDependencies {
   readonly bootstrapAuthorizer: SuperAdminBootstrapAuthorizer;
   readonly now?: () => Date;
   readonly uuidV7: () => string;
+  readonly metrics?: { increment(name: 'iam_authorization_denials_total'): void };
 }
 
 export class IamAdministrationService {
@@ -114,8 +115,8 @@ export class IamAdministrationService {
     });
     if (result.kind === 'name_conflict') throw stableError('ROLE_NAME_CONFLICT');
     if (result.kind === 'permission_missing') throw stableError('PERMISSION_NOT_FOUND');
-    if (result.kind === 'actor_denied') throw stableError('ADMIN_AUTHORIZATION_DENIED');
-    if (result.kind === 'capability_exceeded') throw stableError('CAPABILITY_CEILING_EXCEEDED');
+    if (result.kind === 'actor_denied') this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
+    if (result.kind === 'capability_exceeded') this.authorizationDenied('CAPABILITY_CEILING_EXCEEDED');
     return result.role;
   }
 
@@ -140,7 +141,7 @@ export class IamAdministrationService {
       ...role,
       audit: this.decision('role.update', 'role', input.roleId, context, 'SUCCESS'),
     });
-    if (result.kind !== 'updated') throw stableError(roleMutationError(result.kind));
+    if (result.kind !== 'updated') this.throwRoleMutationError(result.kind);
     return result.role;
   }
 
@@ -159,7 +160,7 @@ export class IamAdministrationService {
       expectedVersion: input.expectedVersion,
       audit: this.decision('role.delete', 'role', input.roleId, context, 'SUCCESS'),
     });
-    if (result !== 'deleted') throw stableError(roleMutationError(result));
+    if (result !== 'deleted') this.throwRoleMutationError(result);
   }
 
   async assignRole(input: {
@@ -178,10 +179,10 @@ export class IamAdministrationService {
     });
     if (result === 'admin_inactive') throw stableError('ADMIN_NOT_ACTIVE');
     if (result === 'role_not_found') throw stableError('ROLE_NOT_FOUND');
-    if (result === 'actor_denied') throw stableError('ADMIN_AUTHORIZATION_DENIED');
+    if (result === 'actor_denied') this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
     if (result === 'protected_role_denied')
-      throw stableError('PROTECTED_ROLE_ASSIGNMENT_DENIED');
-    if (result === 'capability_exceeded') throw stableError('CAPABILITY_CEILING_EXCEEDED');
+      this.authorizationDenied('PROTECTED_ROLE_ASSIGNMENT_DENIED');
+    if (result === 'capability_exceeded') this.authorizationDenied('CAPABILITY_CEILING_EXCEEDED');
     return result;
   }
 
@@ -201,11 +202,11 @@ export class IamAdministrationService {
       expectedAssignment: true,
       audit: this.decision('admin-role.revoke', 'admin', input.adminId, context, 'SUCCESS'),
     });
-    if (result === 'last_super_admin') throw stableError('LAST_SUPER_ADMIN_PROTECTED');
+    if (result === 'last_super_admin') this.authorizationDenied('LAST_SUPER_ADMIN_PROTECTED');
     if (result === 'not_assigned') throw stableError('ROLE_NOT_ASSIGNED');
-    if (result === 'actor_denied') throw stableError('ADMIN_AUTHORIZATION_DENIED');
+    if (result === 'actor_denied') this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
     if (result === 'protected_role_denied')
-      throw stableError('PROTECTED_ROLE_ASSIGNMENT_DENIED');
+      this.authorizationDenied('PROTECTED_ROLE_ASSIGNMENT_DENIED');
     return result;
   }
 
@@ -219,9 +220,9 @@ export class IamAdministrationService {
       adminId: input.adminId,
       audit: this.decision('admin.disable', 'admin', input.adminId, context, 'SUCCESS'),
     });
-    if (result === 'last_super_admin') throw stableError('LAST_SUPER_ADMIN_PROTECTED');
+    if (result === 'last_super_admin') this.authorizationDenied('LAST_SUPER_ADMIN_PROTECTED');
     if (result === 'not_found') throw stableError('ADMIN_NOT_FOUND');
-    if (result === 'actor_denied') throw stableError('ADMIN_AUTHORIZATION_DENIED');
+    if (result === 'actor_denied') this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
     return result;
   }
 
@@ -264,9 +265,10 @@ export class IamAdministrationService {
   ) {
     const context = this.context(contextInput, false);
     const actorId = context.actorId;
-    if (!actorId) throw stableError('ADMIN_AUTHORIZATION_DENIED');
+    if (!actorId) this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
     const subject = await this.dependencies.repository.loadAuthorizationSubject(actorId);
     if (!subject || !can(subject, permission, resource)) {
+      this.dependencies.metrics?.increment('iam_authorization_denials_total');
       await this.audit.append({
         action: 'authorization.denied',
         resourceType: 'permission',
@@ -312,8 +314,19 @@ export class IamAdministrationService {
   ): ManagementRequestContext {
     const context = { ...input, occurredAt: input.occurredAt ?? this.now() };
     validateManagementContext(context);
-    if (!systemAllowed && context.actorId === null) throw stableError('ADMIN_AUTHORIZATION_DENIED');
+    if (!systemAllowed && context.actorId === null) this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
     return context;
+  }
+
+  private throwRoleMutationError(kind: string): never {
+    const code = roleMutationError(kind);
+    if (AUTHORIZATION_DENIAL_CODES.has(code)) this.authorizationDenied(code);
+    throw stableError(code);
+  }
+
+  private authorizationDenied(code: string): never {
+    this.dependencies.metrics?.increment('iam_authorization_denials_total');
+    throw stableError(code);
   }
 
   private decision(
@@ -339,6 +352,16 @@ export class IamAdministrationService {
     return id;
   }
 }
+
+const AUTHORIZATION_DENIAL_CODES = new Set([
+  'ADMIN_AUTHORIZATION_DENIED',
+  'CAPABILITY_CEILING_EXCEEDED',
+  'LAST_SUPER_ADMIN_PROTECTED',
+  'PROTECTED_ROLE',
+  'PROTECTED_ROLE_ASSIGNMENT_DENIED',
+  'ROLE_ASSIGNMENT_DENIED',
+  'ROLE_MUTATION_DENIED',
+]);
 
 function validateAuditQuery(
   input: {

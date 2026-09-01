@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import * as rolesModule from '../src/http/roles.controller.js';
 import { IamAdminGuard, RolesController } from '../src/http/roles.controller.js';
 import { generateUuidV7 } from '../src/domain/uuid-v7.js';
+import { IamMetrics } from '../src/operational/metrics.js';
 
 describe('RolesController', () => {
   it('derives immutable audit context from the trusted principal and ingress headers', async () => {
@@ -138,6 +139,19 @@ describe('RolesController', () => {
     await expect(
       missing.canActivate({ switchToHttp: () => ({ getRequest: () => ({ headers: {}, ip: '127.0.0.1' }) }) } as never),
     ).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACCESS_TOKEN' });
+  });
+
+  it('does not classify guard or untrusted-principal authentication failures as authorization denials', async () => {
+    const metrics = new IamMetrics(() => Promise.resolve(0));
+    const controller = new RolesController({ createRole: vi.fn() } as never);
+    expect(() => controller.createRole(request() as never, {
+      name: 'support-operator', description: 'Support operator', dataScope: 'ALL', permissionKeys: [],
+    })).toThrow(expect.objectContaining({ code: 'UNTRUSTED_ADMIN_PRINCIPAL' }));
+    const guard = new IamAdminGuard({ verify: () => Promise.reject(new Error('invalid')) });
+    await expect(guard.canActivate({ switchToHttp: () => ({ getRequest: () => ({
+      headers: { authorization: 'Bearer invalid.token' }, ip: '127.0.0.1',
+    }) }) } as never)).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACCESS_TOKEN' });
+    expect(await metrics.render()).toContain('iam_authorization_denials_total 0');
   });
 });
 

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.json && node scripts/copy-prisma-runtime.mjs && node scripts/probe-prisma-runtime.mjs",
     "dev": "prisma generate && tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "start:prod": "node dist/src/main.js",
     "lint": "eslint src test scripts prisma.config.ts --ignore-pattern src/generated/prisma/**",
     "typecheck": "prisma generate && tsc -p tsconfig.json --noEmit",
     "test": "vitest run --exclude dist/**",

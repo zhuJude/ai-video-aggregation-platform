@@ -39,6 +39,7 @@ export interface SmsChallengeServiceDependencies {
   now?: () => number;
   generateCode?: () => string;
   rateLimitPolicy?: SmsRateLimitPolicy;
+  securityMetrics?: { increment(name: 'identity_sms_rate_limit_rejections_total'): void };
 }
 
 export interface IssueSmsChallengeInput {
@@ -97,7 +98,10 @@ export class SmsChallengeService {
       rateLimits: buildRateLimits(phoneHash, ipHash, deviceHash, this.policy),
     });
 
-    if (result === 'rate_limited') throw stableError(SMS_RATE_LIMITED);
+    if (result === 'rate_limited') {
+      this.dependencies.securityMetrics?.increment('identity_sms_rate_limit_rejections_total');
+      throw stableError(SMS_RATE_LIMITED);
+    }
 
     try {
       await this.dependencies.sender.sendCode(input.phoneE164, code);
@@ -121,7 +125,10 @@ export class SmsChallengeService {
       maxAttempts: MAX_ATTEMPTS,
     });
 
-    if (result === 'locked') throw stableError(SMS_CHALLENGE_LOCKED);
+    if (result === 'locked') {
+      this.dependencies.securityMetrics?.increment('identity_sms_rate_limit_rejections_total');
+      throw stableError(SMS_CHALLENGE_LOCKED);
+    }
     return result === 'verified';
   }
 }

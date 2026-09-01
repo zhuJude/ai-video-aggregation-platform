@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   Inject,
+  Optional,
   Param,
   Patch,
   Post,
@@ -19,6 +20,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { IdentityAccountService } from '../application/identity-account.service.js';
 import type { SessionService } from '../application/session.service.js';
 import type { SmsChallengeService } from '../application/sms-challenge.service.js';
+import type { IdentityMetrics } from '../operational/metrics.js';
 import { EventMetadata } from '../domain/event-metadata.js';
 import { Phone } from '../domain/phone.js';
 import { SmsRequestContext } from '../domain/sms-request-context.js';
@@ -74,6 +76,7 @@ export class AuthController {
     @Inject('SESSION_SERVICE') private readonly sessions: SessionService,
     @Inject('SMS_CHALLENGE_SERVICE') private readonly sms: SmsChallengeService,
     @Inject('IDENTITY_ACCOUNT_SERVICE') private readonly accounts: IdentityAccountService,
+    @Optional() @Inject('SERVICE_METRICS') private readonly metrics?: IdentityMetrics,
   ) {}
 
   @Post('auth/sms/request')
@@ -96,11 +99,17 @@ export class AuthController {
     @Body() rawBody: unknown,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<{ accessToken: string; sessionId: string }> {
-    const body = parseSmsVerifyBody(rawBody);
-    const user = await this.accounts.authenticatePhone(body.phone, body.code);
-    const pair = await this.sessions.create(user.id, body.deviceName);
-    setRefreshCookie(reply, pair.refreshToken);
-    return { accessToken: pair.accessToken, sessionId: pair.session.id };
+    try {
+      const body = parseSmsVerifyBody(rawBody);
+      const user = await this.accounts.authenticatePhone(body.phone, body.code);
+      const pair = await this.sessions.create(user.id, body.deviceName);
+      setRefreshCookie(reply, pair.refreshToken);
+      this.metrics?.increment('identity_login_success_total');
+      return { accessToken: pair.accessToken, sessionId: pair.session.id };
+    } catch (error) {
+      this.metrics?.increment('identity_login_failure_total');
+      throw error;
+    }
   }
 
   @Post('auth/refresh')

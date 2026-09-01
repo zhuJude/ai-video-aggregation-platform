@@ -19,6 +19,7 @@ describe('conditional integration safety contract', () => {
       join(import.meta.dirname, 'prisma-rbac.integration.test.ts'),
       'utf8',
     );
+    const operations = readFileSync(join(import.meta.dirname, 'operations.test.ts'), 'utf8');
 
     for (const source of [postgres, rbacPostgres]) {
       expect(source).toContain("process.env['IAM_TEST_DATABASE_URL']");
@@ -34,6 +35,11 @@ describe('conditional integration safety contract', () => {
     expect(redis).toContain("process.env['IAM_TEST_REDIS_URL']");
     expect(redis).not.toContain("process.env['IAM_REDIS_URL']");
     expect(redis).not.toMatch(/\.(?:flushdb|flushall|scan|keys)\s*\(/i);
+    expect(operations).toContain("process.env['IAM_TEST_DATABASE_URL']");
+    expect(operations.indexOf('try {')).toBeLessThan(operations.indexOf('await prisma.adminUser.create'));
+    expect(operations).toContain('task6SentinelKey');
+    expect(operations).toContain('expectTask6FixturesRemoved');
+    expect(operations).not.toMatch(/auditEvent\.deleteMany|permission\.deleteMany\(\s*\)/);
   });
 
   it('ignores production variables and rejects production-style explicit test targets', () => {

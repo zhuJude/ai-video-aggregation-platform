@@ -30,6 +30,7 @@ const BAD_REQUEST = new Set([
   'INVALID_SESSION_ID',
   'INVALID_SMS_CODE',
 ]);
+const UNAVAILABLE = new Set(['CLOUD_SDK_UNAVAILABLE', 'ALIYUN_SMS_SEND_FAILED']);
 
 @Catch()
 export class IdentityHttpExceptionFilter implements ExceptionFilter {
@@ -57,5 +58,6 @@ function statusFor(code: string): number {
   if (CONFLICT.has(code)) return 409;
   if (RATE_LIMITED.has(code)) return 429;
   if (BAD_REQUEST.has(code)) return 400;
+  if (UNAVAILABLE.has(code)) return 503;
   return 500;
 }

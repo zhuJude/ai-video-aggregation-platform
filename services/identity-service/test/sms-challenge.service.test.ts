@@ -156,6 +156,34 @@ function trustedContext(ipAddress = '203.0.113.8', deviceId = 'device-a'): SmsRe
 }
 
 describe('SmsChallengeService', () => {
+  it('counts only planned rate-limit and attempt-lock rejection codes', async () => {
+    const increments: string[] = [];
+    const metrics = { increment: (name: 'identity_sms_rate_limit_rejections_total') => { increments.push(name); } };
+    const fixture = makeFixture({ securityMetrics: metrics });
+    const input = { phoneE164: phone, context: trustedContext() };
+    await fixture.service.issue(input);
+    await expect(fixture.service.issue(input)).rejects.toMatchObject({ code: 'SMS_RATE_LIMITED' });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await fixture.service.verify({ phoneE164: phone, code: '000000' });
+    }
+    await expect(fixture.service.verify({ phoneE164: phone, code: '000000' })).rejects.toMatchObject({ code: 'SMS_CHALLENGE_LOCKED' });
+    expect(increments).toEqual([
+      'identity_sms_rate_limit_rejections_total',
+      'identity_sms_rate_limit_rejections_total',
+    ]);
+
+    const infrastructure = makeFixture({
+      securityMetrics: metrics,
+      store: {
+        issue: () => Promise.reject(Object.assign(new Error('REDIS_UNAVAILABLE'), { code: 'REDIS_UNAVAILABLE' })),
+        verify: () => Promise.reject(Object.assign(new Error('KMS_UNAVAILABLE'), { code: 'KMS_UNAVAILABLE' })),
+        remove: () => Promise.resolve(),
+      },
+    });
+    await expect(infrastructure.service.issue(input)).rejects.toThrow('REDIS_UNAVAILABLE');
+    await expect(infrastructure.service.verify({ phoneE164: phone, code: '123456' })).rejects.toThrow('KMS_UNAVAILABLE');
+    expect(increments).toHaveLength(2);
+  });
   it('accepts an issued six-digit code once and rejects replay', async () => {
     const { sender, service } = makeFixture();
 
