@@ -34,7 +34,12 @@ export class PrismaAccountMutationRepository implements AccountMutationRepositor
             const lockKeys = scope ? identityLockKeys(scope) : [];
             for (const lockKey of lockKeys) {
               await transaction.$queryRaw(
-                Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`,
+                Prisma.sql`
+                  SELECT 1::integer AS "acquired"
+                  FROM (
+                    SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))
+                  ) AS "held_lock"
+                `,
               );
             }
             return work(new PrismaAccountMutationRepository(this.prisma, transaction));

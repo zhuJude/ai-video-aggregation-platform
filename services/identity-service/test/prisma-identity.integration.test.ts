@@ -11,8 +11,9 @@ import { SessionService } from '../src/application/session.service.js';
 import { EventMetadata } from '../src/domain/event-metadata.js';
 import { generateUuidV7 } from '../src/domain/uuid-v7.js';
 import { PrismaClient } from '../src/generated/prisma/client.js';
+import { resolveIdentityTestDatabaseUrl } from './test-targets.js';
 
-const databaseUrl = process.env['IDENTITY_DATABASE_URL'];
+const databaseUrl = resolveIdentityTestDatabaseUrl(process.env);
 const operationFingerprintHasher = new HmacPrivacyIdentifierHasher(
   { getPrivacyIdentifierSecret: () => Promise.resolve(Buffer.alloc(32, 9)) },
   'kms://identity/account-operation#version=2026-09-01',
@@ -23,18 +24,81 @@ describe.skipIf(!databaseUrl)('Prisma identity integration', () => {
     adapter: new PrismaPg({ connectionString: databaseUrl ?? 'postgresql://unused/skip' }),
   });
   const userIds: string[] = [];
+  const sentinelId = generateUuidV7();
+  const sentinelPhone = uniquePhone();
 
   beforeAll(async () => {
     await prisma.$connect();
+    await prisma.user.create({
+      data: {
+        id: sentinelId,
+        phoneE164: sentinelPhone,
+        nickname: `sentinel-${sentinelId}`,
+        status: 'ACTIVE',
+      },
+    });
   });
 
   afterAll(async () => {
-    if (userIds.length > 0) {
-      await prisma.outboxEvent.deleteMany({ where: { aggregateId: { in: userIds } } });
-      await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
-      await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+    try {
+      if (userIds.length > 0) {
+        await prisma.outboxEvent.deleteMany({ where: { aggregateId: { in: userIds } } });
+        await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
+        await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+      }
+      await expect(prisma.user.findUnique({ where: { id: sentinelId } })).resolves.toMatchObject({
+        id: sentinelId,
+        phoneE164: sentinelPhone,
+      });
+    } finally {
+      try {
+        await prisma.user.deleteMany({ where: { id: sentinelId } });
+      } finally {
+        await prisma.$disconnect();
+      }
     }
-    await prisma.$disconnect();
+  });
+
+  it('executes typed advisory locks and blocks a concurrent transaction on the same scope', async () => {
+    const lockUserId = generateUuidV7();
+    const applicationName = `identity-lock-${lockUserId}`;
+    const connectionString = withApplicationName(
+      databaseUrl ?? 'postgresql://unused/skip',
+      applicationName,
+    );
+    const firstClient = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+    const secondClient = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+    const firstEntered = deferredSignal();
+    const releaseFirst = deferredSignal();
+    let secondEntered = false;
+    try {
+      await Promise.all([firstClient.$connect(), secondClient.$connect()]);
+      const first = new PrismaAccountMutationRepository(firstClient).transaction(
+        { userId: lockUserId },
+        async () => {
+          firstEntered.resolve();
+          await releaseFirst.promise;
+        },
+      );
+      await Promise.race([firstEntered.promise, first]);
+
+      const second = new PrismaAccountMutationRepository(secondClient).transaction(
+        { userId: lockUserId },
+        () => {
+          secondEntered = true;
+          return Promise.resolve();
+        },
+      );
+      await waitForAdvisoryWaiter(prisma, applicationName);
+      expect(secondEntered).toBe(false);
+
+      releaseFirst.resolve();
+      await Promise.all([first, second]);
+      expect(secondEntered).toBe(true);
+    } finally {
+      releaseFirst.resolve();
+      await Promise.allSettled([firstClient.$disconnect(), secondClient.$disconnect()]);
+    }
   });
 
   it('revokes a family after two real concurrent refresh rotations', async () => {
@@ -284,4 +348,39 @@ function sessionService(
 
 function uniquePhone(): string {
   return `+86188${randomInt(0, 100_000_000).toString().padStart(8, '0')}`;
+}
+
+function deferredSignal(): {
+  readonly promise: Promise<undefined>;
+  readonly resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<undefined>((fulfill) => {
+    resolve = () => {
+      fulfill(undefined);
+    };
+  });
+  return { promise, resolve };
+}
+
+function withApplicationName(connectionString: string, applicationName: string): string {
+  const target = new URL(connectionString);
+  target.searchParams.set('application_name', applicationName);
+  return target.toString();
+}
+
+async function waitForAdvisoryWaiter(prisma: PrismaClient, applicationName: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await prisma.$queryRaw<Array<{ waiting: number }>>`
+      SELECT count(*)::int AS waiting
+      FROM pg_stat_activity
+      WHERE application_name = ${applicationName}
+        AND wait_event_type = 'Lock'
+        AND wait_event = 'advisory'
+    `;
+    if ((rows[0]?.waiting ?? 0) >= 1) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error('ADVISORY_LOCK_WAITER_NOT_OBSERVED');
 }

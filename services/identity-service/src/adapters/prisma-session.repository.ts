@@ -229,7 +229,12 @@ async function acquireSessionLocks(
 ): Promise<void> {
   for (const lockKey of identityLockKeys({ userId, sessionFamilyId: familyId })) {
     await transaction.$queryRaw(
-      Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`,
+      Prisma.sql`
+        SELECT 1::integer AS "acquired"
+        FROM (
+          SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))
+        ) AS "held_lock"
+      `,
     );
   }
 }
