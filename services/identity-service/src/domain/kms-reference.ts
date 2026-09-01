@@ -5,9 +5,17 @@ export function assertVersionedKmsReference(
   reference: string,
   errorCode = 'INVALID_VERSIONED_KMS_REFERENCE',
 ): void {
+  versionedKmsReferenceVersion(reference, errorCode);
+}
+
+export function versionedKmsReferenceVersion(
+  reference: string,
+  errorCode = 'INVALID_VERSIONED_KMS_REFERENCE',
+): string {
   const match = VERSIONED_KMS_REFERENCE.exec(reference);
-  const version = match?.[1]?.toLowerCase();
-  if (!version || FLOATING_VERSION_ALIASES.has(version)) {
+  const rawVersion = match?.[1];
+  if (!rawVersion || FLOATING_VERSION_ALIASES.has(rawVersion.toLowerCase())) {
     throw Object.assign(new Error(errorCode), { code: errorCode });
   }
+  return rawVersion;
 }
