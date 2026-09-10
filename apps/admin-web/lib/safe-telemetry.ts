@@ -5,35 +5,40 @@ import {
 } from './outbound-request-context';
 
 export type SafeTelemetryOperation =
-    | 'iam.config'
-    | 'iam.password.begin'
-    | 'iam.totp.verify'
-    | 'login.action'
-    | 'login.config'
-    | 'login.password'
-    | 'login.totp'
-    | 'operations.config'
-    | 'operations.user.directory-search'
-    | 'operations.user.exact-phone-lookup'
-    | 'operations.user.detail-read'
-    | 'operations.scope.read'
-    | 'operations.user.csv-export'
-    | 'operations.user.wallet-adjustment-request'
-    | 'operations.user.wallet-adjustment-preview'
-    | 'operations.user.eligible-approvers'
-    | 'operations.user.status-change'
-    | 'overview.config'
-    | 'overview.read';
+  | 'iam.config'
+  | 'iam.password.begin'
+  | 'iam.totp.verify'
+  | 'login.action'
+  | 'login.config'
+  | 'login.password'
+  | 'login.totp'
+  | 'operations.config'
+  | 'operations.user.directory-search'
+  | 'operations.user.exact-phone-lookup'
+  | 'operations.user.detail-read'
+  | 'operations.scope.read'
+  | 'operations.user.csv-export'
+  | 'operations.user.wallet-adjustment-request'
+  | 'operations.user.wallet-adjustment-preview'
+  | 'operations.user.eligible-approvers'
+  | 'operations.user.status-change'
+  | 'operations.provider.directory-read'
+  | 'operations.provider.detail-read'
+  | 'operations.provider.config'
+  | 'operations.provider.metadata-write'
+  | 'operations.provider.command'
+  | 'overview.config'
+  | 'overview.read';
 
 export type SafeTelemetryReason =
-    | 'ACTION_FAILURE'
-    | 'CHALLENGE_INVALID'
-    | 'DOWNSTREAM_DENIED'
-    | 'INVALID_CONFIG'
-    | 'MALFORMED_RESPONSE'
-    | 'NETWORK_FAILURE'
-    | 'TIMEOUT'
-    | 'UPSTREAM_FAILURE';
+  | 'ACTION_FAILURE'
+  | 'CHALLENGE_INVALID'
+  | 'DOWNSTREAM_DENIED'
+  | 'INVALID_CONFIG'
+  | 'MALFORMED_RESPONSE'
+  | 'NETWORK_FAILURE'
+  | 'TIMEOUT'
+  | 'UPSTREAM_FAILURE';
 
 declare const safeTelemetryEventBrand: unique symbol;
 
@@ -50,28 +55,47 @@ export interface SafeTelemetryPort {
 }
 
 const operationValues = new Set<SafeTelemetryOperation>([
-  'iam.config', 'iam.password.begin', 'iam.totp.verify', 'login.action',
-  'login.config', 'login.password', 'login.totp', 'operations.config',
-  'operations.user.directory-search', 'operations.user.exact-phone-lookup',
-  'operations.user.detail-read', 'operations.scope.read',
-  'operations.user.csv-export', 'operations.user.wallet-adjustment-request',
-  'operations.user.wallet-adjustment-preview', 'operations.user.eligible-approvers',
-  'operations.user.status-change', 'overview.config', 'overview.read',
+  'iam.config',
+  'iam.password.begin',
+  'iam.totp.verify',
+  'login.action',
+  'login.config',
+  'login.password',
+  'login.totp',
+  'operations.config',
+  'operations.user.directory-search',
+  'operations.user.exact-phone-lookup',
+  'operations.user.detail-read',
+  'operations.scope.read',
+  'operations.user.csv-export',
+  'operations.user.wallet-adjustment-request',
+  'operations.user.wallet-adjustment-preview',
+  'operations.user.eligible-approvers',
+  'operations.user.status-change',
+  'overview.config',
+  'overview.read',
+  'operations.provider.directory-read',
+  'operations.provider.detail-read',
+  'operations.provider.config',
+  'operations.provider.metadata-write',
+  'operations.provider.command',
 ]);
 const reasonValues = new Set<SafeTelemetryReason>([
-  'ACTION_FAILURE', 'CHALLENGE_INVALID', 'DOWNSTREAM_DENIED', 'INVALID_CONFIG',
-  'MALFORMED_RESPONSE', 'NETWORK_FAILURE', 'TIMEOUT', 'UPSTREAM_FAILURE',
+  'ACTION_FAILURE',
+  'CHALLENGE_INVALID',
+  'DOWNSTREAM_DENIED',
+  'INVALID_CONFIG',
+  'MALFORMED_RESPONSE',
+  'NETWORK_FAILURE',
+  'TIMEOUT',
+  'UPSTREAM_FAILURE',
 ]);
 const issuedSafeTelemetryEvents = new WeakSet<object>();
 const recordedTechnicalFailures = new WeakSet<Error>();
 const MAX_RECORDED_CAUSE_DEPTH = 8;
 
 function isSafeTelemetryEvent(value: unknown): value is SafeTelemetryEvent {
-  return Boolean(
-    value &&
-    typeof value === 'object' &&
-    issuedSafeTelemetryEvents.has(value),
-  );
+  return Boolean(value && typeof value === 'object' && issuedSafeTelemetryEvents.has(value));
 }
 
 function safeErrorCause(error: Error): unknown {
@@ -112,10 +136,7 @@ export const defaultSafeTelemetry: SafeTelemetryPort = Object.freeze({
   },
 });
 
-export function recordSafeTelemetry(
-  telemetry: SafeTelemetryPort,
-  event: SafeTelemetryEvent,
-): void {
+export function recordSafeTelemetry(telemetry: SafeTelemetryPort, event: SafeTelemetryEvent): void {
   if (!isSafeTelemetryEvent(event)) throw new Error('Invalid safe telemetry event');
   try {
     telemetry.record(event);
