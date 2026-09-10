@@ -88,7 +88,8 @@ describe('AdminShell', () => {
       '用户',
       '供应商',
       '模型能力',
-      '定价路由',
+      '定价',
+      '路由',
       '任务',
       '财务',
       '内容运营',
@@ -97,9 +98,13 @@ describe('AdminShell', () => {
       '审计',
       '系统运行',
     ]);
-    expect(screen.getByRole('link', { name: '定价路由' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: '定价' })).toHaveAttribute(
       'href',
       '/pricing',
+    );
+    expect(screen.getByRole('link', { name: '路由' })).toHaveAttribute(
+      'href',
+      '/routing',
     );
   });
 
