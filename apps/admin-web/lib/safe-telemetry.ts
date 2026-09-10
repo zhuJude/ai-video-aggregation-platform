@@ -27,6 +27,17 @@ export type SafeTelemetryOperation =
   | 'operations.provider.config'
   | 'operations.provider.metadata-write'
   | 'operations.provider.command'
+  | 'operations.finance.approval'
+  | 'operations.finance.compensation-request'
+  | 'operations.finance.invoice-detail-read'
+  | 'operations.finance.invoice-transition'
+  | 'operations.finance.invoices-read'
+  | 'operations.finance.ledger-read'
+  | 'operations.finance.orders-read'
+  | 'operations.finance.order-detail-read'
+  | 'operations.finance.order-operation'
+  | 'operations.finance.reconciliation-case-read'
+  | 'operations.finance.reconciliation-read'
   | 'catalog.config'
   | 'catalog.model.directory-read'
   | 'catalog.model.capability-read'
@@ -87,6 +98,17 @@ const operationValues = new Set<SafeTelemetryOperation>([
   'operations.provider.config',
   'operations.provider.metadata-write',
   'operations.provider.command',
+  'operations.finance.approval',
+  'operations.finance.compensation-request',
+  'operations.finance.invoice-detail-read',
+  'operations.finance.invoice-transition',
+  'operations.finance.invoices-read',
+  'operations.finance.ledger-read',
+  'operations.finance.orders-read',
+  'operations.finance.order-detail-read',
+  'operations.finance.order-operation',
+  'operations.finance.reconciliation-case-read',
+  'operations.finance.reconciliation-read',
   'catalog.config',
   'catalog.model.directory-read',
   'catalog.model.capability-read',

@@ -34,11 +34,7 @@ import {
 import type { ComponentType, ReactNode } from 'react';
 import { Fragment, useState } from 'react';
 
-import {
-  type AdminSubject,
-  dataScopeLabels,
-  hasPermission,
-} from '../lib/permissions';
+import { type AdminSubject, dataScopeLabels, hasPermission } from '../lib/permissions';
 
 type NavigationItem = Readonly<{
   label: string;
@@ -50,14 +46,29 @@ type NavigationItem = Readonly<{
 const navigationItems: readonly NavigationItem[] = [
   { label: '总览', href: '/overview', permission: 'overview:read', icon: Home24Regular },
   { label: '用户', href: '/users', permission: 'users:read', icon: PersonAccounts24Regular },
-  { label: '供应商', href: '/providers', permission: 'providers:read', icon: BuildingShop24Regular },
+  {
+    label: '供应商',
+    href: '/providers',
+    permission: 'providers:read',
+    icon: BuildingShop24Regular,
+  },
   { label: '模型能力', href: '/models', permission: 'models:read', icon: AppsListDetail24Regular },
   { label: '定价', href: '/pricing', permission: 'pricing:read', icon: BuildingBank24Regular },
   { label: '路由', href: '/routing', permission: 'routing:read', icon: ArrowRouting24Regular },
   { label: '任务', href: '/tasks', permission: 'tasks:read', icon: ClipboardTaskListLtr24Regular },
-  { label: '财务', href: '/finance', permission: 'finance:read', icon: BuildingBank24Regular },
+  {
+    label: '财务',
+    href: '/finance/orders',
+    permission: 'finance:read',
+    icon: BuildingBank24Regular,
+  },
   { label: '内容运营', href: '/content', permission: 'content:read', icon: ContentView24Regular },
-  { label: '工单', href: '/tickets', permission: 'tickets:read', icon: DocumentBulletList24Regular },
+  {
+    label: '工单',
+    href: '/tickets',
+    permission: 'tickets:read',
+    icon: DocumentBulletList24Regular,
+  },
   { label: '后台权限', href: '/iam', permission: 'iam:read', icon: PeopleTeam24Regular },
   { label: '审计', href: '/audit', permission: 'audit:read', icon: ShieldTask24Regular },
   { label: '系统运行', href: '/system', permission: 'system:read', icon: KeyCommand24Regular },
@@ -306,9 +317,7 @@ export function AdminShell({
   const permittedNavigation = navigationItems.filter((item) =>
     hasPermission(subject, item.permission),
   );
-  const permittedActions = actions.filter((action) =>
-    hasPermission(subject, action.permission),
-  );
+  const permittedActions = actions.filter((action) => hasPermission(subject, action.permission));
   const normalizedCommandQuery = commandQuery.trim().toLocaleLowerCase('zh-CN');
   const commandResults = normalizedCommandQuery
     ? permittedNavigation.filter((item) =>
@@ -346,9 +355,7 @@ export function AdminShell({
               <SearchBox
                 aria-activedescendant={activeCommandId}
                 aria-autocomplete="list"
-                aria-controls={
-                  commandListIsOpen ? 'admin-command-results' : undefined
-                }
+                aria-controls={commandListIsOpen ? 'admin-command-results' : undefined}
                 aria-expanded={commandListIsOpen}
                 aria-label="命令搜索"
                 className={styles.search}
@@ -372,9 +379,7 @@ export function AdminShell({
                       if (event.key === 'ArrowDown') {
                         return (currentIndex + 1) % commandResults.length;
                       }
-                      return currentIndex <= 0
-                        ? commandResults.length - 1
-                        : currentIndex - 1;
+                      return currentIndex <= 0 ? commandResults.length - 1 : currentIndex - 1;
                     });
                     return;
                   }
@@ -419,11 +424,7 @@ export function AdminShell({
                       </li>
                     ))
                   ) : (
-                    <li
-                      aria-disabled="true"
-                      className={styles.emptySearchResult}
-                      role="option"
-                    >
+                    <li aria-disabled="true" className={styles.emptySearchResult} role="option">
                       没有可用命令
                     </li>
                   )}
@@ -434,33 +435,22 @@ export function AdminShell({
               <Badge appearance="tint" color="informative">
                 {environment}
               </Badge>
-              <Badge appearance="outline">
-                数据范围 {dataScopeLabels[subject.dataScope]}
-              </Badge>
+              <Badge appearance="outline">数据范围 {dataScopeLabels[subject.dataScope]}</Badge>
               {identity ? <Badge appearance="outline">管理员 {identity}</Badge> : null}
             </div>
           </div>
         </header>
 
-        <div
-          aria-label="移动端管理上下文"
-          className={styles.mobileMeta}
-          role="region"
-        >
+        <div aria-label="移动端管理上下文" className={styles.mobileMeta} role="region">
           <Badge appearance="tint" color="informative">
             {environment}
           </Badge>
-          <Badge appearance="outline">
-            数据范围 {dataScopeLabels[subject.dataScope]}
-          </Badge>
+          <Badge appearance="outline">数据范围 {dataScopeLabels[subject.dataScope]}</Badge>
           {identity ? <Badge appearance="outline">管理员 {identity}</Badge> : null}
         </div>
 
         <aside
-          className={mergeClasses(
-            styles.sidebar,
-            isNavigationOpen && styles.sidebarOpen,
-          )}
+          className={mergeClasses(styles.sidebar, isNavigationOpen && styles.sidebarOpen)}
           id="admin-navigation"
         >
           <nav aria-label="主导航" className={styles.navigation}>
@@ -485,10 +475,7 @@ export function AdminShell({
                       {!isCurrent ? (
                         <Link href={breadcrumb.href}>{breadcrumb.label}</Link>
                       ) : (
-                        <Text
-                          aria-current="page"
-                          className={styles.currentBreadcrumb}
-                        >
+                        <Text aria-current="page" className={styles.currentBreadcrumb}>
                           {breadcrumb.label}
                         </Text>
                       )}
