@@ -7,6 +7,9 @@ export const ADMIN_PERMISSIONS = [
   'finance:read',
   'iam:read',
   'models:read',
+  'models:rollback',
+  'models:publish',
+  'models:write',
   'overview:read',
   'pricing:read',
   'credentials:disable',
@@ -46,7 +49,8 @@ export function isValidAdminPermissions(value: unknown): value is readonly Admin
       permission.length > ADMIN_PERMISSION_MAX_LENGTH ||
       !ADMIN_PERMISSION_SET.has(permission) ||
       unique.has(permission)
-    ) return false;
+    )
+      return false;
     unique.add(permission);
   }
   return true;
@@ -61,10 +65,7 @@ export function hasPermission(
   subject: Pick<AdminSubject, 'permissions'>,
   requiredPermission: string,
 ): boolean {
-  return (
-    subject.permissions.includes('*') ||
-    subject.permissions.includes(requiredPermission)
-  );
+  return subject.permissions.includes('*') || subject.permissions.includes(requiredPermission);
 }
 
 export const dataScopeLabels: Readonly<Record<DataScope, string>> = {

@@ -27,6 +27,14 @@ export type SafeTelemetryOperation =
   | 'operations.provider.config'
   | 'operations.provider.metadata-write'
   | 'operations.provider.command'
+  | 'catalog.config'
+  | 'catalog.model.directory-read'
+  | 'catalog.model.capability-read'
+  | 'catalog.model.capability-create_draft'
+  | 'catalog.model.capability-validate'
+  | 'catalog.model.capability-save'
+  | 'catalog.model.capability-publish'
+  | 'catalog.model.capability-rollback'
   | 'overview.config'
   | 'overview.read';
 
@@ -79,6 +87,14 @@ const operationValues = new Set<SafeTelemetryOperation>([
   'operations.provider.config',
   'operations.provider.metadata-write',
   'operations.provider.command',
+  'catalog.config',
+  'catalog.model.directory-read',
+  'catalog.model.capability-read',
+  'catalog.model.capability-create_draft',
+  'catalog.model.capability-validate',
+  'catalog.model.capability-save',
+  'catalog.model.capability-publish',
+  'catalog.model.capability-rollback',
 ]);
 const reasonValues = new Set<SafeTelemetryReason>([
   'ACTION_FAILURE',

@@ -35,6 +35,17 @@ export async function requireAdminAuthorization(
   return authorization;
 }
 
+export async function requireAdminAnyAuthorization(
+  requiredPermissions: readonly string[],
+  context?: ServerGuardContext,
+): Promise<AdminAuthorizationContext> {
+  const authorization = await requireAdminSession(context);
+  if (!requiredPermissions.some((permission) => hasPermission(authorization.claims, permission))) {
+    throw new AuthorizationError('FORBIDDEN', '权限不足');
+  }
+  return authorization;
+}
+
 export async function requireAdminSession(
   context?: ServerGuardContext,
 ): Promise<AdminAuthorizationContext> {
