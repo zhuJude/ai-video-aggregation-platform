@@ -38,6 +38,9 @@ export type SafeTelemetryOperation =
   | 'operations.finance.order-operation'
   | 'operations.finance.reconciliation-case-read'
   | 'operations.finance.reconciliation-read'
+  | 'operations.governance.export'
+  | 'operations.governance.mutation'
+  | 'operations.governance.read'
   | 'catalog.config'
   | 'catalog.model.directory-read'
   | 'catalog.model.capability-read'
@@ -109,6 +112,9 @@ const operationValues = new Set<SafeTelemetryOperation>([
   'operations.finance.order-operation',
   'operations.finance.reconciliation-case-read',
   'operations.finance.reconciliation-read',
+  'operations.governance.export',
+  'operations.governance.mutation',
+  'operations.governance.read',
   'catalog.config',
   'catalog.model.directory-read',
   'catalog.model.capability-read',
