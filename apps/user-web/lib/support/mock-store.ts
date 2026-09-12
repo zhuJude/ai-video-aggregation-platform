@@ -10,6 +10,7 @@ import type { FeedbackView, MessageView, TicketView } from './types';
 
 const COMMAND_TTL_MS = 24 * 60 * 60_000;
 const MAX_COMMANDS = 5_000;
+const REOPEN_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
 export type CommandKind =
   | 'MESSAGE_READ'
@@ -62,6 +63,32 @@ function fileName(ownerId: string): string {
   return `.support-${createHash('sha256').update(`support:v2:${ownerId}`).digest('hex')}.json`;
 }
 
+function migrateLegacyResolvedTickets(value: unknown): {
+  readonly migrated: boolean;
+  readonly tickets: unknown;
+} {
+  if (!Array.isArray(value)) return { migrated: false, tickets: value };
+  let migrated = false;
+  const tickets = (value as unknown[]).map((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+    const ticket = raw as Record<string, unknown>;
+    if (
+      ticket.status !== 'RESOLVED' ||
+      Object.hasOwn(ticket, 'reopenUntil') ||
+      typeof ticket.updatedAt !== 'string' ||
+      !Number.isFinite(Date.parse(ticket.updatedAt))
+    ) {
+      return raw;
+    }
+    migrated = true;
+    return {
+      ...ticket,
+      reopenUntil: new Date(Date.parse(ticket.updatedAt) + REOPEN_WINDOW_MS).toISOString(),
+    };
+  });
+  return { migrated, tickets };
+}
+
 function parseState(value: unknown, ownerId: string): SupportState {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new SupportStoreError('INVALID');
@@ -79,7 +106,10 @@ function parseState(value: unknown, ownerId: string): SupportState {
     throw new SupportStoreError('INVALID');
   }
   const messages = parseMessagePage({ items: state.messages, unreadCount: 0, pageInfo: {} }).items;
-  const tickets = parseTicketPage({ items: state.tickets, pageInfo: {} }).items;
+  const tickets = parseTicketPage({
+    items: migrateLegacyResolvedTickets(state.tickets).tickets,
+    pageInfo: {},
+  }).items;
   if (!Array.isArray(state.feedback)) throw new SupportStoreError('INVALID');
   const feedback = state.feedback.map(parseFeedback);
   const internalNotes = Object.fromEntries(
@@ -211,10 +241,14 @@ export function supportSeed(ownerId: string): SupportState {
 export async function readSupportState(ownerId: string): Promise<SupportState> {
   const now = Date.now();
   return transactMockStoreJson(fileName(ownerId), (raw) => {
+    const legacyTickets =
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? migrateLegacyResolvedTickets((raw as Record<string, unknown>).tickets).migrated
+        : false;
     const state = parseState(raw ?? supportSeed(ownerId), ownerId);
     const commands = state.commands.filter((command) => Date.parse(command.expiresAt) > now);
     const next =
-      raw === undefined || commands.length !== state.commands.length
+      raw === undefined || legacyTickets || commands.length !== state.commands.length
         ? { ...state, commands }
         : undefined;
     return { result: next ? parseState(next, ownerId) : state, ...(next ? { next } : {}) };

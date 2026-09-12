@@ -1,15 +1,15 @@
 import '@testing-library/jest-dom/vitest';
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TicketCenter } from '../components/support/ticket-center';
 import { commerceGateway } from '../lib/commerce/gateway';
-import { ensureMockSeedObjects } from '../lib/commerce/mock-object-store';
+import { ensureMockSeedObjects, transactMockStoreJson } from '../lib/commerce/mock-object-store';
 import { supportGateway } from '../lib/support/gateway';
-import { runSupportCommand } from '../lib/support/mock-store';
+import { runSupportCommand, supportSeed } from '../lib/support/mock-store';
 import { parseTicketPage } from '../lib/support/runtime';
 import type { TicketPage } from '../lib/support/types';
 import { createUuidV7 } from '../lib/tasks/identifiers';
@@ -168,6 +168,54 @@ describe('ticket center', () => {
     })) as TicketPage['items'][number];
     expect(reopened.status).toBe('IN_PROGRESS');
     expect(reopened.canReopen).toBe(false);
+  });
+
+  it('migrates a legacy resolved support record without weakening the public parser', async () => {
+    const ownerId = createUuidV7();
+    const updatedAt = '2026-09-10T08:00:00.000Z';
+    const seed = supportSeed(ownerId);
+    const current = seed.tickets[0];
+    if (!current) throw new Error('MISSING_TICKET_FIXTURE');
+    const legacyState = {
+      ...seed,
+      tickets: [
+        {
+          ...current,
+          status: 'RESOLVED' as const,
+          updatedAt,
+          canClose: true,
+          canReopen: true,
+          statusHistory: [
+            ...current.statusHistory,
+            { status: 'RESOLVED' as const, occurredAt: updatedAt, label: '旧版记录已解决' },
+          ],
+        },
+      ],
+    };
+    const fileName = `.support-${createHash('sha256')
+      .update(`support:v2:${ownerId}`)
+      .digest('hex')}.json`;
+    await transactMockStoreJson(fileName, () => ({ result: undefined, next: legacyState }));
+
+    const listed = (await supportGateway.listTickets({}, { ownerId })) as TicketPage;
+    const migrated = listed.items.find(({ id }) => id === current.id);
+    if (!migrated) throw new Error('MISSING_MIGRATED_TICKET');
+    expect(migrated.reopenUntil).toBe('2026-09-17T08:00:00.000Z');
+    const persisted = await transactMockStoreJson<Record<string, unknown> | undefined>(
+      fileName,
+      (raw) => ({ result: raw as Record<string, unknown> | undefined }),
+    );
+    expect(
+      ((persisted?.tickets as Array<Record<string, unknown>> | undefined)?.[0] ?? {}).reopenUntil,
+    ).toBe('2026-09-17T08:00:00.000Z');
+    const { reopenUntil: _reopenUntil, ...legacyPublicTicket } = migrated;
+    void _reopenUntil;
+    expect(() =>
+      parseTicketPage({
+        items: [legacyPublicTicket],
+        pageInfo: {},
+      }),
+    ).toThrow('INVALID_TICKET');
   });
 
   it('rejects reopening a resolved ticket after seven days or any closed ticket', async () => {
