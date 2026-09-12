@@ -1,0 +1,4 @@
+# Playwright transient output; acceptance screenshots are reviewed and committed.
+/playwright-report/
+/test-results/
+/output/playwright/tmp/

@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { configDefaults } from 'vitest/config';
 
 export default {
   resolve: {
@@ -10,6 +11,7 @@ export default {
   // Serial files prevent another test file from deleting a lock it did not create while simulating
   // crash recovery; production concurrency remains covered inside the store-focused tests.
   test: {
+    exclude: [...configDefaults.exclude, 'e2e/**'],
     fileParallelism: false,
   },
 };

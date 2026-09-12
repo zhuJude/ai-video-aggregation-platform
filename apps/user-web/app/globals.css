@@ -92,11 +92,15 @@ button {
   background: var(--color-text);
   color: var(--color-background);
   font-weight: 700;
+  visibility: hidden;
+  pointer-events: none;
   transform: translateY(calc(-100% - var(--space-4)));
   transition: transform 120ms ease-out;
 }
 
 .skip-link:focus {
+  visibility: visible;
+  pointer-events: auto;
   transform: translateY(0);
 }
 
@@ -1074,11 +1078,18 @@ input:disabled {
 }
 
 .commerce-stat dd {
+  display: grid;
+  gap: 0.45rem;
   margin: 0;
   overflow-wrap: anywhere;
   font-size: clamp(1.35rem, 3vw, 2rem);
   font-variant-numeric: tabular-nums;
   font-weight: 800;
+}
+
+.commerce-stat dd small {
+  font-size: 0.75rem;
+  font-weight: 400;
 }
 
 .commerce-stat-primary dd {
