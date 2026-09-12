@@ -36,6 +36,7 @@ const OWNER_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a6101';
 const OWNER_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a6102';
 const SESSION_ID_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a6111';
 const SESSION_ID_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a6112';
+const TEST_REFRESH_TOKEN = 'R'.repeat(43);
 const TASK_CONTEXT_A = { ownerId: OWNER_A } as const;
 process.env.USER_WEB_SESSION_SIGNING_KEY = 'test-only-session-signing-key-32-bytes-minimum';
 const accessToken = (ownerId: string, sessionId: string) => {
@@ -105,7 +106,11 @@ const runningEvent: TaskStatusSnapshot = {
 
 beforeEach(async () => {
   fixtureSessionCookies.clear();
-  await establishAuthenticatedServerSession(accessToken(OWNER_A, SESSION_ID_A));
+  await establishAuthenticatedServerSession(
+    accessToken(OWNER_A, SESSION_ID_A),
+    SESSION_ID_A,
+    TEST_REFRESH_TOKEN,
+  );
 });
 
 afterEach(() => {
@@ -145,7 +150,10 @@ it('reconnects with Last-Event-ID and falls back to polling', async () => {
       : finalInput instanceof URL
         ? finalInput.toString()
         : finalInput?.url;
-  expect(finalUrl).toMatch(/\/v1\/tasks\/task-1$/);
+  expect(finalUrl).toMatch(/\/api\/tasks\/task-1$/);
+  expect(
+    mockFetch.mock.calls.every(([, init]) => !new Headers(init?.headers).has('authorization')),
+  ).toBe(true);
   expect(
     mockFetch.mock.calls
       .slice(0, 3)
@@ -291,7 +299,7 @@ it('falls back after three stream failures then polls the Gateway every five sec
       : pollInput instanceof URL
         ? pollInput.toString()
         : pollInput?.url;
-  expect(pollUrl).toMatch(/\/v1\/tasks\/task-1$/);
+  expect(pollUrl).toMatch(/\/api\/tasks\/task-1$/);
   expect(screen.getByText('生成中')).toBeVisible();
 
   view.unmount();
@@ -573,7 +581,7 @@ it('counts malformed payloads as failures and polls after the third failure', as
       : pollInput instanceof URL
         ? pollInput.toString()
         : pollInput?.url;
-  expect(pollUrl).toMatch(/\/v1\/tasks\/task-1$/);
+  expect(pollUrl).toMatch(/\/api\/tasks\/task-1$/);
   view.unmount();
   expect(vi.getTimerCount()).toBe(0);
 });
@@ -599,7 +607,7 @@ it('honors the exact WS09 idle reconnect directive without degrading to polling'
     mockFetch.mock.calls.every(([input]) => {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-      return /\/v1\/tasks\/task-1\/events$/.test(url);
+      return /\/api\/tasks\/task-1\/events$/.test(url);
     }),
   ).toBe(true);
   view.unmount();
@@ -1059,7 +1067,11 @@ it('rejects a new retry draft at capacity without evicting an unexpired draft', 
 
 it('signs an app session only from the trusted Gateway login result', async () => {
   await expect(readAuthenticatedServerSession()).resolves.toEqual({ ownerId: OWNER_A });
-  await establishAuthenticatedServerSession(accessToken(OWNER_B, SESSION_ID_B));
+  await establishAuthenticatedServerSession(
+    accessToken(OWNER_B, SESSION_ID_B),
+    SESSION_ID_B,
+    TEST_REFRESH_TOKEN,
+  );
   await expect(readAuthenticatedServerSession()).resolves.toEqual({ ownerId: OWNER_B });
   const cookieName = [...fixtureSessionCookies.keys()][0];
   if (!cookieName) throw new Error('MISSING_APP_SESSION_COOKIE');
@@ -1092,7 +1104,11 @@ it('fails closed without revealing task existence to unauthenticated or cross-ow
   );
   await expect(createRetryDraftAction('task-1')).rejects.toThrow('AUTHENTICATION_REQUIRED');
 
-  await establishAuthenticatedServerSession(accessToken(OWNER_B, SESSION_ID_B));
+  await establishAuthenticatedServerSession(
+    accessToken(OWNER_B, SESSION_ID_B),
+    SESSION_ID_B,
+    TEST_REFRESH_TOKEN,
+  );
   const denied = await cancelTaskAction('task-1', '0198f4d4-21c2-7b7d-8a03-08a0da2a6203');
   const missing = await cancelTaskAction('missing-task', '0198f4d4-21c2-7b7d-8a03-08a0da2a6204');
   expect(denied).toEqual({ ok: false, outcome: 'DEFINITIVE_FAILURE' });

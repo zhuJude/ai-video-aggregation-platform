@@ -1,10 +1,11 @@
 'use server';
 
-import { UuidSchema } from '@repo/contracts/common';
+import { ApiErrorSchema, UuidSchema } from '@repo/contracts/common';
 
-import { establishAuthenticatedServerSession } from '../../lib/auth/server-session';
-import { ApiClientError, apiClient } from '../../lib/api-client';
-import { createUuidV7 } from '../../lib/tasks/identifiers';
+import {
+  establishAuthenticatedServerSession,
+  refreshTokenFromSetCookie,
+} from '../../lib/auth/server-session';
 
 export type VerifyPhoneLoginResult =
   | { readonly ok: true }
@@ -37,18 +38,29 @@ export async function verifyPhoneLoginAction(
     return { ok: false, code: 'INVALID_SMS_CODE' };
   }
   try {
-    const response = await apiClient<unknown>('/v1/auth/sms/verify', {
-      body: { code, phone },
-      idempotencyKey: `sms-verify-${createUuidV7()}`,
+    const gatewayUrl = process.env.GATEWAY_URL?.trim();
+    if (!gatewayUrl) throw new Error('GATEWAY_URL_UNAVAILABLE');
+    const response = await fetch(new URL('/v1/auth/sms/verify', gatewayUrl), {
+      body: JSON.stringify({ code, deviceName: 'AI Video Web', phone }),
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
       method: 'POST',
     });
-    const session = parseGatewayLogin(response.data);
-    await establishAuthenticatedServerSession(session.accessToken, session.sessionId);
+    const payload = (await response.json()) as unknown;
+    if (!response.ok) {
+      const parsed = ApiErrorSchema.safeParse(payload);
+      const invalidCode =
+        parsed.success &&
+        ['INVALID_SMS_CODE', 'SMS_CHALLENGE_LOCKED', 'SMS_CODE_EXPIRED'].includes(parsed.data.code);
+      return { ok: false, code: invalidCode ? 'INVALID_SMS_CODE' : 'LOGIN_UNAVAILABLE' };
+    }
+    const session = parseGatewayLogin(payload);
+    await establishAuthenticatedServerSession(
+      session.accessToken,
+      session.sessionId,
+      refreshTokenFromSetCookie(response.headers.get('set-cookie')),
+    );
     return { ok: true };
-  } catch (error) {
-    const invalidCode =
-      error instanceof ApiClientError &&
-      ['INVALID_SMS_CODE', 'SMS_CHALLENGE_LOCKED', 'SMS_CODE_EXPIRED'].includes(error.code);
-    return { ok: false, code: invalidCode ? 'INVALID_SMS_CODE' : 'LOGIN_UNAVAILABLE' };
+  } catch {
+    return { ok: false, code: 'LOGIN_UNAVAILABLE' };
   }
 }

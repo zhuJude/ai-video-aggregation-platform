@@ -20,10 +20,9 @@ export class TaskStreamReconnectDirective extends Error {
   }
 }
 
-function gatewayUrl(path: `/v1/${string}`): string {
-  const configuredGateway = process.env.NEXT_PUBLIC_GATEWAY_URL?.trim();
+function taskBffUrl(path: `/api/${string}`): string {
   const browserOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
-  return new URL(path, configuredGateway || browserOrigin).toString();
+  return new URL(path, browserOrigin).toString();
 }
 
 function traceId(): string {
@@ -85,7 +84,7 @@ export async function openTaskEventStream(
   if (isTaskEventCursor(options.lastEventId)) {
     headers.set('Last-Event-ID', options.lastEventId);
   }
-  const response = await fetch(gatewayUrl(`/v1/tasks/${encodeURIComponent(taskId)}/events`), {
+  const response = await fetch(taskBffUrl(`/api/tasks/${encodeURIComponent(taskId)}/events`), {
     credentials: 'include',
     headers,
     method: 'GET',

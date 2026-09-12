@@ -121,7 +121,15 @@ const verifySmsHandler: GatewayHandler = (request) => {
     return undefined;
   }
 
-  return Response.json({ accessToken: loginAccessToken(), sessionId: LOGIN_SESSION_ID });
+  return Response.json(
+    { accessToken: loginAccessToken(), sessionId: LOGIN_SESSION_ID },
+    {
+      headers: {
+        'Set-Cookie':
+          'refresh_token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; Path=/auth/refresh; HttpOnly; Secure; SameSite=Lax',
+      },
+    },
+  );
 };
 
 const retryAfterHandler: GatewayHandler = (request) => {
@@ -178,6 +186,7 @@ const gatewayMock = {
 };
 
 beforeEach(() => {
+  process.env.GATEWAY_URL = 'https://gateway.internal';
   loginCookies.clear();
   loginCookieWrites.length = 0;
   handlers = [requestSmsHandler, verifySmsHandler];
@@ -421,6 +430,16 @@ describe('PhoneLoginForm', () => {
       name: '__Host-user-session',
       options: { httpOnly: true, path: '/', sameSite: 'lax', secure: true },
     });
+    const verifyRequest = gatewayRequests.find(
+      (request) => new URL(request.url).pathname === '/v1/auth/sms/verify',
+    );
+    await expect(verifyRequest?.clone().json()).resolves.toEqual({
+      code: '123456',
+      deviceName: 'AI Video Web',
+      phone: '13800138000',
+    });
+    expect(loginCookies.get('__Host-user-session')).not.toContain(loginAccessToken());
+    expect(loginCookies.get('__Host-user-session')).not.toContain('refresh_token');
     await expect(
       cancelTaskAction('task-1', '0198f4d4-21c2-7b7d-8a03-08a0da2a6301'),
     ).resolves.toMatchObject({ ok: true });

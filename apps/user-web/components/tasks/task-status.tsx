@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { apiClient } from '../../lib/api-client';
 import { openTaskEventStream, TaskStreamReconnectDirective } from '../../lib/task-event-stream';
 import { parseTaskDetail, parseTaskStreamEvent, reduceStatus } from '../../lib/tasks/runtime';
 import type { TaskStatusSnapshot } from '../../lib/tasks/types';
@@ -69,11 +68,19 @@ export function TaskStatus({ initial, onChange, taskId }: TaskStatusProps) {
     const schedulePoll = () => {
       if (lifetime.signal.aborted || currentRef.current.terminal) return;
       pollTimer = setTimeout(() => {
-        void apiClient<unknown>(`/v1/tasks/${encodeURIComponent(taskId)}`, {
+        void fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+          credentials: 'include',
+          headers: {
+            'x-correlation-id': crypto.randomUUID(),
+            'x-trace-id': Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+              byte.toString(16).padStart(2, '0'),
+            ).join(''),
+          },
           signal: lifetime.signal,
         })
-          .then((response) => {
-            apply(parseTaskDetail(response.data).statusSnapshot);
+          .then(async (response) => {
+            if (!response.ok) throw new Error('TASK_POLL_UNAVAILABLE');
+            apply(parseTaskDetail((await response.json()) as unknown).statusSnapshot);
           })
           .catch(() => undefined)
           .finally(schedulePoll);
