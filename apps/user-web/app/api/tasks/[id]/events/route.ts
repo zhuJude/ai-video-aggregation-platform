@@ -2,7 +2,7 @@ import {
   AuthenticationRequiredError,
   SessionRefreshRequiredError,
   authenticatedGatewayFetch,
-  requireAuthenticatedServerSession,
+  requireMutableAuthenticatedServerSession,
 } from '../../../../../lib/auth/server-session';
 import { isTaskEventCursor } from '../../../../../lib/tasks/identifiers';
 import { createMockTaskEventResponse } from '../../../../../lib/tasks/mock-transport';
@@ -18,7 +18,7 @@ export async function GET(
     const cursor = request.headers.get('last-event-id');
     if (cursor !== null && !isTaskEventCursor(cursor)) return new Response(null, { status: 400 });
     if (process.env.USER_WEB_STUDIO_MODE === 'mock') {
-      const session = await requireAuthenticatedServerSession();
+      const session = await requireMutableAuthenticatedServerSession();
       return await createMockTaskEventResponse(session.ownerId, id, cursor ?? undefined);
     }
     const headers = new Headers({ accept: 'text/event-stream' });

@@ -2,7 +2,7 @@ import {
   AuthenticationRequiredError,
   SessionRefreshRequiredError,
   authenticatedGatewayFetch,
-  requireAuthenticatedServerSession,
+  requireMutableAuthenticatedServerSession,
 } from '../../../../lib/auth/server-session';
 import { createMockTaskPollResponse } from '../../../../lib/tasks/mock-transport';
 import { parseTaskDetail } from '../../../../lib/tasks/runtime';
@@ -16,7 +16,7 @@ export async function GET(
   try {
     const { id } = await context.params;
     if (process.env.USER_WEB_STUDIO_MODE === 'mock') {
-      const session = await requireAuthenticatedServerSession();
+      const session = await requireMutableAuthenticatedServerSession();
       return await createMockTaskPollResponse(session.ownerId, id);
     }
     const headers = new Headers();
