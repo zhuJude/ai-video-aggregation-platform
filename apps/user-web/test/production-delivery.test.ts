@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
+import { generateKeyPairSync } from 'node:crypto';
 import { resolve } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { GET as health } from '../app/health/route';
 import { GET as ready } from '../app/ready/route';
@@ -55,13 +56,22 @@ describe('production delivery boundary', () => {
   });
 
   it('separates liveness from dependency readiness without leaking configuration', async () => {
-    const previousGateway = process.env.GATEWAY_URL;
-    const previousSessionKey = process.env.USER_WEB_SESSION_ENCRYPTION_KEY;
-    delete process.env.GATEWAY_URL;
-    delete process.env.USER_WEB_SESSION_ENCRYPTION_KEY;
+    const mutableEnv = process.env as Record<string, string | undefined>;
+    const names = [
+      'GATEWAY_URL',
+      'NODE_ENV',
+      'USER_WEB_SESSION_ENCRYPTION_KEY',
+      'USER_WEB_IDENTITY_VERIFY_KEYS_JSON',
+      'USER_WEB_PUBLIC_MODE',
+      'USER_WEB_STUDIO_MODE',
+      'USER_WEB_COMMERCE_MODE',
+      'USER_WEB_SUPPORT_MODE',
+    ] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
     try {
+      for (const name of names) Reflect.deleteProperty(mutableEnv, name);
       const liveResponse = health();
-      const unreadyResponse = ready();
+      const unreadyResponse = await ready();
       expect(liveResponse.status).toBe(200);
       expect(await liveResponse.json()).toEqual({ status: 'ok' });
       expect(unreadyResponse.status).toBe(503);
@@ -69,14 +79,60 @@ describe('production delivery boundary', () => {
 
       process.env.GATEWAY_URL = 'https://gateway.internal.example';
       process.env.USER_WEB_SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64url');
-      const readyResponse = ready();
+      const { publicKey } = generateKeyPairSync('ed25519');
+      process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON = JSON.stringify([
+        {
+          kid: 'ready-key',
+          spki: publicKey.export({ format: 'der', type: 'spki' }).toString('base64url'),
+        },
+      ]);
+      const gatewayHealth = vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ status: 'ok' }, { headers: { 'cache-control': 'no-store' } }),
+        );
+      vi.stubGlobal('fetch', gatewayHealth);
+      const readyResponse = await ready();
       expect(readyResponse.status).toBe(200);
       expect(await readyResponse.json()).toEqual({ status: 'ready' });
+      expect(gatewayHealth).toHaveBeenCalledWith(
+        new URL('https://gateway.internal.example/health'),
+        expect.objectContaining({ cache: 'no-store' }),
+      );
+
+      gatewayHealth.mockRejectedValueOnce(new Error('connection refused'));
+      expect((await ready()).status).toBe(503);
+
+      mutableEnv.NODE_ENV = 'production';
+      process.env.USER_WEB_PUBLIC_MODE = ' MOCK ';
+      const unsafeProduction = await ready();
+      expect(unsafeProduction.status).toBe(503);
+      expect(await unsafeProduction.json()).toEqual({ status: 'unavailable' });
+
+      delete process.env.USER_WEB_PUBLIC_MODE;
+      process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON = '[{"kid":"bad","spki":"bad"}]';
+      expect((await ready()).status).toBe(503);
     } finally {
-      if (previousGateway === undefined) delete process.env.GATEWAY_URL;
-      else process.env.GATEWAY_URL = previousGateway;
-      if (previousSessionKey === undefined) delete process.env.USER_WEB_SESSION_ENCRYPTION_KEY;
-      else process.env.USER_WEB_SESSION_ENCRYPTION_KEY = previousSessionKey;
+      vi.unstubAllGlobals();
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) Reflect.deleteProperty(mutableEnv, name);
+        else mutableEnv[name] = value;
+      }
+    }
+  });
+
+  it('keeps every live public Gateway page request-bound instead of build-time cached', async () => {
+    const pages = [
+      'app/(marketing)/page.tsx',
+      'app/models/page.tsx',
+      'app/models/[id]/page.tsx',
+      'app/pricing/page.tsx',
+      'app/help/[[...slug]]/page.tsx',
+    ];
+    for (const page of pages) {
+      const source = await readFile(resolve(appRoot, page), 'utf8');
+      expect(source, page).toContain("export const dynamic = 'force-dynamic'");
     }
   });
 });

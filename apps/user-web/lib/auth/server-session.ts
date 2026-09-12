@@ -137,7 +137,7 @@ function decodeBase64Url(segment: string): Buffer {
   return decoded;
 }
 
-function verificationKey(keyId: string) {
+function configuredVerificationKeys(): ReadonlyMap<string, ReturnType<typeof createPublicKey>> {
   const configured = process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON;
   if (!configured || Buffer.byteLength(configured) > 16_384)
     throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
@@ -145,7 +145,7 @@ function verificationKey(keyId: string) {
   if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 5)
     throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
   const seen = new Set<string>();
-  let encodedKey: string | undefined;
+  const keys = new Map<string, ReturnType<typeof createPublicKey>>();
   for (const raw of parsed) {
     if (!isRecord(raw) || Object.keys(raw).sort().join(',') !== 'kid,spki')
       throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
@@ -158,16 +158,29 @@ function verificationKey(keyId: string) {
     )
       throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
     seen.add(raw.kid);
-    if (raw.kid === keyId) encodedKey = raw.spki;
+    try {
+      const der = decodeBase64Url(raw.spki);
+      const key = createPublicKey({ key: der, format: 'der', type: 'spki' });
+      if (key.asymmetricKeyType !== 'ed25519') throw new Error('INVALID_KEY_TYPE');
+      keys.set(raw.kid, key);
+    } catch {
+      throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+    }
   }
-  if (!encodedKey) throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  return keys;
+}
+
+function verificationKey(keyId: string) {
+  const key = configuredVerificationKeys().get(keyId);
+  if (!key) throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  return key;
+}
+
+export function identityVerificationConfigurationReady(): boolean {
   try {
-    const der = decodeBase64Url(encodedKey);
-    const key = createPublicKey({ key: der, format: 'der', type: 'spki' });
-    if (key.asymmetricKeyType !== 'ed25519') throw new Error('INVALID_KEY_TYPE');
-    return key;
+    return configuredVerificationKeys().size > 0;
   } catch {
-    throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+    return false;
   }
 }
 

@@ -1,23 +1,78 @@
+import { identityVerificationConfigurationReady } from '../../lib/auth/server-session';
+
 export const dynamic = 'force-dynamic';
 
-function configurationReady(): boolean {
-  const gateway = process.env.GATEWAY_URL?.trim();
-  const sessionKey = process.env.USER_WEB_SESSION_ENCRYPTION_KEY;
-  if (!gateway || !sessionKey || !/^[A-Za-z0-9_-]{43}$/.test(sessionKey)) return false;
+const mockModeNames = [
+  'USER_WEB_PUBLIC_MODE',
+  'USER_WEB_STUDIO_MODE',
+  'USER_WEB_COMMERCE_MODE',
+  'USER_WEB_SUPPORT_MODE',
+] as const;
+
+function sessionKeyReady(): boolean {
+  const encoded = process.env.USER_WEB_SESSION_ENCRYPTION_KEY;
+  if (!encoded || !/^[A-Za-z0-9_-]{43}$/.test(encoded)) return false;
+  const decoded = Buffer.from(encoded, 'base64url');
+  return decoded.length === 32 && decoded.toString('base64url') === encoded;
+}
+
+function gatewayUrl(): URL | undefined {
+  const configured = process.env.GATEWAY_URL?.trim();
+  if (!configured) return undefined;
   try {
-    const parsed = new URL(gateway);
+    const parsed = new URL(configured);
+    if (
+      parsed.protocol !== 'https:' &&
+      parsed.hostname !== 'localhost' &&
+      parsed.hostname !== '127.0.0.1'
+    )
+      return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function productionModesReady(): boolean {
+  return (
+    process.env.NODE_ENV !== 'production' ||
+    mockModeNames.every((name) => process.env[name]?.trim().toLowerCase() !== 'mock')
+  );
+}
+
+async function gatewayReachable(base: URL): Promise<boolean> {
+  try {
+    const response = await fetch(new URL('/health', base), {
+      cache: 'no-store',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok || !response.headers.get('content-type')?.startsWith('application/json')) {
+      await response.body?.cancel().catch(() => undefined);
+      return false;
+    }
+    const body = (await response.json()) as unknown;
     return (
-      parsed.protocol === 'https:' ||
-      parsed.hostname === 'localhost' ||
-      parsed.hostname === '127.0.0.1'
+      typeof body === 'object' &&
+      body !== null &&
+      !Array.isArray(body) &&
+      Object.keys(body).length === 1 &&
+      'status' in body &&
+      body.status === 'ok'
     );
   } catch {
     return false;
   }
 }
 
-export function GET(): Response {
-  const ready = configurationReady();
+export async function GET(): Promise<Response> {
+  const base = gatewayUrl();
+  const ready =
+    base !== undefined &&
+    sessionKeyReady() &&
+    identityVerificationConfigurationReady() &&
+    productionModesReady() &&
+    (await gatewayReachable(base));
   return Response.json(
     { status: ready ? 'ready' : 'unavailable' },
     {
