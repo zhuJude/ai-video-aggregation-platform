@@ -1,14 +1,16 @@
 import '@testing-library/jest-dom/vitest';
 
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { TaskStatus } from '../components/tasks/task-status';
-import { TaskDetailView } from '../components/tasks/task-detail-view';
+import { TaskDetailView, type TaskDetailCommands } from '../components/tasks/task-detail-view';
 import { TaskList } from '../components/tasks/task-list';
 import { StudioWorkspace } from '../components/studio/studio-workspace';
 import StudioPage from '../app/studio/page';
+import TaskDetailPage from '../app/tasks/[id]/page';
 import { openTaskEventStream } from '../lib/task-event-stream';
 import { readRetryDraft, saveRetryDraft } from '../lib/studio/retry-drafts';
 import { taskGateway } from '../lib/tasks/gateway';
@@ -22,15 +24,33 @@ import {
   parseTaskStatusSnapshot,
   reduceStatus,
 } from '../lib/tasks/runtime';
-import type { TaskDetail, TaskGateway, TaskStatusSnapshot } from '../lib/tasks/types';
+import type { TaskDetail, TaskStatusSnapshot } from '../lib/tasks/types';
+
+const clientTaskGateway: TaskDetailCommands = {
+  cancelTask: (taskId, options) =>
+    taskGateway.cancelTask(taskId, { ...options, ownerId: 'fixture-user-a' }),
+  createRetryDraft: (taskId) => taskGateway.createRetryDraft(taskId, { ownerId: 'fixture-user-a' }),
+};
 
 const routerPush = vi.hoisted(() => vi.fn());
+const fixtureSessionCookie = vi.hoisted(() => ({ value: 'fixture-session-a' }));
+vi.mock('server-only', () => ({}));
+vi.mock('next/headers', () => ({
+  cookies: () =>
+    Promise.resolve({
+      get: (name: string) =>
+        name === '__Host-ai-video-session' ? { value: fixtureSessionCookie.value } : undefined,
+    }),
+}));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: routerPush }),
 }));
 
+const TRANSITION_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b1';
+const TRANSITION_CURSOR = `1:${TRANSITION_ID}`;
+
 const queuedTask: TaskStatusSnapshot = {
-  eventId: 'event-1',
+  eventId: TRANSITION_CURSOR,
   revision: 1,
   status: 'QUEUED',
   terminal: false,
@@ -97,8 +117,54 @@ it('reconnects with Last-Event-ID and falls back to polling', async () => {
   expect(
     mockFetch.mock.calls
       .slice(0, 3)
-      .every(([, init]) => new Headers(init?.headers).get('Last-Event-ID') === 'event-1'),
+      .every(([, init]) => new Headers(init?.headers).get('Last-Event-ID') === TRANSITION_CURSOR),
   ).toBe(true);
+});
+
+it('opens the real task detail page fixture with a WS13-compatible cursor', async () => {
+  let request: Request | undefined;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      request = new Request(input, init);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('closed', 'AbortError'));
+        });
+      });
+    }),
+  );
+
+  const view = render(await TaskDetailPage({ params: Promise.resolve({ id: 'task-1' }) }));
+  await waitFor(() => {
+    expect(request).toBeDefined();
+  });
+  expect(request?.headers.get('Last-Event-ID')).toMatch(
+    /^(0|[1-9]\d*):[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  view.unmount();
+});
+
+it('omits Last-Event-ID when an initial snapshot does not contain a WS13 cursor', async () => {
+  let request: Request | undefined;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      request = new Request(input, init);
+      return Promise.resolve(
+        new Response('', { headers: { 'content-type': 'text/event-stream' } }),
+      );
+    }),
+  );
+
+  await expect(
+    openTaskEventStream('task-1', {
+      lastEventId: 'task-1-event-4',
+      onEvent: () => undefined,
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toThrow('TASK_EVENT_STREAM_CLOSED');
+  expect(request?.headers.get('Last-Event-ID')).toBeNull();
 });
 
 it('does not regress a terminal status on an old event', () => {
@@ -212,6 +278,57 @@ it('does not open a duplicate stream when only the parent callback identity chan
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
+it('keeps only one active stream across a StrictMode remount', async () => {
+  const signals: AbortSignal[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          if (init?.signal) signals.push(init.signal);
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('closed', 'AbortError'));
+          });
+        }),
+    ),
+  );
+
+  const view = render(
+    <StrictMode>
+      <TaskStatus taskId="task-1" initial={queuedTask} />
+    </StrictMode>,
+  );
+  await waitFor(() => {
+    expect(signals.length).toBeGreaterThanOrEqual(2);
+  });
+  expect(signals.filter((signal) => !signal.aborted)).toHaveLength(1);
+  view.unmount();
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+});
+
+it('does not overlap slow polling requests', async () => {
+  vi.useFakeTimers();
+  let resolvePoll!: (response: Response) => void;
+  const mockFetch = vi
+    .fn<typeof fetch>()
+    .mockRejectedValueOnce(new Error('stream-1'))
+    .mockRejectedValueOnce(new Error('stream-2'))
+    .mockRejectedValueOnce(new Error('stream-3'))
+    .mockImplementationOnce(() => new Promise<Response>((resolve) => (resolvePoll = resolve)));
+  vi.stubGlobal('fetch', mockFetch);
+
+  const view = render(<TaskStatus taskId="task-1" initial={queuedTask} />);
+  await vi.advanceTimersByTimeAsync(1_000);
+  await vi.advanceTimersByTimeAsync(2_000);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(mockFetch).toHaveBeenCalledTimes(4);
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(mockFetch).toHaveBeenCalledTimes(4);
+  resolvePoll(Response.json({ ...detailFixture, statusSnapshot: queuedTask }));
+  await vi.advanceTimersByTimeAsync(0);
+  view.unmount();
+});
+
 it('aborts the stream and clears all timers as soon as the API declares terminal', async () => {
   vi.useFakeTimers();
   let streamSignal: AbortSignal | undefined;
@@ -274,7 +391,7 @@ it('parses CRLF, comments and multi-line SSE data while sending credentials and 
 
   await expect(
     openTaskEventStream('task-1', {
-      lastEventId: 'event-7',
+      lastEventId: TRANSITION_CURSOR,
       onEvent: (event) => received.push(event),
       signal: new AbortController().signal,
     }),
@@ -283,7 +400,7 @@ it('parses CRLF, comments and multi-line SSE data while sending credentials and 
   expect(received).toEqual([{ data: runningEvent, eventId: 'event-8', eventType: 'task.status' }]);
   expect(request?.credentials).toBe('include');
   expect(request?.headers.get('accept')).toBe('text/event-stream');
-  expect(request?.headers.get('Last-Event-ID')).toBe('event-7');
+  expect(request?.headers.get('Last-Event-ID')).toBe(TRANSITION_CURSOR);
   expect(request?.headers.get('x-trace-id')).toMatch(/^[a-f0-9]{32}$/);
   expect(request?.headers.get('x-correlation-id')).toBeTruthy();
 });
@@ -422,6 +539,103 @@ it('counts malformed payloads as failures and polls after the third failure', as
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it('honors the exact WS09 idle reconnect directive without degrading to polling', async () => {
+  vi.useFakeTimers();
+  const reconnect = () =>
+    new Response('retry: 3000\nevent: reconnect\ndata: idle\n\n', {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  const mockFetch = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(reconnect()));
+  vi.stubGlobal('fetch', mockFetch);
+
+  const view = render(<TaskStatus taskId="task-1" initial={queuedTask} />);
+  await vi.advanceTimersByTimeAsync(2_999);
+  expect(mockFetch).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(mockFetch).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(9_000);
+
+  expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(4);
+  expect(
+    mockFetch.mock.calls.every(([input]) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      return /\/v1\/tasks\/task-1\/events$/.test(url);
+    }),
+  ).toBe(true);
+  view.unmount();
+});
+
+it('treats a valid old transition as healthy and resets the failure streak', async () => {
+  vi.useFakeTimers();
+  const malformed = () =>
+    new Response('event: task.status\nid: bad\ndata: {}\n\n', {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  const oldTransition = () =>
+    new Response(
+      `event: task-transition\nid: 1:${TRANSITION_ID}\ndata: ${JSON.stringify({
+        transitionId: TRANSITION_ID,
+        taskId: 'task-1',
+        taskVersion: 1,
+        status: 'QUEUED',
+        occurredAt: '2026-08-31T08:00:00Z',
+      })}\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+  const mockFetch = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(malformed())
+    .mockResolvedValueOnce(malformed())
+    .mockResolvedValueOnce(oldTransition())
+    .mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('closed', 'AbortError'));
+          });
+        }),
+    );
+  vi.stubGlobal('fetch', mockFetch);
+
+  const view = render(<TaskStatus taskId="task-1" initial={queuedTask} />);
+  await vi.advanceTimersByTimeAsync(1_000);
+  await vi.advanceTimersByTimeAsync(2_000);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(mockFetch).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(mockFetch).toHaveBeenCalledTimes(4);
+  view.unmount();
+});
+
+it('never promotes provider-conditional cancellation from false to true', () => {
+  const transitionId = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b2';
+  const current: TaskStatusSnapshot = {
+    ...queuedTask,
+    eventId: `2:${TRANSITION_ID}`,
+    revision: 2,
+    status: 'SUBMITTING',
+    cancelAllowed: false,
+  };
+  const next = parseTaskStreamEvent(
+    {
+      eventType: 'task-transition',
+      eventId: `3:${transitionId}`,
+      data: {
+        transitionId,
+        taskId: 'task-1',
+        taskVersion: 3,
+        status: 'RUNNING',
+        occurredAt: '2026-08-31T08:03:00Z',
+      },
+    },
+    'task-1',
+    current,
+  );
+
+  expect(next.cancelAllowed).toBe(false);
+});
+
 it('preserves an SSE frame when CRLF is split across network chunks', async () => {
   const received: unknown[] = [];
   const payload = JSON.stringify(runningEvent);
@@ -521,7 +735,7 @@ it('renders a useful empty state for filters with no matches', () => {
 });
 
 it('shows exact BigInt financial state, normalized reasons and an accessible timeline', () => {
-  render(<TaskDetailView detail={detailFixture} gateway={taskGateway} live={false} />);
+  render(<TaskDetailView detail={detailFixture} gateway={clientTaskGateway} live={false} />);
 
   expect(screen.getAllByText('9,007,199,254,740,993').length).toBeGreaterThan(0);
   expect(screen.getByText('生成服务暂时繁忙，已为你保留队列位置。')).toBeVisible();
@@ -535,18 +749,20 @@ it('shows exact BigInt financial state, normalized reasons and an accessible tim
 it('gates cancellation and prevents duplicate clicks while pending or after acceptance', async () => {
   const user = userEvent.setup();
   let resolveCancel!: (value: unknown) => void;
-  const cancelTask = vi.fn<TaskGateway['cancelTask']>(
+  const cancelTask = vi.fn<TaskDetailCommands['cancelTask']>(
     () => new Promise<unknown>((resolve) => (resolveCancel = resolve)),
   );
-  const gateway: TaskGateway = {
-    ...taskGateway,
+  const gateway: TaskDetailCommands = {
+    ...clientTaskGateway,
     cancelTask,
   };
   const view = render(<TaskDetailView detail={detailFixture} gateway={gateway} live={false} />);
   const cancel = screen.getByRole('button', { name: '取消任务' });
   await user.dblClick(cancel);
   expect(cancelTask).toHaveBeenCalledTimes(1);
-  expect(cancelTask.mock.calls[0]?.[1].idempotencyKey).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(cancelTask.mock.calls[0]?.[1].idempotencyKey).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
 
   resolveCancel({
     ok: true,
@@ -562,7 +778,7 @@ it('gates cancellation and prevents duplicate clicks while pending or after acce
         ...detailFixture,
         statusSnapshot: { ...detailFixture.statusSnapshot, cancelAllowed: false },
       }}
-      gateway={taskGateway}
+      gateway={clientTaskGateway}
       live={false}
     />,
   );
@@ -575,7 +791,7 @@ it('creates an opaque retry draft and never puts parameters in the URL', async (
   render(
     <TaskDetailView
       detail={detailFixture}
-      gateway={{ ...taskGateway, createRetryDraft }}
+      gateway={{ ...clientTaskGateway, createRetryDraft }}
       live={false}
     />,
   );
@@ -589,8 +805,8 @@ it('creates an opaque retry draft and never puts parameters in the URL', async (
 
 it('does not invent a terminal state when cancellation fails', async () => {
   const user = userEvent.setup();
-  const gateway: TaskGateway = {
-    ...taskGateway,
+  const gateway: TaskDetailCommands = {
+    ...clientTaskGateway,
     cancelTask: vi.fn().mockRejectedValue(new Error('network')),
   };
   render(<TaskDetailView detail={detailFixture} gateway={gateway} live={false} />);
@@ -604,10 +820,14 @@ it('does not invent a terminal state when cancellation fails', async () => {
 it('reuses one cancellation idempotency key after an ambiguous response failure', async () => {
   const user = userEvent.setup();
   const cancelTask = vi
-    .fn<TaskGateway['cancelTask']>()
+    .fn<TaskDetailCommands['cancelTask']>()
     .mockResolvedValue({ ok: false, outcome: 'UNCERTAIN' });
   render(
-    <TaskDetailView detail={detailFixture} gateway={{ ...taskGateway, cancelTask }} live={false} />,
+    <TaskDetailView
+      detail={detailFixture}
+      gateway={{ ...clientTaskGateway, cancelTask }}
+      live={false}
+    />,
   );
 
   await user.click(screen.getByRole('button', { name: '取消任务' }));
@@ -623,10 +843,14 @@ it('reuses one cancellation idempotency key after an ambiguous response failure'
 it('uses a fresh cancellation idempotency key after a definitive failure', async () => {
   const user = userEvent.setup();
   const cancelTask = vi
-    .fn<TaskGateway['cancelTask']>()
+    .fn<TaskDetailCommands['cancelTask']>()
     .mockResolvedValue({ ok: false, outcome: 'DEFINITIVE_FAILURE' });
   render(
-    <TaskDetailView detail={detailFixture} gateway={{ ...taskGateway, cancelTask }} live={false} />,
+    <TaskDetailView
+      detail={detailFixture}
+      gateway={{ ...clientTaskGateway, cancelTask }}
+      live={false}
+    />,
   );
 
   await user.click(screen.getByRole('button', { name: '取消任务' }));
@@ -659,7 +883,7 @@ it('stops a live stream when cancellation supplies a newer API-declared terminal
     <TaskDetailView
       detail={detailFixture}
       gateway={{
-        ...taskGateway,
+        ...clientTaskGateway,
         cancelTask: vi.fn().mockResolvedValue({ ok: true, snapshot: terminal }),
       }}
     />,
@@ -718,7 +942,9 @@ it('rejects internal/provider error fields instead of exposing them as public re
 });
 
 it('resolves an opaque server-side retry draft in Studio without URL parameters', async () => {
-  const { draftId } = parseRetryDraft(await taskGateway.createRetryDraft('task-1'));
+  const { draftId } = parseRetryDraft(
+    await taskGateway.createRetryDraft('task-1', { ownerId: 'fixture-user-a' }),
+  );
   render(await StudioPage({ searchParams: Promise.resolve({ draft: draftId }) }));
 
   expect(await screen.findByLabelText('起始图片')).toHaveValue('asset-21');
@@ -745,6 +971,43 @@ it('binds retry drafts to an owner, expires them and consumes them once', () => 
     { now: 10_000, ownerId: 'session-a', ttlMs: 1 },
   );
   expect(readRetryDraft('draft-expired', { now: 10_002, ownerId: 'session-a' })).toBeUndefined();
+});
+
+it('sweeps expired retry drafts and enforces a bounded fixture capacity', () => {
+  const base = {
+    generationMode: 'IMAGE_TO_VIDEO' as const,
+    providerId: 'mock-provider-east',
+    modelId: 'mock-cinema-v2',
+    capabilityVersion: 'cap-image-v7',
+    capabilitySchemaVersion: 202012,
+    parameters: { image: 'asset-private' },
+  };
+  for (let index = 0; index < 101; index += 1) {
+    saveRetryDraft(
+      { ...base, id: `capacity-${String(index).padStart(3, '0')}` },
+      { now: 20_000, ownerId: 'session-capacity', ttlMs: 5_000 },
+    );
+  }
+  expect(
+    readRetryDraft('capacity-000', { now: 20_001, ownerId: 'session-capacity' }),
+  ).toBeUndefined();
+
+  saveRetryDraft(
+    { ...base, id: 'sweep-trigger' },
+    { now: 30_000, ownerId: 'session-capacity', ttlMs: 5_000 },
+  );
+  expect(
+    readRetryDraft('capacity-100', { now: 30_000, ownerId: 'session-capacity' }),
+  ).toBeUndefined();
+});
+
+it('resolves retry ownership from a strict server-side session cookie fixture', async () => {
+  const { readFixtureServerSession } = await import('../lib/auth/server-session');
+  fixtureSessionCookie.value = 'fixture-session-a';
+  await expect(readFixtureServerSession()).resolves.toEqual({ ownerId: 'fixture-user-a' });
+  fixtureSessionCookie.value = 'attacker-controlled-user-id';
+  await expect(readFixtureServerSession()).resolves.toBeUndefined();
+  fixtureSessionCookie.value = 'fixture-session-a';
 });
 
 it.each([
@@ -776,10 +1039,64 @@ it.each([
 );
 
 it('binds cancellation idempotency cache entries to the task fingerprint', async () => {
-  const key = crypto.randomUUID();
-  const first = await taskGateway.cancelTask('task-1', { idempotencyKey: key });
-  await expect(taskGateway.cancelTask('task-2', { idempotencyKey: key })).rejects.toMatchObject({
-    outcome: 'DEFINITIVE_FAILURE',
+  const key = '0198f4d4-21c2-7b7d-8a03-08a0da2a52b1';
+  const first = await taskGateway.cancelTask('task-1', {
+    idempotencyKey: key,
+    ownerId: 'fixture-user-a',
   });
-  await expect(taskGateway.cancelTask('task-1', { idempotencyKey: key })).resolves.toEqual(first);
+  await expect(
+    taskGateway.cancelTask('task-2', { idempotencyKey: key, ownerId: 'fixture-user-a' }),
+  ).rejects.toMatchObject({ outcome: 'DEFINITIVE_FAILURE' });
+  await expect(
+    taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: 'fixture-user-a' }),
+  ).resolves.toEqual(first);
+});
+
+it('rejects a UUIDv4 cancellation key at the frozen UUIDv7 boundary', async () => {
+  await expect(
+    taskGateway.cancelTask('task-1', {
+      idempotencyKey: '550e8400-e29b-41d4-a716-446655440000',
+      ownerId: 'fixture-user-a',
+    }),
+  ).rejects.toThrow('INVALID_IDEMPOTENCY_KEY');
+});
+
+it('binds cancellation cache entries to owner and expires stale entries', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-08-31T10:00:00Z'));
+  const key = '0198f4d4-21c2-7b7d-8a03-08a0da2a52b2';
+  await taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: 'fixture-user-a' });
+  await expect(
+    taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: 'fixture-user-b' }),
+  ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
+
+  vi.setSystemTime(new Date('2026-08-31T10:11:00Z'));
+  await expect(
+    taskGateway.cancelTask('task-2', { idempotencyKey: key, ownerId: 'fixture-user-a' }),
+  ).rejects.toThrow('CANCEL_NOT_ALLOWED');
+});
+
+it('bounds the cancellation idempotency cache and evicts its oldest entry', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-08-31T11:00:00Z'));
+  const keys = Array.from(
+    { length: 101 },
+    (_, index) => `0198f4d4-21c2-7b7d-8a03-${index.toString(16).padStart(12, '0')}`,
+  );
+
+  for (const idempotencyKey of keys) {
+    await taskGateway.cancelTask('task-1', {
+      idempotencyKey,
+      ownerId: 'fixture-user-a',
+    });
+  }
+  const oldestKey = keys[0];
+  if (!oldestKey) throw new Error('MISSING_CANCEL_CACHE_TEST_KEY');
+
+  await expect(
+    taskGateway.cancelTask('task-2', {
+      idempotencyKey: oldestKey,
+      ownerId: 'fixture-user-a',
+    }),
+  ).rejects.toThrow('CANCEL_NOT_ALLOWED');
 });

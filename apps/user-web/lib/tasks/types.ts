@@ -98,6 +98,9 @@ export interface RetryDraft {
 export interface TaskGateway {
   listTasks(filters: TaskFilters): Promise<unknown>;
   getTask(taskId: string): Promise<unknown>;
-  cancelTask(taskId: string, options: { readonly idempotencyKey: string }): Promise<unknown>;
-  createRetryDraft(taskId: string): Promise<unknown>;
+  cancelTask(
+    taskId: string,
+    options: { readonly idempotencyKey: string; readonly ownerId: string },
+  ): Promise<unknown>;
+  createRetryDraft(taskId: string, options: { readonly ownerId: string }): Promise<unknown>;
 }

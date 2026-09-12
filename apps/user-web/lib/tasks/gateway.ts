@@ -1,4 +1,5 @@
-import { FIXTURE_SESSION_OWNER_ID, saveRetryDraft } from '../studio/retry-drafts';
+import { saveRetryDraft } from '../studio/retry-drafts';
+import { createUuidV7, isUuidV7 } from './identifiers';
 import type {
   RetryDraft,
   TaskDetail,
@@ -16,6 +17,9 @@ export function classifyCancelTaskError(error: unknown): 'UNCERTAIN' | 'DEFINITI
   return error instanceof TaskGatewayCommandError ? error.outcome : 'UNCERTAIN';
 }
 
+const fixtureCursor = (revision: number, suffix: string) =>
+  `${String(revision)}:0198f4d4-21c2-7b7d-8a03-${suffix}`;
+
 const fixtures: readonly TaskDetail[] = [
   {
     id: 'task-1',
@@ -26,7 +30,7 @@ const fixtures: readonly TaskDetail[] = [
     createdAt: '2026-08-31T10:00:00.000Z',
     quotedPoints: '240',
     statusSnapshot: {
-      eventId: 'task-1-event-4',
+      eventId: fixtureCursor(4, '08a0da2a5104'),
       revision: 4,
       status: 'RUNNING',
       terminal: false,
@@ -59,7 +63,7 @@ const fixtures: readonly TaskDetail[] = [
     },
     timeline: [
       {
-        eventId: 'task-1-event-1',
+        eventId: fixtureCursor(1, '08a0da2a5101'),
         revision: 1,
         status: 'QUEUED',
         terminal: false,
@@ -68,7 +72,7 @@ const fixtures: readonly TaskDetail[] = [
         label: '任务已进入队列',
       },
       {
-        eventId: 'task-1-event-4',
+        eventId: fixtureCursor(4, '08a0da2a5104'),
         revision: 4,
         status: 'RUNNING',
         terminal: false,
@@ -87,7 +91,7 @@ const fixtures: readonly TaskDetail[] = [
     createdAt: '2026-08-31T09:00:00.000Z',
     quotedPoints: '300',
     statusSnapshot: {
-      eventId: 'task-2-event-9',
+      eventId: fixtureCursor(9, '08a0da2a5209'),
       revision: 9,
       status: 'SETTLED',
       terminal: true,
@@ -116,7 +120,7 @@ const fixtures: readonly TaskDetail[] = [
     },
     timeline: [
       {
-        eventId: 'task-2-event-9',
+        eventId: fixtureCursor(9, '08a0da2a5209'),
         revision: 9,
         status: 'SETTLED',
         terminal: true,
@@ -135,7 +139,7 @@ const fixtures: readonly TaskDetail[] = [
     createdAt: '2026-08-30T12:00:00.000Z',
     quotedPoints: '420',
     statusSnapshot: {
-      eventId: 'task-3-event-7',
+      eventId: fixtureCursor(7, '08a0da2a5307'),
       revision: 7,
       status: 'FAILED',
       terminal: false,
@@ -164,7 +168,7 @@ const fixtures: readonly TaskDetail[] = [
     },
     timeline: [
       {
-        eventId: 'task-3-event-7',
+        eventId: fixtureCursor(7, '08a0da2a5307'),
         revision: 7,
         status: 'FAILED',
         terminal: false,
@@ -182,14 +186,24 @@ const cursorOffsets = new Map<string, number>([
   ['eyJwYWdlIjoyfQ', 2],
 ]);
 const PAGE_SIZE = 2;
+const CANCEL_CACHE_TTL_MS = 10 * 60 * 1_000;
+const MAX_CANCEL_CACHE_ENTRIES = 100;
 const canceledByKey = new Map<
   string,
   {
+    readonly expiresAt: number;
     readonly fingerprint: string;
+    readonly ownerId: string;
     readonly snapshot: TaskStatusSnapshot;
     readonly taskId: string;
   }
 >();
+
+function sweepCanceledCache(now: number): void {
+  for (const [key, entry] of canceledByKey) {
+    if (entry.expiresAt <= now) canceledByKey.delete(key);
+  }
+}
 
 function matches(task: TaskDetail, filters: TaskFilters): boolean {
   if (filters.status && task.statusSnapshot.status !== filters.status) return false;
@@ -237,13 +251,19 @@ export const taskGateway: TaskGateway = {
   },
 
   async cancelTask(taskId, options): Promise<unknown> {
-    if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(options.idempotencyKey)) {
+    if (!isUuidV7(options.idempotencyKey)) {
       throw new TaskGatewayCommandError('INVALID_IDEMPOTENCY_KEY');
     }
+    const now = Date.now();
+    sweepCanceledCache(now);
     const fingerprint = JSON.stringify({ operation: 'cancel', taskId });
     const existing = canceledByKey.get(options.idempotencyKey);
     if (existing) {
-      if (existing.taskId !== taskId || existing.fingerprint !== fingerprint) {
+      if (
+        existing.ownerId !== options.ownerId ||
+        existing.taskId !== taskId ||
+        existing.fingerprint !== fingerprint
+      ) {
         throw new TaskGatewayCommandError('IDEMPOTENCY_CONFLICT');
       }
       return Promise.resolve(structuredClone(existing.snapshot));
@@ -253,26 +273,36 @@ export const taskGateway: TaskGateway = {
       throw new TaskGatewayCommandError('CANCEL_NOT_ALLOWED');
     }
     const canceled: TaskStatusSnapshot = {
-      eventId: `${task.id}-cancel-${crypto.randomUUID()}`,
+      eventId: `${String(task.statusSnapshot.revision + 1)}:${createUuidV7(now)}`,
       revision: task.statusSnapshot.revision + 1,
       status: 'CANCELED',
       terminal: false,
       cancelAllowed: false,
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date(now).toISOString(),
       publicReason: {
         code: 'USER_CANCELED',
         message: '取消请求已接受，费用将按任务快照规则处理。',
       },
     };
-    canceledByKey.set(options.idempotencyKey, { fingerprint, snapshot: canceled, taskId });
+    if (canceledByKey.size >= MAX_CANCEL_CACHE_ENTRIES) {
+      const oldestKey = canceledByKey.keys().next().value;
+      if (oldestKey) canceledByKey.delete(oldestKey);
+    }
+    canceledByKey.set(options.idempotencyKey, {
+      expiresAt: now + CANCEL_CACHE_TTL_MS,
+      fingerprint,
+      ownerId: options.ownerId,
+      snapshot: canceled,
+      taskId,
+    });
     return Promise.resolve(structuredClone(canceled));
   },
 
-  async createRetryDraft(taskId): Promise<unknown> {
+  async createRetryDraft(taskId, options): Promise<unknown> {
     const task = fixtures.find((candidate) => candidate.id === taskId);
     if (!task) throw new Error('TASK_NOT_FOUND');
     const draft: RetryDraft = {
-      id: crypto.randomUUID(),
+      id: createUuidV7(),
       generationMode: task.generationMode,
       providerId: task.modelSnapshot.providerId,
       modelId: task.modelSnapshot.modelId,
@@ -280,7 +310,7 @@ export const taskGateway: TaskGateway = {
       capabilitySchemaVersion: 202012,
       parameters: structuredClone(task.parametersSnapshot),
     };
-    saveRetryDraft(draft, { ownerId: FIXTURE_SESSION_OWNER_ID });
+    saveRetryDraft(draft, { ownerId: options.ownerId });
     return Promise.resolve({ draftId: draft.id });
   },
 };

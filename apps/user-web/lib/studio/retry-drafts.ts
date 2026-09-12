@@ -1,7 +1,8 @@
+import 'server-only';
+
 import type { RetryDraft } from '../tasks/types';
 
 // Backend-unmerged fixture only; WS09's persistent authenticated Gateway replaces this Map.
-export const FIXTURE_SESSION_OWNER_ID = 'fixture-session-current-user';
 
 interface RetryDraftAccess {
   readonly now?: number;
@@ -19,13 +20,25 @@ interface StoredRetryDraft {
 }
 
 const DEFAULT_TTL_MS = 10 * 60 * 1_000;
+const MAX_DRAFTS = 100;
 const drafts = new Map<string, StoredRetryDraft>();
+
+function sweepExpired(now: number): void {
+  for (const [draftId, stored] of drafts) {
+    if (stored.expiresAt <= now) drafts.delete(draftId);
+  }
+}
 
 export function saveRetryDraft(draft: RetryDraft, options: RetryDraftSaveOptions): void {
   const now = options.now ?? Date.now();
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   if (!Number.isSafeInteger(now) || !Number.isSafeInteger(ttlMs) || ttlMs <= 0) {
     throw new Error('INVALID_RETRY_DRAFT_EXPIRY');
+  }
+  sweepExpired(now);
+  if (!drafts.has(draft.id) && drafts.size >= MAX_DRAFTS) {
+    const oldestDraftId = drafts.keys().next().value;
+    if (oldestDraftId) drafts.delete(oldestDraftId);
   }
   drafts.set(draft.id, {
     draft: { ...draft, parameters: structuredClone(draft.parameters) },
@@ -35,13 +48,10 @@ export function saveRetryDraft(draft: RetryDraft, options: RetryDraftSaveOptions
 }
 
 export function readRetryDraft(draftId: string, options: RetryDraftAccess): RetryDraft | undefined {
+  const now = options.now ?? Date.now();
+  sweepExpired(now);
   const stored = drafts.get(draftId);
   if (!stored) return undefined;
-  const now = options.now ?? Date.now();
-  if (stored.expiresAt <= now) {
-    drafts.delete(draftId);
-    return undefined;
-  }
   if (stored.ownerId !== options.ownerId) return undefined;
   drafts.delete(draftId);
   return { ...stored.draft, parameters: structuredClone(stored.draft.parameters) };

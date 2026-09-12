@@ -1,5 +1,7 @@
 import { HEADERS } from '@repo/contracts/common';
 
+import { isTaskEventCursor } from './tasks/identifiers';
+
 export interface RawTaskStreamEvent {
   readonly data: unknown;
   readonly eventId: string;
@@ -10,6 +12,12 @@ export interface TaskEventStreamOptions {
   readonly lastEventId?: string;
   readonly onEvent: (event: RawTaskStreamEvent) => void;
   readonly signal: AbortSignal;
+}
+
+export class TaskStreamReconnectDirective extends Error {
+  constructor(readonly retryMs: number) {
+    super('TASK_EVENT_STREAM_RECONNECT');
+  }
 }
 
 function gatewayUrl(path: `/v1/${string}`): string {
@@ -28,6 +36,7 @@ function consumeFrame(frame: string, onEvent: TaskEventStreamOptions['onEvent'])
   const lines = frame.split('\n');
   let eventName = 'message';
   let eventId = '';
+  let retry: number | undefined;
   const data: string[] = [];
   for (const line of lines) {
     if (line === '' || line.startsWith(':')) continue;
@@ -40,8 +49,19 @@ function consumeFrame(frame: string, onEvent: TaskEventStreamOptions['onEvent'])
       if (value.includes('\0')) throw new Error('INVALID_TASK_EVENT_ID');
       eventId = value;
     } else if (field === 'data') data.push(value);
+    else if (field === 'retry') {
+      if (!/^\d+$/.test(value)) throw new Error('INVALID_TASK_EVENT_RETRY');
+      retry = Number(value);
+      if (!Number.isSafeInteger(retry) || retry <= 0) throw new Error('INVALID_TASK_EVENT_RETRY');
+    }
   }
   if (data.length === 0) return;
+  if (eventName === 'reconnect') {
+    if (eventId || retry !== 3_000 || data.length !== 1 || data[0] !== 'idle') {
+      throw new Error('INVALID_TASK_RECONNECT_DIRECTIVE');
+    }
+    throw new TaskStreamReconnectDirective(retry);
+  }
   if (eventName !== 'message' && eventName !== 'task.status' && eventName !== 'task-transition') {
     throw new Error('INVALID_TASK_EVENT_TYPE');
   }
@@ -62,7 +82,9 @@ export async function openTaskEventStream(
   const headers = new Headers({ accept: 'text/event-stream' });
   headers.set(HEADERS.traceId, traceId());
   headers.set(HEADERS.correlationId, crypto.randomUUID());
-  if (options.lastEventId) headers.set('Last-Event-ID', options.lastEventId);
+  if (isTaskEventCursor(options.lastEventId)) {
+    headers.set('Last-Event-ID', options.lastEventId);
+  }
   const response = await fetch(gatewayUrl(`/v1/tasks/${encodeURIComponent(taskId)}/events`), {
     credentials: 'include',
     headers,

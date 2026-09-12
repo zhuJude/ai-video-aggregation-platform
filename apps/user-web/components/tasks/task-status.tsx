@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { apiClient } from '../../lib/api-client';
-import { openTaskEventStream } from '../../lib/task-event-stream';
+import { openTaskEventStream, TaskStreamReconnectDirective } from '../../lib/task-event-stream';
 import { parseTaskDetail, parseTaskStreamEvent, reduceStatus } from '../../lib/tasks/runtime';
 import type { TaskStatusSnapshot } from '../../lib/tasks/types';
 
@@ -92,11 +92,17 @@ export function TaskStatus({ initial, onChange, taskId }: TaskStatusProps) {
         signal: activeStream.signal,
         onEvent: (event) => {
           const next = parseTaskStreamEvent(event, taskId, currentRef.current);
-          if (apply(next)) failures = 0;
+          apply(next);
+          failures = 0;
         },
       })
-        .catch(() => {
+        .catch((error: unknown) => {
           if (lifetime.signal.aborted || currentRef.current.terminal) return;
+          if (error instanceof TaskStreamReconnectDirective) {
+            failures = 0;
+            retryTimer = setTimeout(connect, error.retryMs);
+            return;
+          }
           failures += 1;
           // Three cumulative failures: the initial connection, then 1s and 2s reconnects.
           if (failures > BACKOFF_MS.length) {

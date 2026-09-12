@@ -2,6 +2,7 @@ import { PointsStringSchema, UtcDateTimeSchema } from '@repo/contracts/common';
 import { TaskStatusSchema } from '@repo/contracts/generation';
 
 import type { RawTaskStreamEvent } from '../task-event-stream';
+import { isUuidV7 } from './identifiers';
 
 import type {
   CancelTaskResult,
@@ -79,9 +80,6 @@ function parseIsoInstant(value: unknown): string {
   return parsed.data;
 }
 
-const TRANSITION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
 const ALLOWED_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   QUOTED: ['RESERVED'],
   RESERVED: ['QUEUED', 'REFUNDED'],
@@ -111,7 +109,7 @@ export function parseTaskStreamEvent(
     'UNKNOWN_TASK_TRANSITION_FIELD',
   );
   const transitionId = requireString(transition.transitionId, 'INVALID_TASK_TRANSITION_ID');
-  if (!TRANSITION_ID_PATTERN.test(transitionId)) throw new Error('INVALID_TASK_TRANSITION_ID');
+  if (!isUuidV7(transitionId)) throw new Error('INVALID_TASK_TRANSITION_ID');
   if (transition.taskId !== expectedTaskId) throw new Error('TASK_TRANSITION_TASK_MISMATCH');
   if (!Number.isSafeInteger(transition.taskVersion) || (transition.taskVersion as number) < 0) {
     throw new Error('INVALID_TASK_REVISION');
@@ -133,7 +131,8 @@ export function parseTaskStreamEvent(
     revision,
     status: parsedStatus.data,
     terminal: parsedStatus.data === 'SETTLED' || parsedStatus.data === 'REFUNDED',
-    cancelAllowed: parsedStatus.data === 'QUEUED' || parsedStatus.data === 'RUNNING',
+    cancelAllowed:
+      current.cancelAllowed && (parsedStatus.data === 'QUEUED' || parsedStatus.data === 'RUNNING'),
     updatedAt: parseIsoInstant(transition.occurredAt),
   };
 }

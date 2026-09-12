@@ -11,17 +11,23 @@ import {
   parseRetryDraft,
   reduceStatus,
 } from '../../lib/tasks/runtime';
-import type { TaskDetail, TaskGateway } from '../../lib/tasks/types';
+import { createUuidV7 } from '../../lib/tasks/identifiers';
+import type { TaskDetail } from '../../lib/tasks/types';
 import { TaskStatus } from './task-status';
+
+export interface TaskDetailCommands {
+  cancelTask(taskId: string, options: { readonly idempotencyKey: string }): Promise<unknown>;
+  createRetryDraft(taskId: string): Promise<unknown>;
+}
 
 interface TaskDetailViewProps {
   readonly detail: Omit<TaskDetail, 'parametersSnapshot'>;
-  readonly gateway?: Pick<TaskGateway, 'cancelTask' | 'createRetryDraft'>;
+  readonly gateway?: TaskDetailCommands;
   readonly live?: boolean;
   readonly navigate?: (href: string) => void;
 }
 
-const serverTaskCommands: Pick<TaskGateway, 'cancelTask' | 'createRetryDraft'> = {
+const serverTaskCommands: TaskDetailCommands = {
   cancelTask: (taskId, options) => cancelTaskAction(taskId, options.idempotencyKey),
   createRetryDraft: createRetryDraftAction,
 };
@@ -45,7 +51,7 @@ export function TaskDetailView({
     setCanceling(true);
     setFeedback(undefined);
     try {
-      cancelIdempotencyKey.current ??= crypto.randomUUID();
+      cancelIdempotencyKey.current ??= createUuidV7();
       const result = parseCancelTaskResult(
         await gateway.cancelTask(detail.id, {
           idempotencyKey: cancelIdempotencyKey.current,
