@@ -6,6 +6,39 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PhoneLoginForm } from '../components/auth/phone-login-form';
+import { cancelTaskAction } from '../app/tasks/actions';
+
+const LOGIN_OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6101';
+const LOGIN_SESSION_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6111';
+process.env.USER_WEB_SESSION_SIGNING_KEY = 'test-only-session-signing-key-32-bytes-minimum';
+const encodeJwtSegment = (value: unknown) =>
+  Buffer.from(JSON.stringify(value)).toString('base64url');
+const loginAccessToken = () =>
+  `${encodeJwtSegment({ alg: 'ES256', typ: 'JWT' })}.${encodeJwtSegment({
+    aud: 'user-web',
+    exp: Math.floor(Date.now() / 1_000) + 900,
+    iss: 'identity-service',
+    sid: LOGIN_SESSION_ID,
+    sub: LOGIN_OWNER_ID,
+  })}.trusted-gateway-signature`;
+
+const loginCookies = vi.hoisted(() => new Map<string, string>());
+const loginCookieWrites = vi.hoisted(
+  () => [] as Array<{ readonly name: string; readonly options: Record<string, unknown> }>,
+);
+vi.mock('next/headers', () => ({
+  cookies: () =>
+    Promise.resolve({
+      get: (name: string) => {
+        const value = loginCookies.get(name);
+        return value ? { value } : undefined;
+      },
+      set: (name: string, value: string, options: Record<string, unknown>) => {
+        loginCookies.set(name, value);
+        loginCookieWrites.push({ name, options });
+      },
+    }),
+}));
 
 interface SmsRequestAccepted {
   message: string;
@@ -88,7 +121,7 @@ const verifySmsHandler: GatewayHandler = (request) => {
     return undefined;
   }
 
-  return new Response(null, { status: 204 });
+  return Response.json({ accessToken: loginAccessToken(), sessionId: LOGIN_SESSION_ID });
 };
 
 const retryAfterHandler: GatewayHandler = (request) => {
@@ -145,6 +178,8 @@ const gatewayMock = {
 };
 
 beforeEach(() => {
+  loginCookies.clear();
+  loginCookieWrites.length = 0;
   handlers = [requestSmsHandler, verifySmsHandler];
   gatewayRequests = [];
   vi.stubGlobal(
@@ -371,5 +406,23 @@ describe('PhoneLoginForm', () => {
     await user.click(screen.getByRole('button', { name: '登录' }));
 
     expect(onAuthenticated).toHaveBeenCalledWith('/studio');
+  });
+
+  it('establishes a signed HttpOnly app session after Gateway verification', async () => {
+    const user = userEvent.setup();
+    render(<PhoneLoginForm onAuthenticated={vi.fn()} />);
+    await user.type(screen.getByLabelText('手机号'), '13800138000');
+    await user.click(screen.getByRole('button', { name: '获取验证码' }));
+    await user.type(screen.getByLabelText('短信验证码'), '123456');
+    await user.click(screen.getByRole('button', { name: '登录' }));
+
+    expect(loginCookies.get('__Host-user-session')).toMatch(/^[^.]+\.[A-Za-z0-9_-]+$/);
+    expect(loginCookieWrites.at(-1)).toMatchObject({
+      name: '__Host-user-session',
+      options: { httpOnly: true, path: '/', sameSite: 'lax', secure: true },
+    });
+    await expect(
+      cancelTaskAction('task-1', '0198f4d4-21c2-7b7d-8a03-08a0da2a6301'),
+    ).resolves.toMatchObject({ ok: true });
   });
 });

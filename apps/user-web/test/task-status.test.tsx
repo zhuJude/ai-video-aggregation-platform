@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { TaskStatus } from '../components/tasks/task-status';
 import { TaskDetailView, type TaskDetailCommands } from '../components/tasks/task-detail-view';
@@ -11,9 +11,15 @@ import { TaskList } from '../components/tasks/task-list';
 import { StudioWorkspace } from '../components/studio/studio-workspace';
 import StudioPage from '../app/studio/page';
 import TaskDetailPage from '../app/tasks/[id]/page';
+import { cancelTaskAction, createRetryDraftAction } from '../app/tasks/actions';
+import {
+  establishAuthenticatedServerSession,
+  readAuthenticatedServerSession,
+} from '../lib/auth/server-session';
 import { openTaskEventStream } from '../lib/task-event-stream';
 import { readRetryDraft, saveRetryDraft } from '../lib/studio/retry-drafts';
 import { taskGateway } from '../lib/tasks/gateway';
+import { isTaskEventCursor } from '../lib/tasks/identifiers';
 import {
   formatPoints,
   formatTaskDate,
@@ -26,20 +32,41 @@ import {
 } from '../lib/tasks/runtime';
 import type { TaskDetail, TaskStatusSnapshot } from '../lib/tasks/types';
 
+const OWNER_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a6101';
+const OWNER_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a6102';
+const SESSION_ID_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a6111';
+const SESSION_ID_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a6112';
+const TASK_CONTEXT_A = { ownerId: OWNER_A } as const;
+process.env.USER_WEB_SESSION_SIGNING_KEY = 'test-only-session-signing-key-32-bytes-minimum';
+const accessToken = (ownerId: string, sessionId: string) => {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${encode({ alg: 'ES256', typ: 'JWT' })}.${encode({
+    aud: 'user-web',
+    exp: Math.floor(Date.now() / 1_000) + 900,
+    iss: 'identity-service',
+    sid: sessionId,
+    sub: ownerId,
+  })}.trusted-gateway-signature`;
+};
+
 const clientTaskGateway: TaskDetailCommands = {
-  cancelTask: (taskId, options) =>
-    taskGateway.cancelTask(taskId, { ...options, ownerId: 'fixture-user-a' }),
-  createRetryDraft: (taskId) => taskGateway.createRetryDraft(taskId, { ownerId: 'fixture-user-a' }),
+  cancelTask: (taskId, options) => taskGateway.cancelTask(taskId, { ...options, ownerId: OWNER_A }),
+  createRetryDraft: (taskId) => taskGateway.createRetryDraft(taskId, { ownerId: OWNER_A }),
 };
 
 const routerPush = vi.hoisted(() => vi.fn());
-const fixtureSessionCookie = vi.hoisted(() => ({ value: 'fixture-session-a' }));
+const fixtureSessionCookies = vi.hoisted(() => new Map<string, string>());
 vi.mock('server-only', () => ({}));
 vi.mock('next/headers', () => ({
   cookies: () =>
     Promise.resolve({
-      get: (name: string) =>
-        name === '__Host-ai-video-session' ? { value: fixtureSessionCookie.value } : undefined,
+      get: (name: string) => {
+        const value = fixtureSessionCookies.get(name);
+        return value ? { value } : undefined;
+      },
+      set: (name: string, value: string) => {
+        fixtureSessionCookies.set(name, value);
+      },
     }),
 }));
 vi.mock('next/navigation', () => ({
@@ -75,6 +102,11 @@ const runningEvent: TaskStatusSnapshot = {
   cancelAllowed: true,
   updatedAt: '2026-08-31T10:08:00.000Z',
 };
+
+beforeEach(async () => {
+  fixtureSessionCookies.clear();
+  await establishAuthenticatedServerSession(accessToken(OWNER_A, SESSION_ID_A));
+});
 
 afterEach(() => {
   cleanup();
@@ -166,6 +198,13 @@ it('omits Last-Event-ID when an initial snapshot does not contain a WS13 cursor'
   ).rejects.toThrow('TASK_EVENT_STREAM_CLOSED');
   expect(request?.headers.get('Last-Event-ID')).toBeNull();
 });
+
+it.each([`01:${TRANSITION_ID}`, `9007199254740992:${TRANSITION_ID}`, `-1:${TRANSITION_ID}`])(
+  'rejects an unsafe WS13 cursor version prefix: %s',
+  (cursor) => {
+    expect(isTaskEventCursor(cursor)).toBe(false);
+  },
+);
 
 it('does not regress a terminal status on an old event', () => {
   expect(reduceStatus(settledTask, runningEvent)).toEqual(settledTask);
@@ -896,20 +935,23 @@ it('stops a live stream when cancellation supplies a newer API-declared terminal
 });
 
 it('parses typed fixture filters/cursors and rejects unsafe point payloads', async () => {
-  const first = parseTaskPage(await taskGateway.listTasks({ status: 'RUNNING' }));
+  const first = parseTaskPage(await taskGateway.listTasks({ status: 'RUNNING' }, TASK_CONTEXT_A));
   expect(first.items.every((task) => task.statusSnapshot.status === 'RUNNING')).toBe(true);
   expect(first.items.some((task) => 'userId' in task)).toBe(false);
   if (first.pageInfo.nextCursor) {
     const next = parseTaskPage(
-      await taskGateway.listTasks({ status: 'RUNNING', cursor: first.pageInfo.nextCursor }),
+      await taskGateway.listTasks(
+        { status: 'RUNNING', cursor: first.pageInfo.nextCursor },
+        TASK_CONTEXT_A,
+      ),
     );
     expect(next.pageInfo.previousCursor).toBeTruthy();
   }
-  const unfiltered = parseTaskPage(await taskGateway.listTasks({}));
+  const unfiltered = parseTaskPage(await taskGateway.listTasks({}, TASK_CONTEXT_A));
   const nextCursor = unfiltered.pageInfo.nextCursor;
   expect(nextCursor).toBeTruthy();
   if (!nextCursor) throw new Error('Fixture must expose an opaque next cursor.');
-  const next = parseTaskPage(await taskGateway.listTasks({ cursor: nextCursor }));
+  const next = parseTaskPage(await taskGateway.listTasks({ cursor: nextCursor }, TASK_CONTEXT_A));
   expect(next.pageInfo.previousCursor).toBeTruthy();
 
   const malformed = { ...detailFixture, quotedPoints: '1.5' };
@@ -917,7 +959,9 @@ it('parses typed fixture filters/cursors and rejects unsafe point payloads', asy
   expect(() => parseTaskDetail({ ...detailFixture, quotedPoints: '01' })).toThrow(
     'INVALID_TASK_POINTS',
   );
-  expect(parseTaskDetail(await taskGateway.getTask('task-1')).taskNumber).toBe('T20260831-0001');
+  expect(parseTaskDetail(await taskGateway.getTask('task-1', TASK_CONTEXT_A)).taskNumber).toBe(
+    'T20260831-0001',
+  );
 });
 
 it('mirrors the frozen UtcDateTime precision and UTC-only semantics', () => {
@@ -943,7 +987,7 @@ it('rejects internal/provider error fields instead of exposing them as public re
 
 it('resolves an opaque server-side retry draft in Studio without URL parameters', async () => {
   const { draftId } = parseRetryDraft(
-    await taskGateway.createRetryDraft('task-1', { ownerId: 'fixture-user-a' }),
+    await taskGateway.createRetryDraft('task-1', { ownerId: OWNER_A }),
   );
   render(await StudioPage({ searchParams: Promise.resolve({ draft: draftId }) }));
 
@@ -973,7 +1017,7 @@ it('binds retry drafts to an owner, expires them and consumes them once', () => 
   expect(readRetryDraft('draft-expired', { now: 10_002, ownerId: 'session-a' })).toBeUndefined();
 });
 
-it('sweeps expired retry drafts and enforces a bounded fixture capacity', () => {
+it('rejects a new retry draft at capacity without evicting an unexpired draft', () => {
   const base = {
     generationMode: 'IMAGE_TO_VIDEO' as const,
     providerId: 'mock-provider-east',
@@ -982,32 +1026,78 @@ it('sweeps expired retry drafts and enforces a bounded fixture capacity', () => 
     capabilitySchemaVersion: 202012,
     parameters: { image: 'asset-private' },
   };
-  for (let index = 0; index < 101; index += 1) {
+  for (let index = 0; index < 100; index += 1) {
     saveRetryDraft(
       { ...base, id: `capacity-${String(index).padStart(3, '0')}` },
-      { now: 20_000, ownerId: 'session-capacity', ttlMs: 5_000 },
+      { now: 1_000_000_000_000, ownerId: 'session-capacity', ttlMs: 5_000 },
     );
   }
+  expect(() => {
+    saveRetryDraft(
+      { ...base, id: 'capacity-rejected' },
+      { now: 1_000_000_000_001, ownerId: 'session-capacity', ttlMs: 5_000 },
+    );
+  }).toThrow('RETRY_DRAFT_CAPACITY_REACHED');
   expect(
-    readRetryDraft('capacity-000', { now: 20_001, ownerId: 'session-capacity' }),
-  ).toBeUndefined();
+    readRetryDraft('capacity-000', {
+      now: 1_000_000_000_001,
+      ownerId: 'session-capacity',
+    }),
+  ).toEqual({ ...base, id: 'capacity-000' });
 
   saveRetryDraft(
     { ...base, id: 'sweep-trigger' },
-    { now: 30_000, ownerId: 'session-capacity', ttlMs: 5_000 },
+    { now: 1_000_000_010_000, ownerId: 'session-capacity', ttlMs: 5_000 },
   );
   expect(
-    readRetryDraft('capacity-100', { now: 30_000, ownerId: 'session-capacity' }),
+    readRetryDraft('capacity-099', {
+      now: 1_000_000_010_000,
+      ownerId: 'session-capacity',
+    }),
   ).toBeUndefined();
 });
 
-it('resolves retry ownership from a strict server-side session cookie fixture', async () => {
-  const { readFixtureServerSession } = await import('../lib/auth/server-session');
-  fixtureSessionCookie.value = 'fixture-session-a';
-  await expect(readFixtureServerSession()).resolves.toEqual({ ownerId: 'fixture-user-a' });
-  fixtureSessionCookie.value = 'attacker-controlled-user-id';
-  await expect(readFixtureServerSession()).resolves.toBeUndefined();
-  fixtureSessionCookie.value = 'fixture-session-a';
+it('signs an app session only from the trusted Gateway login result', async () => {
+  await expect(readAuthenticatedServerSession()).resolves.toEqual({ ownerId: OWNER_A });
+  await establishAuthenticatedServerSession(accessToken(OWNER_B, SESSION_ID_B));
+  await expect(readAuthenticatedServerSession()).resolves.toEqual({ ownerId: OWNER_B });
+  const cookieName = [...fixtureSessionCookies.keys()][0];
+  if (!cookieName) throw new Error('MISSING_APP_SESSION_COOKIE');
+  const signedCookie = fixtureSessionCookies.get(cookieName);
+  if (!signedCookie) throw new Error('MISSING_SIGNED_APP_SESSION');
+  fixtureSessionCookies.set(cookieName, `${signedCookie}tampered`);
+  await expect(readAuthenticatedServerSession()).resolves.toBeUndefined();
+  fixtureSessionCookies.clear();
+  await expect(readAuthenticatedServerSession()).resolves.toBeUndefined();
+});
+
+it('filters list/detail and command fixtures by the authenticated owner', async () => {
+  const ownerB = { ownerId: OWNER_B };
+  const page = parseTaskPage(await taskGateway.listTasks({}, ownerB));
+  expect(page.items).toEqual([]);
+  await expect(taskGateway.getTask('task-1', ownerB)).rejects.toThrow('TASK_NOT_FOUND');
+  await expect(
+    taskGateway.cancelTask('task-1', {
+      idempotencyKey: '0198f4d4-21c2-7b7d-8a03-08a0da2a6201',
+      ownerId: OWNER_B,
+    }),
+  ).rejects.toThrow('TASK_NOT_FOUND');
+  await expect(taskGateway.createRetryDraft('task-1', ownerB)).rejects.toThrow('TASK_NOT_FOUND');
+});
+
+it('fails closed without revealing task existence to unauthenticated or cross-owner actions', async () => {
+  fixtureSessionCookies.clear();
+  await expect(cancelTaskAction('task-1', '0198f4d4-21c2-7b7d-8a03-08a0da2a6202')).resolves.toEqual(
+    { ok: false, outcome: 'DEFINITIVE_FAILURE' },
+  );
+  await expect(createRetryDraftAction('task-1')).rejects.toThrow('AUTHENTICATION_REQUIRED');
+
+  await establishAuthenticatedServerSession(accessToken(OWNER_B, SESSION_ID_B));
+  const denied = await cancelTaskAction('task-1', '0198f4d4-21c2-7b7d-8a03-08a0da2a6203');
+  const missing = await cancelTaskAction('missing-task', '0198f4d4-21c2-7b7d-8a03-08a0da2a6204');
+  expect(denied).toEqual({ ok: false, outcome: 'DEFINITIVE_FAILURE' });
+  expect(missing).toEqual(denied);
+  await expect(createRetryDraftAction('task-1')).rejects.toThrow('TASK_NOT_FOUND');
 });
 
 it.each([
@@ -1042,13 +1132,13 @@ it('binds cancellation idempotency cache entries to the task fingerprint', async
   const key = '0198f4d4-21c2-7b7d-8a03-08a0da2a52b1';
   const first = await taskGateway.cancelTask('task-1', {
     idempotencyKey: key,
-    ownerId: 'fixture-user-a',
+    ownerId: OWNER_A,
   });
   await expect(
-    taskGateway.cancelTask('task-2', { idempotencyKey: key, ownerId: 'fixture-user-a' }),
+    taskGateway.cancelTask('task-2', { idempotencyKey: key, ownerId: OWNER_A }),
   ).rejects.toMatchObject({ outcome: 'DEFINITIVE_FAILURE' });
   await expect(
-    taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: 'fixture-user-a' }),
+    taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: OWNER_A }),
   ).resolves.toEqual(first);
 });
 
@@ -1056,47 +1146,55 @@ it('rejects a UUIDv4 cancellation key at the frozen UUIDv7 boundary', async () =
   await expect(
     taskGateway.cancelTask('task-1', {
       idempotencyKey: '550e8400-e29b-41d4-a716-446655440000',
-      ownerId: 'fixture-user-a',
+      ownerId: OWNER_A,
     }),
   ).rejects.toThrow('INVALID_IDEMPOTENCY_KEY');
 });
 
-it('binds cancellation cache entries to owner and expires stale entries', async () => {
+it('authorizes before cancellation cache lookup and expires stale entries', async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-08-31T10:00:00Z'));
   const key = '0198f4d4-21c2-7b7d-8a03-08a0da2a52b2';
-  await taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: 'fixture-user-a' });
+  await taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: OWNER_A });
   await expect(
-    taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: 'fixture-user-b' }),
-  ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
+    taskGateway.cancelTask('task-1', { idempotencyKey: key, ownerId: OWNER_B }),
+  ).rejects.toThrow('TASK_NOT_FOUND');
 
   vi.setSystemTime(new Date('2026-08-31T10:11:00Z'));
   await expect(
-    taskGateway.cancelTask('task-2', { idempotencyKey: key, ownerId: 'fixture-user-a' }),
+    taskGateway.cancelTask('task-2', { idempotencyKey: key, ownerId: OWNER_A }),
   ).rejects.toThrow('CANCEL_NOT_ALLOWED');
 });
 
-it('bounds the cancellation idempotency cache and evicts its oldest entry', async () => {
+it('rejects a new cancellation key at capacity without evicting an accepted key', async () => {
   vi.useFakeTimers();
-  vi.setSystemTime(new Date('2026-08-31T11:00:00Z'));
+  vi.setSystemTime(new Date('2030-08-31T11:00:00Z'));
   const keys = Array.from(
     { length: 101 },
     (_, index) => `0198f4d4-21c2-7b7d-8a03-${index.toString(16).padStart(12, '0')}`,
   );
 
-  for (const idempotencyKey of keys) {
+  const oldestKey = keys[0];
+  const rejectedKey = keys[100];
+  if (!oldestKey || !rejectedKey) throw new Error('MISSING_CANCEL_CACHE_TEST_KEY');
+  const accepted = await taskGateway.cancelTask('task-1', {
+    idempotencyKey: oldestKey,
+    ownerId: OWNER_A,
+  });
+  for (const idempotencyKey of keys.slice(1, 100)) {
     await taskGateway.cancelTask('task-1', {
       idempotencyKey,
-      ownerId: 'fixture-user-a',
+      ownerId: OWNER_A,
     });
   }
-  const oldestKey = keys[0];
-  if (!oldestKey) throw new Error('MISSING_CANCEL_CACHE_TEST_KEY');
 
   await expect(
-    taskGateway.cancelTask('task-2', {
-      idempotencyKey: oldestKey,
-      ownerId: 'fixture-user-a',
+    taskGateway.cancelTask('task-1', {
+      idempotencyKey: rejectedKey,
+      ownerId: OWNER_A,
     }),
-  ).rejects.toThrow('CANCEL_NOT_ALLOWED');
+  ).rejects.toThrow('IDEMPOTENCY_CAPACITY_REACHED');
+  await expect(
+    taskGateway.cancelTask('task-1', { idempotencyKey: oldestKey, ownerId: OWNER_A }),
+  ).resolves.toEqual(accepted);
 });

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 
+import { verifyPhoneLoginAction } from '../../app/login/actions';
 import { ApiClientError, apiClient, parseRetryAfter } from '../../lib/api-client';
 
 const PHONE_PATTERN = /^1\d{10}$/;
@@ -207,13 +208,16 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
     const request = beginRequest();
 
     try {
-      await apiClient('/v1/auth/sms/verify', {
-        method: 'POST',
-        body: { code, phone },
-        idempotencyKey: createIdempotencyKey('verify'),
-        signal: request.controller.signal,
-      });
+      const result = await verifyPhoneLoginAction(phone, code);
       if (!isCurrentRequest(request)) return;
+      if (!result.ok) {
+        setError(
+          result.code === 'INVALID_SMS_CODE'
+            ? { field: 'code', kind: 'server', message: '验证码错误' }
+            : { field: 'form', kind: 'server', message: '暂时无法登录，请稍后重试' },
+        );
+        return;
+      }
       setStatusMessage('登录成功，正在进入工作台。');
       const destination: WorkspaceDestination = '/studio';
       if (onAuthenticated) {
@@ -223,11 +227,8 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
       }
     } catch (verifyError) {
       if (!isCurrentRequest(request) || isAbortError(verifyError)) return;
-      const invalidCode =
-        verifyError instanceof ApiClientError &&
-        ['INVALID_SMS_CODE', 'SMS_CHALLENGE_LOCKED', 'SMS_CODE_EXPIRED'].includes(verifyError.code);
       setError(
-        invalidCode
+        verifyError instanceof ApiClientError && verifyError.code === 'INVALID_SMS_CODE'
           ? { field: 'code', kind: 'server', message: '验证码错误' }
           : { field: 'form', kind: 'server', message: '暂时无法登录，请稍后重试' },
       );

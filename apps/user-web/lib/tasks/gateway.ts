@@ -14,14 +14,25 @@ export class TaskGatewayCommandError extends Error {
 }
 
 export function classifyCancelTaskError(error: unknown): 'UNCERTAIN' | 'DEFINITIVE_FAILURE' {
-  return error instanceof TaskGatewayCommandError ? error.outcome : 'UNCERTAIN';
+  return error instanceof TaskGatewayCommandError ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'outcome' in error &&
+      error.outcome === 'DEFINITIVE_FAILURE')
+    ? 'DEFINITIVE_FAILURE'
+    : 'UNCERTAIN';
 }
 
 const fixtureCursor = (revision: number, suffix: string) =>
   `${String(revision)}:0198f4d4-21c2-7b7d-8a03-${suffix}`;
 
-const fixtures: readonly TaskDetail[] = [
+type OwnedTaskDetail = TaskDetail & { readonly ownerId: string };
+
+const FIXTURE_OWNER_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a6101';
+
+const fixtures: readonly OwnedTaskDetail[] = [
   {
+    ownerId: FIXTURE_OWNER_A,
     id: 'task-1',
     taskNumber: 'T20260831-0001',
     generationMode: 'IMAGE_TO_VIDEO',
@@ -83,6 +94,7 @@ const fixtures: readonly TaskDetail[] = [
     ],
   },
   {
+    ownerId: FIXTURE_OWNER_A,
     id: 'task-2',
     taskNumber: 'T20260831-0002',
     generationMode: 'TEXT_TO_VIDEO',
@@ -131,6 +143,7 @@ const fixtures: readonly TaskDetail[] = [
     ],
   },
   {
+    ownerId: FIXTURE_OWNER_A,
     id: 'task-3',
     taskNumber: 'T20260830-0018',
     generationMode: 'REFERENCE_VIDEO',
@@ -205,7 +218,7 @@ function sweepCanceledCache(now: number): void {
   }
 }
 
-function matches(task: TaskDetail, filters: TaskFilters): boolean {
+function matches(task: OwnedTaskDetail, filters: TaskFilters): boolean {
   if (filters.status && task.statusSnapshot.status !== filters.status) return false;
   if (filters.model && task.modelSnapshot.modelId !== filters.model) return false;
   if (filters.generationMode && task.generationMode !== filters.generationMode) return false;
@@ -216,7 +229,7 @@ function matches(task: TaskDetail, filters: TaskFilters): boolean {
   return true;
 }
 
-function toSummary(task: TaskDetail): TaskPage['items'][number] {
+function toSummary(task: OwnedTaskDetail): TaskPage['items'][number] {
   return {
     id: task.id,
     taskNumber: task.taskNumber,
@@ -230,8 +243,10 @@ function toSummary(task: TaskDetail): TaskPage['items'][number] {
 }
 
 export const taskGateway: TaskGateway = {
-  async listTasks(filters): Promise<unknown> {
-    const filtered = fixtures.filter((task) => matches(task, filters));
+  async listTasks(filters, context): Promise<unknown> {
+    const filtered = fixtures.filter(
+      (task) => task.ownerId === context.ownerId && matches(task, filters),
+    );
     const offset = filters.cursor ? cursorOffsets.get(filters.cursor) : 0;
     if (offset === undefined) throw new Error('INVALID_TASK_CURSOR');
     const page: TaskPage = {
@@ -244,10 +259,14 @@ export const taskGateway: TaskGateway = {
     return Promise.resolve(structuredClone(page));
   },
 
-  async getTask(taskId): Promise<unknown> {
-    const task = fixtures.find((candidate) => candidate.id === taskId);
+  async getTask(taskId, context): Promise<unknown> {
+    const task = fixtures.find(
+      (candidate) => candidate.id === taskId && candidate.ownerId === context.ownerId,
+    );
     if (!task) throw new Error('TASK_NOT_FOUND');
-    return Promise.resolve(structuredClone(task));
+    const { ownerId, ...detail } = task;
+    void ownerId;
+    return Promise.resolve(structuredClone(detail));
   },
 
   async cancelTask(taskId, options): Promise<unknown> {
@@ -256,6 +275,10 @@ export const taskGateway: TaskGateway = {
     }
     const now = Date.now();
     sweepCanceledCache(now);
+    const task = fixtures.find(
+      (candidate) => candidate.id === taskId && candidate.ownerId === options.ownerId,
+    );
+    if (!task) throw new TaskGatewayCommandError('TASK_NOT_FOUND');
     const fingerprint = JSON.stringify({ operation: 'cancel', taskId });
     const existing = canceledByKey.get(options.idempotencyKey);
     if (existing) {
@@ -268,9 +291,11 @@ export const taskGateway: TaskGateway = {
       }
       return Promise.resolve(structuredClone(existing.snapshot));
     }
-    const task = fixtures.find((candidate) => candidate.id === taskId);
-    if (!task || !task.statusSnapshot.cancelAllowed) {
+    if (!task.statusSnapshot.cancelAllowed) {
       throw new TaskGatewayCommandError('CANCEL_NOT_ALLOWED');
+    }
+    if (canceledByKey.size >= MAX_CANCEL_CACHE_ENTRIES) {
+      throw new TaskGatewayCommandError('IDEMPOTENCY_CAPACITY_REACHED');
     }
     const canceled: TaskStatusSnapshot = {
       eventId: `${String(task.statusSnapshot.revision + 1)}:${createUuidV7(now)}`,
@@ -284,10 +309,6 @@ export const taskGateway: TaskGateway = {
         message: '取消请求已接受，费用将按任务快照规则处理。',
       },
     };
-    if (canceledByKey.size >= MAX_CANCEL_CACHE_ENTRIES) {
-      const oldestKey = canceledByKey.keys().next().value;
-      if (oldestKey) canceledByKey.delete(oldestKey);
-    }
     canceledByKey.set(options.idempotencyKey, {
       expiresAt: now + CANCEL_CACHE_TTL_MS,
       fingerprint,
@@ -299,7 +320,9 @@ export const taskGateway: TaskGateway = {
   },
 
   async createRetryDraft(taskId, options): Promise<unknown> {
-    const task = fixtures.find((candidate) => candidate.id === taskId);
+    const task = fixtures.find(
+      (candidate) => candidate.id === taskId && candidate.ownerId === options.ownerId,
+    );
     if (!task) throw new Error('TASK_NOT_FOUND');
     const draft: RetryDraft = {
       id: createUuidV7(),

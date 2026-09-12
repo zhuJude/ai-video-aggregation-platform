@@ -95,9 +95,13 @@ export interface RetryDraft {
   readonly parameters: Readonly<Record<string, unknown>>;
 }
 
+export interface AuthenticatedTaskContext {
+  readonly ownerId: string;
+}
+
 export interface TaskGateway {
-  listTasks(filters: TaskFilters): Promise<unknown>;
-  getTask(taskId: string): Promise<unknown>;
+  listTasks(filters: TaskFilters, context: AuthenticatedTaskContext): Promise<unknown>;
+  getTask(taskId: string, context: AuthenticatedTaskContext): Promise<unknown>;
   cancelTask(
     taskId: string,
     options: { readonly idempotencyKey: string; readonly ownerId: string },

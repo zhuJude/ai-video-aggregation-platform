@@ -1,4 +1,5 @@
 import { TaskList } from '../../components/tasks/task-list';
+import { requireAuthenticatedServerSession } from '../../lib/auth/server-session';
 import { taskGateway } from '../../lib/tasks/gateway';
 import { parseTaskFilters, parseTaskPage } from '../../lib/tasks/runtime';
 
@@ -9,7 +10,8 @@ interface TasksPageProps {
 export default async function TasksPage({ searchParams }: TasksPageProps) {
   try {
     const filters = parseTaskFilters(await searchParams);
-    const page = parseTaskPage(await taskGateway.listTasks(filters));
+    const session = await requireAuthenticatedServerSession();
+    const page = parseTaskPage(await taskGateway.listTasks(filters, session));
     return <TaskList filters={filters} page={page} />;
   } catch {
     return (

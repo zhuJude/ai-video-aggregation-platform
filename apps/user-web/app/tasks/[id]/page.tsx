@@ -1,4 +1,5 @@
 import { TaskDetailView } from '../../../components/tasks/task-detail-view';
+import { requireAuthenticatedServerSession } from '../../../lib/auth/server-session';
 import { taskGateway } from '../../../lib/tasks/gateway';
 import { parseTaskDetail } from '../../../lib/tasks/runtime';
 
@@ -9,7 +10,8 @@ interface TaskDetailPageProps {
 export default async function TaskDetailPage({ params }: TaskDetailPageProps) {
   try {
     const { id } = await params;
-    const detail = parseTaskDetail(await taskGateway.getTask(id));
+    const session = await requireAuthenticatedServerSession();
+    const detail = parseTaskDetail(await taskGateway.getTask(id, session));
     const { parametersSnapshot, ...publicDetail } = detail;
     void parametersSnapshot;
     return <TaskDetailView detail={publicDetail} />;

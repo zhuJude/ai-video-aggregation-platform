@@ -9,7 +9,9 @@ export function isUuidV7(value: unknown): value is string {
 export function isTaskEventCursor(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   const match = TASK_EVENT_CURSOR_PATTERN.exec(value);
-  return match !== null && isUuidV7(match[2]);
+  if (match === null || !isUuidV7(match[2])) return false;
+  const revision = Number(match[1]);
+  return Number.isSafeInteger(revision) && revision >= 0;
 }
 
 export function createUuidV7(now = Date.now()): string {

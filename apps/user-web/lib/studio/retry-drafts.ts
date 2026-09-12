@@ -37,8 +37,7 @@ export function saveRetryDraft(draft: RetryDraft, options: RetryDraftSaveOptions
   }
   sweepExpired(now);
   if (!drafts.has(draft.id) && drafts.size >= MAX_DRAFTS) {
-    const oldestDraftId = drafts.keys().next().value;
-    if (oldestDraftId) drafts.delete(oldestDraftId);
+    throw new Error('RETRY_DRAFT_CAPACITY_REACHED');
   }
   drafts.set(draft.id, {
     draft: { ...draft, parameters: structuredClone(draft.parameters) },

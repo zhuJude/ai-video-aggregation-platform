@@ -1,7 +1,7 @@
 'use server';
 
 import { classifyCancelTaskError, taskGateway } from '../../lib/tasks/gateway';
-import { requireFixtureServerSession } from '../../lib/auth/server-session';
+import { requireAuthenticatedServerSession } from '../../lib/auth/server-session';
 import { parseRetryDraft, parseTaskStatusSnapshot } from '../../lib/tasks/runtime';
 import type { CancelTaskResult } from '../../lib/tasks/types';
 
@@ -10,7 +10,7 @@ export async function cancelTaskAction(
   idempotencyKey: string,
 ): Promise<CancelTaskResult> {
   try {
-    const session = await requireFixtureServerSession();
+    const session = await requireAuthenticatedServerSession();
     const snapshot = parseTaskStatusSnapshot(
       await taskGateway.cancelTask(taskId, { idempotencyKey, ownerId: session.ownerId }),
     );
@@ -23,6 +23,6 @@ export async function cancelTaskAction(
 export async function createRetryDraftAction(
   taskId: string,
 ): Promise<{ readonly draftId: string }> {
-  const session = await requireFixtureServerSession();
+  const session = await requireAuthenticatedServerSession();
   return parseRetryDraft(await taskGateway.createRetryDraft(taskId, { ownerId: session.ownerId }));
 }
