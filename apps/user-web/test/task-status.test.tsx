@@ -32,13 +32,18 @@ import {
 } from '../lib/tasks/runtime';
 import type { TaskDetail, TaskStatusSnapshot } from '../lib/tasks/types';
 
-const OWNER_A = '+8613800138000';
-const OWNER_B = '+8613900139000';
+const PHONE_A = '+8613800138000';
+const PHONE_B = '+8613900139000';
+const OWNER_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a7401';
+const OWNER_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a7402';
 const SESSION_ID_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a6111';
 const SESSION_ID_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a6112';
 const TEST_REFRESH_TOKEN = 'R'.repeat(43);
 const TASK_CONTEXT_A = { ownerId: OWNER_A } as const;
 process.env.USER_WEB_SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64url');
+process.env.USER_WEB_COMMERCE_MODE = 'mock';
+process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 17).toString('base64url');
+process.env.USER_WEB_MOCK_IDENTITY_KEY = Buffer.alloc(32, 19).toString('base64url');
 const accessToken = (ownerId: string, sessionId: string) => {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   return `${encode({ alg: 'ES256', typ: 'JWT' })}.${encode({
@@ -118,7 +123,7 @@ beforeEach(async () => {
     accessToken(OWNER_A, SESSION_ID_A),
     SESSION_ID_A,
     TEST_REFRESH_TOKEN,
-    OWNER_A,
+    PHONE_A,
   );
 });
 
@@ -1087,7 +1092,7 @@ it('signs an app session only from the trusted Gateway login result', async () =
     accessToken(OWNER_B, SESSION_ID_B),
     SESSION_ID_B,
     TEST_REFRESH_TOKEN,
-    OWNER_B,
+    PHONE_B,
   );
   await expect(readAuthenticatedServerSession()).resolves.toEqual({ ownerId: OWNER_B });
   const cookieName = [...fixtureSessionCookies.keys()][0];
@@ -1125,7 +1130,7 @@ it('fails closed without revealing task existence to unauthenticated or cross-ow
     accessToken(OWNER_B, SESSION_ID_B),
     SESSION_ID_B,
     TEST_REFRESH_TOKEN,
-    OWNER_B,
+    PHONE_B,
   );
   const denied = await cancelTaskAction('task-1', '0198f4d4-21c2-7b7d-8a03-08a0da2a6203');
   const missing = await cancelTaskAction('missing-task', '0198f4d4-21c2-7b7d-8a03-08a0da2a6204');

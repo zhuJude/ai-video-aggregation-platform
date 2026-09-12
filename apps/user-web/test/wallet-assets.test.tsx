@@ -2,17 +2,16 @@ import '@testing-library/jest-dom/vitest';
 
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const authState = vi.hoisted(() => ({
   value: {
     kind: 'active' as 'active' | 'invalid' | 'needs-refresh',
-    session: { ownerId: '+8613800138000' },
+    session: { ownerId: '0198f4d4-21c2-7b7d-8a03-08a0da2a7401' },
   },
 }));
 
@@ -23,7 +22,7 @@ vi.mock('../lib/auth/server-session', () => {
     AuthenticationRequiredError,
     SessionRefreshRequiredError,
     readAuthenticatedServerSessionState: () => Promise.resolve(authState.value),
-    requireMutableAuthenticatedServerSession: () => Promise.resolve({ ownerId: '+8613800138000' }),
+    requireMutableAuthenticatedServerSession: () => Promise.resolve(authState.value.session),
   };
 });
 
@@ -41,6 +40,7 @@ import { OrderCenter } from '../components/commerce/order-center';
 import { WalletSummary } from '../components/commerce/wallet-summary';
 import { commerceGateway } from '../lib/commerce/gateway';
 import { commerceOwnerIdFromPhone } from '../lib/commerce/identity';
+import { createUuidV7 } from '../lib/tasks/identifiers';
 import {
   formatMinorAmount,
   parseInvoiceCandidatePage,
@@ -56,12 +56,43 @@ import type {
   OrderPage,
   WalletPage,
 } from '../lib/commerce/types';
+import { createMockStoreTestScope } from './mock-store-scope';
 
 const PHONE = '+8613800138000';
-let OWNER = '';
+const OWNER = '0198f4d4-21c2-7b7d-8a03-08a0da2a7401';
 const OTHER_OWNER = '0198f4d4-21c2-7b7d-8a03-08a0da2a6199';
 const ASSET_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7101';
 const ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7201';
+const mockStoreScope = createMockStoreTestScope();
+
+async function seedPaidInvoiceOwner(ownerId: string): Promise<void> {
+  const digest = createHash('sha256').update(`mock-finance:v2:${ownerId}`).digest('hex');
+  const path = resolve(mockStoreScope.root, `.finance-${digest}.json`);
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      ownerId,
+      balance: { available: '0', frozen: '0', totalRecharged: '0', totalConsumed: '0' },
+      ledger: [],
+      orders: [
+        {
+          id: ORDER_ID,
+          amountMinor: '10001',
+          currency: 'CNY',
+          points: '10000',
+          status: 'PAID',
+          createdAt: '2026-09-12T10:00:00.000Z',
+          paidAt: '2026-09-12T10:01:00.000Z',
+        },
+      ],
+      invoices: [],
+      invoicedOrderIds: [],
+      commands: [],
+    }),
+    { encoding: 'utf8', flag: 'wx' },
+  );
+}
 
 const assets: AssetPage = {
   items: [
@@ -163,10 +194,10 @@ function gateway(overrides: Partial<CommerceGateway> = {}): CommerceGateway {
 }
 
 beforeEach(() => {
+  mockStoreScope.install();
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 13).toString('base64url');
   process.env.USER_WEB_COMMERCE_IDENTITY_KEY = randomBytes(32).toString('base64url');
-  OWNER = commerceOwnerIdFromPhone(PHONE);
 });
 
 afterEach(() => {
@@ -174,11 +205,16 @@ afterEach(() => {
   vi.useRealTimers();
   authState.value = {
     kind: 'active',
-    session: { ownerId: PHONE },
+    session: { ownerId: OWNER },
   };
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
   delete process.env.USER_WEB_COMMERCE_IDENTITY_KEY;
+  delete process.env.USER_WEB_COMMERCE_MOCK_TEST_NAMESPACE;
+});
+
+afterAll(async () => {
+  await mockStoreScope.cleanup();
 });
 
 describe('commerce identity and mock isolation', () => {
@@ -393,9 +429,10 @@ describe('private assets', () => {
 describe('recharge orders', () => {
   it('replays one order across concurrent calls and fresh module runtimes', async () => {
     const input = { customAmountMinor: '1200' };
+    const operationOwner = createUuidV7();
     const context = {
-      ownerId: OWNER,
-      idempotencyKey: '0198f4d4-21c2-7b7d-8a03-000000009100',
+      ownerId: operationOwner,
+      idempotencyKey: createUuidV7(),
     };
     const [first, concurrent] = await Promise.all([
       commerceGateway.createOrder(input, context),
@@ -412,7 +449,7 @@ describe('recharge orders', () => {
       message: 'IDEMPOTENCY_CONFLICT',
       outcome: 'DEFINITIVE_FAILURE',
     });
-    const listed = (await freshGateway.listOrders({}, { ownerId: OWNER })) as {
+    const listed = (await freshGateway.listOrders({}, { ownerId: operationOwner })) as {
       items: Array<{ id: string }>;
     };
     const id = parseOrderCreateResult(first).order.id;
@@ -596,8 +633,8 @@ describe('recharge orders', () => {
 describe('invoice applications', () => {
   it('rejects a paid order without a paid timestamp from authoritative eligibility', async () => {
     await commerceGateway.listOrders({}, { ownerId: OWNER });
-    const digest = createHash('sha256').update(`mock-finance:v1:${OWNER}`).digest('hex');
-    const path = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1', `.finance-${digest}.json`);
+    const digest = createHash('sha256').update(`mock-finance:v2:${OWNER}`).digest('hex');
+    const path = resolve(mockStoreScope.root, `.finance-${digest}.json`);
     const state = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
     const orders = state.orders;
     if (!Array.isArray(orders)) throw new Error('EXPECTED_ORDER_STATE');
@@ -709,6 +746,8 @@ describe('invoice applications', () => {
   });
 
   it('replays one invoice idempotently but blocks a second application for the same order', async () => {
+    const invoiceOwner = createUuidV7();
+    await seedPaidInvoiceOwner(invoiceOwner);
     const input = {
       orderIds: [ORDER_ID],
       title: '上海光帧科技有限公司',
@@ -716,8 +755,8 @@ describe('invoice applications', () => {
       email: 'billing@example.cn',
     };
     const context = {
-      ownerId: OWNER,
-      idempotencyKey: '0198f4d4-21c2-7b7d-8a03-08a0da2a7997',
+      ownerId: invoiceOwner,
+      idempotencyKey: createUuidV7(),
     };
     const first = await commerceGateway.createInvoice(input, context);
     await expect(commerceGateway.createInvoice(input, context)).resolves.toEqual(first);
@@ -728,7 +767,7 @@ describe('invoice applications', () => {
     await expect(
       freshGateway.createInvoice(input, {
         ...context,
-        idempotencyKey: '0198f4d4-21c2-7b7d-8a03-08a0da2a7996',
+        idempotencyKey: createUuidV7(),
       }),
     ).rejects.toMatchObject({
       message: 'ORDER_NOT_INVOICE_ELIGIBLE',
@@ -740,7 +779,7 @@ describe('invoice applications', () => {
     vi.resetModules();
     const afterCommandTtl = (await import('../lib/commerce/gateway')).commerceGateway;
     const candidatesAfterTtl = (await afterCommandTtl.listInvoiceCandidates({
-      ownerId: OWNER,
+      ownerId: invoiceOwner,
     })) as { items: Array<{ orderId: string }> };
     expect(candidatesAfterTtl.items).not.toContainEqual(
       expect.objectContaining({ orderId: ORDER_ID }),

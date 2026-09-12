@@ -490,6 +490,210 @@ input:disabled {
   }
 }
 
+.account-navigation {
+  margin-top: auto;
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
+}
+
+.account-navigation ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.account-navigation a {
+  display: block;
+  border-radius: var(--radius-small);
+  padding: 0.65rem;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.support-page,
+.settings-page {
+  display: grid;
+  gap: var(--space-3);
+  width: min(100%, 76rem);
+  margin-inline: auto;
+  padding: clamp(1.25rem, 4vw, 3.5rem);
+}
+
+.support-panel,
+.settings-panel,
+.ticket-card {
+  display: grid;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  padding: clamp(1.25rem, 3vw, 2rem);
+  background: var(--color-surface);
+}
+
+.settings-heading,
+.ticket-card > header,
+.message-list article {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.settings-heading h1,
+.settings-heading h2,
+.settings-panel h1,
+.settings-panel h2,
+.ticket-card h2,
+.message-list h2 {
+  margin: 0;
+}
+
+.message-list,
+.ticket-list,
+.security-session-list,
+.ticket-replies {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.message-list article,
+.security-session-list > article,
+.ticket-replies article {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
+}
+
+.message-list article[data-unread='true'] {
+  border-left: 0.25rem solid var(--color-accent);
+  padding-left: var(--space-2);
+}
+
+.message-actions,
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.settings-form {
+  display: grid;
+  gap: 0.65rem;
+  max-width: 40rem;
+}
+
+.settings-form input,
+.settings-form select,
+.settings-form textarea {
+  width: 100%;
+}
+
+.security-session-list > article {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) minmax(16rem, 1.4fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.security-session-list dl,
+.ticket-history {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.security-session-list dl div,
+.ticket-history li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-1);
+}
+
+.danger-zone {
+  border-color: color-mix(in srgb, #a13a32 45%, var(--color-border));
+}
+
+.danger-button {
+  border-color: #a13a32;
+  color: #8a2924;
+}
+
+.profile-preview {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.profile-preview > span {
+  display: grid;
+  width: 4rem;
+  height: 4rem;
+  place-items: center;
+  border-radius: 50%;
+  background: #dfb052;
+  color: #151515;
+  font-size: 1.5rem;
+  font-weight: 800;
+}
+
+.profile-preview[data-avatar='BLUE'] > span {
+  background: #8fb7d9;
+}
+.profile-preview[data-avatar='GREEN'] > span {
+  background: #9fbea1;
+}
+.profile-preview[data-avatar='PLUM'] > span {
+  background: #c09ab8;
+}
+
+.ticket-history {
+  padding-left: 1.25rem;
+}
+
+.ticket-history time,
+.ticket-card time,
+.message-list time {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+}
+
+.field-help {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+@media (max-width: 47.99rem) {
+  .settings-heading,
+  .ticket-card > header,
+  .message-list article {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .security-session-list > article {
+    grid-template-columns: 1fr;
+  }
+
+  .support-page,
+  .settings-page {
+    padding: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .support-page *,
+  .settings-page *,
+  .dialog-backdrop * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 /* Assets, wallet, recharge orders and invoices */
 .commerce-page {
   display: grid;

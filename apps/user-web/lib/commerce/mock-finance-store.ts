@@ -167,7 +167,8 @@ function parseState(value: unknown, expectedOwnerId: string): MockFinanceState {
 
 function fileName(ownerId: string): string {
   if (!UuidSchema.safeParse(ownerId).success) throw new MockFinanceStoreError('INVALID');
-  const digest = createHash('sha256').update(`mock-finance:v1:${ownerId}`).digest('hex');
+  // v2 keys finance fixtures by the stable mock subject rather than the mutable phone-derived id.
+  const digest = createHash('sha256').update(`mock-finance:v2:${ownerId}`).digest('hex');
   return `.finance-${digest}.json`;
 }
 

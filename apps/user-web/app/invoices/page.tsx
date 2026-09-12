@@ -3,7 +3,6 @@ import { redirect } from 'next/navigation';
 import { InvoiceCenter } from '../../components/commerce/invoice-center';
 import { readAuthenticatedServerSessionState } from '../../lib/auth/server-session';
 import { commerceGateway } from '../../lib/commerce/gateway';
-import { commerceOwnerIdFromPhone } from '../../lib/commerce/identity';
 import { parseInvoiceCandidatePage } from '../../lib/commerce/runtime';
 
 export default async function InvoicesPage() {
@@ -13,7 +12,7 @@ export default async function InvoicesPage() {
   try {
     const page = parseInvoiceCandidatePage(
       await commerceGateway.listInvoiceCandidates({
-        ownerId: commerceOwnerIdFromPhone(state.session.ownerId),
+        ownerId: state.session.ownerId,
       }),
     );
     return (

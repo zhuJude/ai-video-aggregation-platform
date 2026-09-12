@@ -11,6 +11,7 @@ import {
 import { taskGateway } from '../lib/tasks/gateway';
 
 const OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6101';
+const MOCK_SUBJECT_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7401';
 const FORGED_OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6199';
 const VERIFIED_PHONE_OWNER = '+8613800138000';
 const SESSION_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6111';
@@ -57,6 +58,9 @@ beforeEach(async () => {
   deletedCookies.length = 0;
   cookieWrites.length = 0;
   process.env.USER_WEB_SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64url');
+  process.env.USER_WEB_MOCK_IDENTITY_KEY = Buffer.alloc(32, 31).toString('base64url');
+  process.env.USER_WEB_COMMERCE_MODE = 'mock';
+  process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 37).toString('base64url');
   process.env.GATEWAY_URL = 'https://gateway.internal';
   await establishAuthenticatedServerSession(
     accessToken('first-signature'),
@@ -70,6 +74,9 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   Reflect.deleteProperty(navigator, 'locks');
+  delete process.env.USER_WEB_MOCK_IDENTITY_KEY;
+  delete process.env.USER_WEB_COMMERCE_MODE;
+  delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
 });
 
 describe('authenticated task BFF', () => {
@@ -80,7 +87,7 @@ describe('authenticated task BFF', () => {
     const isolated = await import('../lib/auth/server-session');
 
     await expect(isolated.readAuthenticatedServerSession()).resolves.toEqual({
-      ownerId: VERIFIED_PHONE_OWNER,
+      ownerId: MOCK_SUBJECT_ID,
     });
   });
 
@@ -108,7 +115,7 @@ describe('authenticated task BFF', () => {
       VERIFIED_PHONE_OWNER,
     );
     await expect(readAuthenticatedServerSession()).resolves.toEqual({
-      ownerId: VERIFIED_PHONE_OWNER,
+      ownerId: MOCK_SUBJECT_ID,
     });
     expect(FORGED_OWNER_ID).not.toBe(VERIFIED_PHONE_OWNER);
   });
@@ -176,7 +183,7 @@ describe('authenticated task BFF', () => {
         },
       },
     });
-    const task = await taskGateway.getTask('task-1', { ownerId: VERIFIED_PHONE_OWNER });
+    const task = await taskGateway.getTask('task-1', { ownerId: MOCK_SUBJECT_ID });
     const oldCookie = cookies.get('__Host-user-session');
     let refreshed = false;
     let gatewayRefreshes = 0;
@@ -261,7 +268,7 @@ describe('authenticated task BFF', () => {
   });
 
   it('returns only a minimal validated status envelope from polling', async () => {
-    const task = await taskGateway.getTask('task-1', { ownerId: VERIFIED_PHONE_OWNER });
+    const task = await taskGateway.getTask('task-1', { ownerId: MOCK_SUBJECT_ID });
     const upstreamFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(task));
     vi.stubGlobal('fetch', upstreamFetch);
 
@@ -677,6 +684,10 @@ describe('authenticated task BFF', () => {
   });
 
   it('fails closed without attempting a refresh when Web Locks are unavailable', async () => {
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: undefined,
+    });
     const refreshFetch = vi.fn<typeof fetch>();
     vi.stubGlobal('fetch', refreshFetch);
     vi.resetModules();

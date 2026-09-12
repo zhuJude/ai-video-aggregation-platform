@@ -8,7 +8,6 @@ import {
   SessionRefreshRequiredError,
 } from '../lib/auth/server-session';
 import { commerceGateway } from '../lib/commerce/gateway';
-import { commerceOwnerIdFromPhone } from '../lib/commerce/identity';
 import { isUuidV7 } from '../lib/tasks/identifiers';
 import {
   createMockUploadGrant,
@@ -43,7 +42,7 @@ function outcome(error: unknown): CommandOutcome {
 async function authenticated<T>(run: (ownerId: string) => Promise<T>): Promise<ActionResult<T>> {
   try {
     const session = await requireMutableAuthenticatedServerSession();
-    return { ok: true, data: await run(commerceOwnerIdFromPhone(session.ownerId)) };
+    return { ok: true, data: await run(session.ownerId) };
   } catch (error) {
     return { ok: false, outcome: outcome(error) };
   }

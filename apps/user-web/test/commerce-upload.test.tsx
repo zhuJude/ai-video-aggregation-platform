@@ -15,12 +15,16 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const PHONE = '+8613800138000';
-const sessionState = vi.hoisted(() => ({ needsRefresh: false, phone: '+8613800138000' }));
+const FIXTURE_OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7401';
+let OWNER_ID = FIXTURE_OWNER_ID;
+let OTHER_OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7402';
+const sessionState = vi.hoisted(() => ({
+  needsRefresh: false,
+  ownerId: '0198f4d4-21c2-7b7d-8a03-08a0da2a7401',
+}));
 
 vi.mock('../lib/auth/server-session', () => {
   class AuthenticationRequiredError extends Error {}
@@ -30,7 +34,7 @@ vi.mock('../lib/auth/server-session', () => {
     SessionRefreshRequiredError,
     requireMutableAuthenticatedServerSession: () => {
       if (sessionState.needsRefresh) throw new SessionRefreshRequiredError();
-      return Promise.resolve({ ownerId: sessionState.phone });
+      return Promise.resolve({ ownerId: sessionState.ownerId });
     },
   };
 });
@@ -41,11 +45,11 @@ import {
   PUT as putMockUpload,
 } from '../app/api/commerce/mock-uploads/[token]/route';
 import { AssetLibrary } from '../components/commerce/asset-library';
-import { commerceOwnerIdFromPhone } from '../lib/commerce/identity';
 import { createMockUploadGrant, verifyMockUploadGrant } from '../lib/commerce/mock-upload-boundary';
 import * as mockObjectStore from '../lib/commerce/mock-object-store';
 import {
   getStoredMockUploadSha,
+  ensureMockSeedObjects,
   listMockObjects,
   openMockObjectContent,
   reserveMockUpload,
@@ -55,13 +59,18 @@ import { parseUploadReceiptResponse, usableSignedUrl } from '../lib/commerce/run
 import { uploadAssetBytes } from '../lib/commerce/upload-client';
 import { createUuidV7 } from '../lib/tasks/identifiers';
 import type { AssetPage } from '../lib/commerce/types';
+import { createMockStoreTestScope } from './mock-store-scope';
 
 const KEY = '0198f4d4-21c2-7b7d-8a03-08a0da2a7801';
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const mockStoreScope = createMockStoreTestScope();
 
 beforeEach(() => {
+  mockStoreScope.install();
   sessionState.needsRefresh = false;
-  sessionState.phone = PHONE;
+  OWNER_ID = createUuidV7();
+  OTHER_OWNER_ID = createUuidV7();
+  sessionState.ownerId = OWNER_ID;
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 17).toString('base64url');
   process.env.USER_WEB_COMMERCE_IDENTITY_KEY = randomBytes(32).toString('base64url');
@@ -74,6 +83,11 @@ afterEach(() => {
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
   delete process.env.USER_WEB_COMMERCE_IDENTITY_KEY;
+  delete process.env.USER_WEB_COMMERCE_MOCK_TEST_NAMESPACE;
+});
+
+afterAll(async () => {
+  await mockStoreScope.cleanup();
 });
 
 const emptyAssets: AssetPage = { items: [], pageInfo: {} };
@@ -194,7 +208,7 @@ async function installMockStoreLock(owner: {
   readonly createdAt: string;
   readonly state: 'ACTIVE' | 'RELEASING';
 }): Promise<{ readonly lockPath: string; readonly ownerPath: string }> {
-  const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+  const root = mockStoreScope.root;
   const lockPath = resolve(root, '.store-lock');
   const ownerPath = resolve(lockPath, 'owner.json');
   await mkdir(root, { recursive: true });
@@ -232,7 +246,7 @@ describe('stateless commerce upload boundary', () => {
     );
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
-    await listMockObjects(commerceOwnerIdFromPhone(PHONE));
+    await listMockObjects(OWNER_ID);
     vi.useRealTimers();
     expect(grants).toEqual([
       expect.objectContaining({ ok: true }),
@@ -242,7 +256,7 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('releases PUT reservations and partials after two aborted 500 MB streams', async () => {
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grants = [1610, 1611].map((suffix) =>
       verifyMockUploadGrant(
         createMockUploadGrant(
@@ -292,7 +306,7 @@ describe('stateless commerce upload boundary', () => {
         }),
       ),
     ).resolves.toMatch(/^[a-f0-9]{64}$/);
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const attemptedKeys = new Set([first.storageKey, second.storageKey]);
     expect(
       (await readdir(root)).filter(
@@ -306,10 +320,10 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('fails closed without deleting an old active lock and succeeds only after release', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const lockPath = resolve(root, '.store-lock');
     const ownerPath = resolve(lockPath, 'owner.json');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grant = verifyMockUploadGrant(
       createMockUploadGrant(
         { name: 'locked.png', size: PNG_BYTES.byteLength, type: 'image/png' },
@@ -347,9 +361,9 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('recovers a live-process RELEASING orphan for object and finance operations', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const lockPath = resolve(root, '.store-lock');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const releasingToken = '0198f4d4-21c2-7b7d-8a03-000000001511';
     await installMockStoreLock({
       version: 1,
@@ -384,8 +398,8 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('lets two waiters serialize after exactly one live RELEASING orphan recovery', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const root = mockStoreScope.root;
+    const ownerId = OWNER_ID;
     const releasingToken = '0198f4d4-21c2-7b7d-8a03-000000001514';
     await installMockStoreLock({
       version: 1,
@@ -419,9 +433,9 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('atomically recovers a proven-dead owner lock for two waiting runtimes', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const lockPath = resolve(root, '.store-lock');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grants = [1520, 1521].map((suffix) =>
       verifyMockUploadGrant(
         createMockUploadGrant(
@@ -459,8 +473,8 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('recovers when a recovery-fence owner crashed after atomic publication', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const root = mockStoreScope.root;
+    const ownerId = OWNER_ID;
     const deadPid = 2_147_483_647;
     await installMockStoreLock({
       version: 1,
@@ -501,8 +515,8 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('recovers a RELEASING recovery fence even while its publisher process is alive', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const root = mockStoreScope.root;
+    const ownerId = OWNER_ID;
     await installMockStoreLock({
       version: 1,
       pid: 2_147_483_647,
@@ -537,7 +551,7 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('cleans only strictly named expired lock auxiliaries inside the fixed namespace', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const token = createUuidV7();
     const candidate = resolve(root, `.store-lock-candidate-${token}`);
     const quarantine = resolve(root, `.store-lock-quarantine-${token}`);
@@ -560,7 +574,7 @@ describe('stateless commerce upload boundary', () => {
     await Promise.all(
       [candidate, quarantine, lookalike].map((path) => utimes(path, expired, expired)),
     );
-    await listMockObjects(commerceOwnerIdFromPhone(PHONE));
+    await listMockObjects(OWNER_ID);
     await expect(stat(candidate)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(quarantine)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(lookalike)).resolves.toMatchObject({});
@@ -568,10 +582,10 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('does not remove a lock when process liveness is unknown', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const lockPath = resolve(root, '.store-lock');
     const ownerPath = resolve(lockPath, 'owner.json');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grant = verifyMockUploadGrant(
       createMockUploadGrant(
         { name: 'unknown.png', size: PNG_BYTES.byteLength, type: 'image/png' },
@@ -599,9 +613,9 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('fails closed after bounded retries when ACTIVE to RELEASING publication fails', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const lockPath = resolve(root, '.store-lock');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grant = verifyMockUploadGrant(
       createMockUploadGrant(
         { name: 'state-publication.png', size: PNG_BYTES.byteLength, type: 'image/png' },
@@ -665,7 +679,7 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('does not claim quota or open a partial for a pre-locked request stream', async () => {
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grant = verifyMockUploadGrant(
       createMockUploadGrant(
         { name: 'locked-stream.png', size: PNG_BYTES.byteLength, type: 'image/png' },
@@ -684,13 +698,13 @@ describe('stateless commerce upload boundary', () => {
     const reader = body.getReader();
     await expect(storeMockUpload(grant, body)).rejects.toBeInstanceOf(TypeError);
     reader.releaseLock();
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const leftovers = (await readdir(root)).filter((file) => file.startsWith(grant.storageKey));
     expect(leftovers).toEqual([]);
   });
 
   it('compensates the partial and reservation when releasing the claim lock fails', async () => {
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grant = verifyMockUploadGrant(
       createMockUploadGrant(
         { name: 'release-failure.png', size: PNG_BYTES.byteLength, type: 'image/png' },
@@ -723,7 +737,7 @@ describe('stateless commerce upload boundary', () => {
       () => ({ ok: true as const }),
       (caught: unknown) => ({ error: caught, ok: false as const }),
     );
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     expect(attempted).toMatchObject({
       ok: false,
       error: { code: 'LOCK_UNAVAILABLE', outcome: 'UNCERTAIN' },
@@ -733,7 +747,7 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('recovers a stored receipt after the publish lock release becomes uncertain', async () => {
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grant = verifyMockUploadGrant(
       createMockUploadGrant(
         { name: '发布完成.png', size: PNG_BYTES.byteLength, type: 'image/png' },
@@ -744,7 +758,7 @@ describe('stateless commerce upload boundary', () => {
         .at(-1) ?? '',
     );
     let lockReleaseCount = 0;
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     await expect(
       storeMockUpload(
         grant,
@@ -781,15 +795,9 @@ describe('stateless commerce upload boundary', () => {
     const uploaded = await putGrant(created, PNG_BYTES);
     const receipt = parseUploadReceiptResponse(await uploaded.json());
     await completeUploadAction(receipt.receipt, key);
-    const metadata = (await listMockObjects(commerceOwnerIdFromPhone(PHONE))).find(
-      (item) => item.assetId === key,
-    );
+    const metadata = (await listMockObjects(OWNER_ID)).find((item) => item.assetId === key);
     if (!metadata) throw new Error('EXPECTED_METADATA');
-    const alternate = resolve(
-      tmpdir(),
-      'ai-video-user-web-commerce-mock-v1',
-      `.race-${createUuidV7()}.bin`,
-    );
+    const alternate = resolve(mockStoreScope.root, `.race-${createUuidV7()}.bin`);
     await writeFile(alternate, new TextEncoder().encode('private bytes'), { flag: 'wx' });
     try {
       await expect(
@@ -829,7 +837,7 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('cleans stale partial metadata and orphaned content from the fixed mock store', async () => {
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const storageKey = 'b'.repeat(64);
     const temporaryId = '0198f4d4-21c2-7b7d-8a03-08a0da2a7999';
     const paths = [
@@ -842,7 +850,7 @@ describe('stateless commerce upload boundary', () => {
       await Promise.all(paths.map((path) => writeFile(path, new Uint8Array([1]))));
       const expired = new Date(Date.now() - 25 * 60 * 60_000);
       await Promise.all(paths.map((path) => utimes(path, expired, expired)));
-      await listMockObjects(commerceOwnerIdFromPhone(PHONE));
+      await listMockObjects(OWNER_ID);
       await Promise.all(
         paths.map((path) => expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' })),
       );
@@ -852,7 +860,7 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('atomically enforces total capacity across concurrent reservations', async () => {
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const grants = [1200, 1201, 1202].map((suffix) => {
       const grant = createMockUploadGrant(
         { name: `capacity-${String(suffix)}.mp4`, size: 350 * 1024 * 1024, type: 'video/mp4' },
@@ -935,11 +943,11 @@ describe('stateless commerce upload boundary', () => {
     const { commerceGateway: freshGateway } = await import('../lib/commerce/gateway');
     const refreshed = (await freshGateway.listAssets(
       { query: '真实帧' },
-      { ownerId: commerceOwnerIdFromPhone(PHONE) },
+      { ownerId: OWNER_ID },
     )) as { items: Array<{ id: string }> };
     expect(refreshed.items).toContainEqual(expect.objectContaining({ id: KEY }));
     const access = (await freshGateway.requestAssetAccess(KEY, 'PREVIEW', {
-      ownerId: commerceOwnerIdFromPhone(PHONE),
+      ownerId: OWNER_ID,
     })) as { url: string };
     expect(access.url).toMatch(/^\/api\/commerce\/mock-assets\//);
   });
@@ -1023,7 +1031,7 @@ describe('stateless commerce upload boundary', () => {
       '0198f4d4-21c2-7b7d-8a03-08a0da2a7804',
     );
     if (!created.ok) throw new Error('EXPECTED_UPLOAD_GRANT');
-    sessionState.phone = '+8613900139000';
+    sessionState.ownerId = OTHER_OWNER_ID;
     const response = await putGrant(created, PNG_BYTES);
     expect(response.status).toBe(404);
     expect(await response.text()).toBe('');
@@ -1101,7 +1109,7 @@ describe('stateless commerce upload boundary', () => {
     expect(xhr.state.aborted).toBe(true);
     xhr.release();
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 0));
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     expect((await listMockObjects(ownerId)).some((item) => item.name === '卸载中.png')).toBe(false);
   });
 
@@ -1211,7 +1219,7 @@ describe('stateless commerce upload boundary', () => {
       await (
         await import('../lib/commerce/gateway')
       ).commerceGateway.deleteAsset(key, {
-        ownerId: commerceOwnerIdFromPhone(PHONE),
+        ownerId: OWNER_ID,
         idempotencyKey: '0198f4d4-21c2-7b7d-8a03-08a0da2a7820',
       });
     }
@@ -1235,7 +1243,7 @@ describe('stateless commerce upload boundary', () => {
     await (
       await import('../lib/commerce/gateway')
     ).commerceGateway.deleteAsset(key, {
-      ownerId: commerceOwnerIdFromPhone(PHONE),
+      ownerId: OWNER_ID,
       idempotencyKey: '0198f4d4-21c2-7b7d-8a03-000000001301',
     });
   });
@@ -1256,7 +1264,7 @@ describe('stateless commerce upload boundary', () => {
     await (
       await import('../lib/commerce/gateway')
     ).commerceGateway.deleteAsset(key, {
-      ownerId: commerceOwnerIdFromPhone(PHONE),
+      ownerId: OWNER_ID,
       idempotencyKey: '0198f4d4-21c2-7b7d-8a03-000000001401',
     });
   });
@@ -1323,7 +1331,7 @@ describe('stateless commerce upload boundary', () => {
         await (
           await import('../lib/commerce/gateway')
         ).commerceGateway.deleteAsset(key, {
-          ownerId: commerceOwnerIdFromPhone(PHONE),
+          ownerId: OWNER_ID,
           idempotencyKey: `0198f4d4-21c2-7b7d-8a03-${String(900 + index).padStart(12, '0')}`,
         });
       }
@@ -1423,7 +1431,7 @@ describe('stateless commerce upload boundary', () => {
     const receipt = parseUploadReceiptResponse(await uploadResponse.json());
     const completed = await completeUploadAction(receipt.receipt, key);
     if (!completed.ok) throw new Error('EXPECTED_COMPLETED_UPLOAD');
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const preview = (await (
       await import('../lib/commerce/gateway')
     ).commerceGateway.requestAssetAccess(key, 'PREVIEW', { ownerId })) as {
@@ -1465,12 +1473,12 @@ describe('stateless commerce upload boundary', () => {
     expect(downloaded.headers.get('content-disposition')).toMatch(/^attachment;/);
     expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(PNG_BYTES);
 
-    sessionState.phone = '+8613900139000';
+    sessionState.ownerId = OTHER_OWNER_ID;
     const foreign = await getMockAsset(new Request(`https://app.example${preview.url}`), {
       params: Promise.resolve({ token }),
     });
     expect(foreign.status).toBe(404);
-    sessionState.phone = PHONE;
+    sessionState.ownerId = OWNER_ID;
 
     vi.useFakeTimers();
     vi.setSystemTime(Date.parse(preview.expiresAt) + 1);
@@ -1481,7 +1489,8 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('seeds fixture assets as real store bytes and preserves signed access across reloads', async () => {
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = FIXTURE_OWNER_ID;
+    sessionState.ownerId = ownerId;
     const assetId = '0198f4d4-21c2-7b7d-8a03-08a0da2a7101';
     const expected = new Uint8Array([
       0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0,
@@ -1508,8 +1517,17 @@ describe('stateless commerce upload boundary', () => {
   });
 
   it('never resurrects a deleted seed when its command history expires', async () => {
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const ownerId = OWNER_ID;
     const assetId = '0198f4d4-21c2-7b7d-8a03-08a0da2a7102';
+    const seed = {
+      assetId,
+      kind: 'UPLOAD' as const,
+      name: '山谷起始帧.webp',
+      mimeType: 'image/webp',
+      createdAt: '2026-08-30T08:30:00.000Z',
+      bytes: new TextEncoder().encode('RIFF0000WEBP'),
+    };
+    await ensureMockSeedObjects(ownerId, [seed]);
     let gateway = (await import('../lib/commerce/gateway')).commerceGateway;
     const before = (await gateway.listAssets({}, { ownerId })) as {
       items: Array<{ id: string }>;
@@ -1523,6 +1541,7 @@ describe('stateless commerce upload boundary', () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
     vi.resetModules();
+    await ensureMockSeedObjects(ownerId, [seed]);
     gateway = (await import('../lib/commerce/gateway')).commerceGateway;
     const after = (await gateway.listAssets({}, { ownerId })) as {
       items: Array<{ id: string }>;
@@ -1540,7 +1559,7 @@ describe('stateless commerce upload boundary', () => {
     const uploaded = await putGrant(created, PNG_BYTES);
     const receipt = parseUploadReceiptResponse(await uploaded.json());
     await completeUploadAction(receipt.receipt, key);
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const root = mockStoreScope.root;
     const suppressionCount = () =>
       readdir(root).then(
         (files) =>
@@ -1550,7 +1569,7 @@ describe('stateless commerce upload boundary', () => {
     await (
       await import('../lib/commerce/gateway')
     ).commerceGateway.deleteAsset(key, {
-      ownerId: commerceOwnerIdFromPhone(PHONE),
+      ownerId: OWNER_ID,
       idempotencyKey: '0198f4d4-21c2-7b7d-8a03-000000008813',
     });
     expect(await suppressionCount()).toBe(before);
@@ -1558,8 +1577,8 @@ describe('stateless commerce upload boundary', () => {
 
   it('persists rename and removes both stored content and metadata on delete', async () => {
     const key = '0198f4d4-21c2-7b7d-8a03-08a0da2a7821';
-    const ownerId = commerceOwnerIdFromPhone(PHONE);
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const ownerId = OWNER_ID;
+    const root = mockStoreScope.root;
     const renameKey = '0198f4d4-21c2-7b7d-8a03-08a0da2a7817';
     const laterRenameKey = '0198f4d4-21c2-7b7d-8a03-000000001817';
     const deleteKey = '0198f4d4-21c2-7b7d-8a03-08a0da2a7818';

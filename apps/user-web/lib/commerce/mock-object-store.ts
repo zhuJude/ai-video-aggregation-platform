@@ -83,7 +83,18 @@ export class MockObjectStoreError extends Error {
 
 function storeRoot(): string {
   void requireMockCommerceSigningKey();
-  const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+  const testNamespace = process.env.USER_WEB_COMMERCE_MOCK_TEST_NAMESPACE;
+  if (
+    testNamespace &&
+    (process.env.NODE_ENV !== 'test' ||
+      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(testNamespace))
+  ) {
+    throw new MockObjectStoreError('INVALID');
+  }
+  const directoryName = testNamespace
+    ? `ai-video-user-web-commerce-mock-v1-test-${testNamespace}`
+    : 'ai-video-user-web-commerce-mock-v1';
+  const root = resolve(tmpdir(), directoryName);
   const temporaryRoot = resolve(tmpdir());
   if (!isAbsolute(root) || !root.startsWith(`${temporaryRoot}${sep}`)) {
     throw new MockObjectStoreError('INVALID');
@@ -100,7 +111,7 @@ function samePath(first: string, second: string): boolean {
 async function ensureStoreRoot(): Promise<string> {
   const root = storeRoot();
   const realTemporaryRoot = await realpath(resolve(tmpdir()));
-  const expected = resolve(realTemporaryRoot, 'ai-video-user-web-commerce-mock-v1');
+  const expected = resolve(realTemporaryRoot, basename(root));
   await mkdir(root, { recursive: true, mode: 0o700 });
   const rootStat = await lstat(root);
   const actual = await realpath(root);

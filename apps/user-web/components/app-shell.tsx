@@ -19,6 +19,13 @@ const destinations = [
   { href: '/wallet', label: '点数钱包' },
 ] as const;
 
+const accountDestinations = [
+  { href: '/messages', label: '消息' },
+  { href: '/tickets', label: '工单' },
+  { href: '/settings/profile', label: '资料' },
+  { href: '/settings/security', label: '安全' },
+] as const;
+
 function formatPoints(points: string): string {
   try {
     return BigInt(points).toLocaleString('zh-CN');
@@ -94,6 +101,15 @@ export function AppShell({ children, user = null }: AppShellProps) {
           <nav className="primary-navigation" aria-label="主要导航">
             <ul>
               {destinations.map((destination) => (
+                <li key={destination.href}>
+                  <Link href={destination.href}>{destination.label}</Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
+          <nav className="account-navigation" aria-label="账号与支持">
+            <ul>
+              {accountDestinations.map((destination) => (
                 <li key={destination.href}>
                   <Link href={destination.href}>{destination.label}</Link>
                 </li>

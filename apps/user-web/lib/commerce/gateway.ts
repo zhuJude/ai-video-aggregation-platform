@@ -3,7 +3,6 @@ import 'server-only';
 import { UuidSchema } from '@repo/contracts/common';
 
 import { createUuidV7, isUuidV7 } from '../tasks/identifiers';
-import { commerceOwnerIdFromPhone } from './identity';
 import { createMockAssetAccess } from './mock-upload-boundary';
 import { requireMockCommerce } from './mock-config';
 import {
@@ -27,14 +26,14 @@ export class CommerceCommandError extends Error {
   readonly outcome = 'DEFINITIVE_FAILURE' as const;
 }
 
-const FIXTURE_PHONE = '+8613800138000';
+const FIXTURE_OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7401';
 const ASSET_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7101';
 const IMAGE_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7102';
 const PAID_ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7201';
 const PENDING_ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7202';
 
 function fixtureOwnerId(): string {
-  return commerceOwnerIdFromPhone(FIXTURE_PHONE);
+  return FIXTURE_OWNER_ID;
 }
 
 const fixtureAssets = [

@@ -4,7 +4,6 @@ import {
   requireMutableAuthenticatedServerSession,
   SessionRefreshRequiredError,
 } from '../../../../../lib/auth/server-session';
-import { commerceOwnerIdFromPhone } from '../../../../../lib/commerce/identity';
 import {
   UploadBoundaryError,
   verifyMockAssetAccess,
@@ -54,7 +53,7 @@ export async function GET(
 ): Promise<Response> {
   try {
     const session = await requireMutableAuthenticatedServerSession();
-    const ownerId = commerceOwnerIdFromPhone(session.ownerId);
+    const ownerId = session.ownerId;
     const access = verifyMockAssetAccess((await context.params).token);
     if (access.ownerId !== ownerId)
       return new Response(null, { headers: PRIVATE_HEADERS, status: 404 });

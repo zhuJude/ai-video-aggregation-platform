@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import type { ApiError } from '@repo/contracts/common';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -188,6 +188,9 @@ const gatewayMock = {
 
 beforeEach(() => {
   process.env.GATEWAY_URL = 'https://gateway.internal';
+  process.env.USER_WEB_MOCK_IDENTITY_KEY = Buffer.alloc(32, 23).toString('base64url');
+  process.env.USER_WEB_COMMERCE_MODE = 'mock';
+  process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 29).toString('base64url');
   loginCookies.clear();
   loginCookieWrites.length = 0;
   handlers = [requestSmsHandler, verifySmsHandler];
@@ -212,6 +215,9 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  delete process.env.USER_WEB_MOCK_IDENTITY_KEY;
+  delete process.env.USER_WEB_COMMERCE_MODE;
+  delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
 });
 
 describe('PhoneLoginForm', () => {
@@ -415,7 +421,9 @@ describe('PhoneLoginForm', () => {
     await user.type(screen.getByLabelText('短信验证码'), '123456');
     await user.click(screen.getByRole('button', { name: '登录' }));
 
-    expect(onAuthenticated).toHaveBeenCalledWith('/studio');
+    await waitFor(() => {
+      expect(onAuthenticated).toHaveBeenCalledWith('/studio');
+    });
   });
 
   it('establishes a signed HttpOnly app session after Gateway verification', async () => {
@@ -426,7 +434,11 @@ describe('PhoneLoginForm', () => {
     await user.type(screen.getByLabelText('短信验证码'), '123456');
     await user.click(screen.getByRole('button', { name: '登录' }));
 
-    expect(loginCookies.get('__Host-user-session')).toMatch(/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    await waitFor(() => {
+      expect(loginCookies.get('__Host-user-session')).toMatch(
+        /^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+    });
     expect(loginCookieWrites.find((write) => write.name === '__Host-user-session')).toMatchObject({
       name: '__Host-user-session',
       options: { httpOnly: true, path: '/', sameSite: 'lax', secure: true },

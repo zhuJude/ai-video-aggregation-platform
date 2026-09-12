@@ -53,15 +53,13 @@ export function AccessibleDialog({
       dialogRef.current?.focus();
       return;
     }
-    const first = elements[0];
-    const last = elements.at(-1);
-    if (
-      (event.shiftKey && document.activeElement === first) ||
-      (!event.shiftKey && document.activeElement === last)
-    ) {
-      event.preventDefault();
-      (event.shiftKey ? last : first)?.focus();
-    }
+    const activeIndex = elements.findIndex((element) => element === document.activeElement);
+    event.preventDefault();
+    if (event.shiftKey) elements[activeIndex <= 0 ? elements.length - 1 : activeIndex - 1]?.focus();
+    else
+      elements[
+        activeIndex < 0 || activeIndex === elements.length - 1 ? 0 : activeIndex + 1
+      ]?.focus();
   };
 
   return (

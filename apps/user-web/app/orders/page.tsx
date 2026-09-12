@@ -3,7 +3,6 @@ import { redirect } from 'next/navigation';
 import { OrderCenter } from '../../components/commerce/order-center';
 import { readAuthenticatedServerSessionState } from '../../lib/auth/server-session';
 import { commerceGateway } from '../../lib/commerce/gateway';
-import { commerceOwnerIdFromPhone } from '../../lib/commerce/identity';
 import { parseOrderPage } from '../../lib/commerce/runtime';
 import type { RechargeOrderStatus } from '../../lib/commerce/types';
 
@@ -29,7 +28,7 @@ export default async function OrdersPage({
           ...(cursor ? { cursor } : {}),
           ...(status ? { status: status as RechargeOrderStatus } : {}),
         },
-        { ownerId: commerceOwnerIdFromPhone(state.session.ownerId) },
+        { ownerId: state.session.ownerId },
       ),
     );
     return (

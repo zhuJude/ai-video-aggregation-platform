@@ -4,8 +4,10 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { UuidSchema } from '@repo/contracts/common';
 import { cookies } from 'next/headers';
 
+import { resolveOrCreateMockSubjectForVerifiedPhone } from './mock-subject-store';
+
 const APP_SESSION_COOKIE_NAME = '__Host-user-session';
-const COOKIE_VERSION = 'v1';
+const COOKIE_VERSION = 'v2';
 const MAX_COOKIE_BYTES = 3_800;
 const MAX_ACCESS_TOKEN_BYTES = 3_000;
 const MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 15 * 60;
@@ -23,13 +25,19 @@ interface StoredSession {
   readonly accessExpiresAt: number;
   readonly expiresAt: number;
   readonly issuedAt: number;
-  readonly ownerId: string;
+  readonly mockSubjectId: string;
   readonly sessionId: string;
-  readonly version: 1;
+  readonly verifiedPhone: string;
+  readonly version: 2;
 }
 
 export interface AuthenticatedServerSession {
   readonly ownerId: string;
+}
+
+export interface AuthenticatedServerSessionIdentity extends AuthenticatedServerSession {
+  readonly sessionId: string;
+  readonly verifiedPhone: string;
 }
 
 export type AuthenticatedServerSessionState =
@@ -106,17 +114,19 @@ function validateSession(value: unknown, nowSeconds: number): StoredSession | un
   if (!isRecord(value)) return undefined;
   const keys = Object.keys(value).sort();
   if (
-    keys.join(',') !== 'accessExpiresAt,accessToken,expiresAt,issuedAt,ownerId,sessionId,version'
+    keys.join(',') !==
+    'accessExpiresAt,accessToken,expiresAt,issuedAt,mockSubjectId,sessionId,verifiedPhone,version'
   ) {
     return undefined;
   }
   const sessionId = UuidSchema.safeParse(value.sessionId);
   if (
-    value.version !== 1 ||
+    value.version !== 2 ||
     typeof value.accessToken !== 'string' ||
     Buffer.byteLength(value.accessToken) > MAX_ACCESS_TOKEN_BYTES ||
-    typeof value.ownerId !== 'string' ||
-    !VERIFIED_PHONE_OWNER.test(value.ownerId) ||
+    !UuidSchema.safeParse(value.mockSubjectId).success ||
+    typeof value.verifiedPhone !== 'string' ||
+    !VERIFIED_PHONE_OWNER.test(value.verifiedPhone) ||
     !sessionId.success ||
     !Number.isSafeInteger(value.issuedAt) ||
     !Number.isSafeInteger(value.expiresAt) ||
@@ -138,13 +148,14 @@ function validateSession(value: unknown, nowSeconds: number): StoredSession | un
     return undefined;
   }
   return {
-    version: 1,
+    version: 2,
     accessToken: value.accessToken,
     accessExpiresAt: value.accessExpiresAt as number,
     expiresAt,
     issuedAt,
-    ownerId: value.ownerId,
+    mockSubjectId: value.mockSubjectId as string,
     sessionId: sessionId.data,
+    verifiedPhone: value.verifiedPhone,
   };
 }
 
@@ -253,14 +264,16 @@ export async function establishAuthenticatedServerSession(
   const metadata = parseAccessTokenMetadata(accessToken, nowSeconds);
   if (metadata.sessionId !== expectedSessionId) throw new Error('GATEWAY_SESSION_MISMATCH');
   if (!REFRESH_TOKEN.test(refreshToken)) throw new Error('INVALID_REFRESH_TOKEN');
+  const mockSubjectId = await resolveOrCreateMockSubjectForVerifiedPhone(verifiedPhoneOwner);
   await writeSession({
-    version: 1,
+    version: 2,
     accessToken,
     accessExpiresAt: metadata.expiresAt,
     expiresAt: nowSeconds + SESSION_TTL_SECONDS,
     issuedAt: nowSeconds,
-    ownerId: verifiedPhoneOwner,
+    mockSubjectId,
     sessionId: metadata.sessionId,
+    verifiedPhone: verifiedPhoneOwner,
   });
   await writeRefreshToken(refreshToken);
 }
@@ -279,7 +292,7 @@ export async function readAuthenticatedServerSessionState(): Promise<Authenticat
   if (session.accessExpiresAt <= Math.floor(Date.now() / 1_000)) {
     return { kind: 'needs-refresh' };
   }
-  return { kind: 'active', session: { ownerId: session.ownerId } };
+  return { kind: 'active', session: { ownerId: session.mockSubjectId } };
 }
 
 export async function requireAuthenticatedServerSession(): Promise<AuthenticatedServerSession> {
@@ -325,13 +338,14 @@ async function rotate(session: StoredSession): Promise<StoredSession | undefined
     const metadata = parseAccessTokenMetadata(body.accessToken, nowSeconds);
     if (metadata.sessionId !== responseSessionId.data) return undefined;
     const rotated: StoredSession = {
-      version: 1,
+      version: 2,
       accessToken: body.accessToken,
       accessExpiresAt: metadata.expiresAt,
       expiresAt: nowSeconds + SESSION_TTL_SECONDS,
       issuedAt: nowSeconds,
-      ownerId: session.ownerId,
+      mockSubjectId: session.mockSubjectId,
       sessionId: metadata.sessionId,
+      verifiedPhone: session.verifiedPhone,
     };
     await writeSession(rotated);
     await writeRefreshToken(refreshTokenFromSetCookie(response.headers.get('set-cookie')));
@@ -354,7 +368,42 @@ export async function requireMutableAuthenticatedServerSession(): Promise<Authen
     if (state.kind === 'needs-refresh') throw new SessionRefreshRequiredError();
     throw new AuthenticationRequiredError();
   }
-  return { ownerId: session.ownerId };
+  return { ownerId: session.mockSubjectId };
+}
+
+export async function requireMutableAuthenticatedServerSessionIdentity(): Promise<AuthenticatedServerSessionIdentity> {
+  const session = await mutableFreshSession();
+  if (!session) {
+    const state = await readAuthenticatedServerSessionState();
+    if (state.kind === 'needs-refresh') throw new SessionRefreshRequiredError();
+    throw new AuthenticationRequiredError();
+  }
+  return {
+    ownerId: session.mockSubjectId,
+    sessionId: session.sessionId,
+    verifiedPhone: session.verifiedPhone,
+  };
+}
+
+export async function replaceAuthenticatedServerSessionPhone(
+  expectedSubjectId: string,
+  verifiedPhone: string,
+): Promise<void> {
+  if (
+    !UuidSchema.safeParse(expectedSubjectId).success ||
+    !VERIFIED_PHONE_OWNER.test(verifiedPhone)
+  ) {
+    throw new Error('INVALID_SESSION_PHONE_REPLACEMENT');
+  }
+  const session = await mutableFreshSession();
+  if (!session || session.mockSubjectId !== expectedSubjectId) {
+    throw new AuthenticationRequiredError();
+  }
+  await writeSession({ ...session, verifiedPhone });
+}
+
+export async function clearAuthenticatedServerSession(): Promise<void> {
+  await clearSession();
 }
 
 export async function refreshAuthenticatedServerSession(): Promise<boolean> {

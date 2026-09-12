@@ -28,7 +28,7 @@ const fixtureCursor = (revision: number, suffix: string) =>
 
 type OwnedTaskDetail = TaskDetail & { readonly ownerId: string };
 
-const FIXTURE_OWNER_A = '+8613800138000';
+const FIXTURE_OWNER_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a7401';
 
 const fixtures: readonly OwnedTaskDetail[] = [
   {

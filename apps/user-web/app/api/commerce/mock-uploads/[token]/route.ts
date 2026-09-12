@@ -3,7 +3,6 @@ import {
   requireMutableAuthenticatedServerSession,
   SessionRefreshRequiredError,
 } from '../../../../../lib/auth/server-session';
-import { commerceOwnerIdFromPhone } from '../../../../../lib/commerce/identity';
 import {
   createMockUploadReceipt,
   UploadBoundaryError,
@@ -49,7 +48,7 @@ export async function GET(
 ): Promise<Response> {
   try {
     const session = await requireMutableAuthenticatedServerSession();
-    const ownerId = commerceOwnerIdFromPhone(session.ownerId);
+    const ownerId = session.ownerId;
     const grant = verifyMockUploadRecoveryGrant((await context.params).token);
     if (grant.ownerId !== ownerId) {
       return new Response(null, { headers: PRIVATE_HEADERS, status: 404 });
@@ -94,7 +93,7 @@ export async function PUT(
   }
   try {
     const session = await requireMutableAuthenticatedServerSession();
-    const ownerId = commerceOwnerIdFromPhone(session.ownerId);
+    const ownerId = session.ownerId;
     const grant = verifyMockUploadGrant((await context.params).token);
     if (grant.ownerId !== ownerId)
       return new Response(null, { headers: PRIVATE_HEADERS, status: 404 });

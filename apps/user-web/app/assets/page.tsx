@@ -4,7 +4,6 @@ import { redirect } from 'next/navigation';
 import { AssetLibrary } from '../../components/commerce/asset-library';
 import { readAuthenticatedServerSessionState } from '../../lib/auth/server-session';
 import { commerceGateway } from '../../lib/commerce/gateway';
-import { commerceOwnerIdFromPhone } from '../../lib/commerce/identity';
 import { parseAssetFilters, parseAssetPage } from '../../lib/commerce/runtime';
 
 export default async function AssetsPage({
@@ -19,7 +18,7 @@ export default async function AssetsPage({
     const filters = parseAssetFilters(await searchParams);
     const page = parseAssetPage(
       await commerceGateway.listAssets(filters, {
-        ownerId: commerceOwnerIdFromPhone(state.session.ownerId),
+        ownerId: state.session.ownerId,
       }),
     );
     const pageHref = (cursor: string) => {
