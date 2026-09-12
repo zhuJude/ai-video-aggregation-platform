@@ -15,14 +15,14 @@ export async function GET(
 ): Promise<Response> {
   try {
     const { id } = await context.params;
+    const cursor = request.headers.get('last-event-id');
+    if (cursor !== null && !isTaskEventCursor(cursor)) return new Response(null, { status: 400 });
     if (process.env.USER_WEB_STUDIO_MODE === 'mock') {
       const session = await requireAuthenticatedServerSession();
-      return await createMockTaskEventResponse(session.ownerId, id);
+      return await createMockTaskEventResponse(session.ownerId, id, cursor ?? undefined);
     }
     const headers = new Headers({ accept: 'text/event-stream' });
-    const cursor = request.headers.get('last-event-id');
     if (cursor !== null) {
-      if (!isTaskEventCursor(cursor)) return new Response(null, { status: 400 });
       headers.set('last-event-id', cursor);
     }
     for (const name of ['x-trace-id', 'x-correlation-id'] as const) {

@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { taskGateway } from './gateway';
+import { isTaskEventCursor } from './identifiers';
 import { parseTaskDetail } from './runtime';
 
 export async function createMockTaskPollResponse(
@@ -17,7 +18,11 @@ export async function createMockTaskPollResponse(
 export async function createMockTaskEventResponse(
   ownerId: string,
   taskId: string,
+  lastEventId?: string,
 ): Promise<Response> {
+  if (lastEventId !== undefined && !isTaskEventCursor(lastEventId)) {
+    throw new Error('INVALID_TASK_CURSOR');
+  }
   const detail = parseTaskDetail(await taskGateway.getTask(taskId, { ownerId }));
   const snapshot = detail.statusSnapshot;
   const body = `id: ${snapshot.eventId}\nevent: task.status\ndata: ${JSON.stringify(snapshot)}\n\n`;

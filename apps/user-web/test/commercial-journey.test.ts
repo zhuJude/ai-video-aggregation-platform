@@ -71,8 +71,10 @@ describe('mock commercial journey', () => {
   it('creates exactly one reserved task for an idempotent submission and persists it', async () => {
     const before = parseWalletPage(await commerceGateway.getWallet({}, { ownerId: OWNER_ID }));
     const setup = await createTask();
-    const first = await setup.gateway.createTask(setup.request, { idempotencyKey: setup.key });
-    const replay = await setup.gateway.createTask(setup.request, { idempotencyKey: setup.key });
+    const [first, replay] = await Promise.all([
+      setup.gateway.createTask(setup.request, { idempotencyKey: setup.key }),
+      setup.gateway.createTask(setup.request, { idempotencyKey: setup.key }),
+    ]);
 
     expect(replay).toEqual(first);
     const listed = parseTaskPage(await taskGateway.listTasks({}, { ownerId: OWNER_ID }));
@@ -161,5 +163,8 @@ describe('mock commercial journey', () => {
     expect(payload).toMatch(/^id: 2:[0-9a-f-]+\nevent: task\.status\ndata: /);
     expect(payload).toContain('"status":"SUBMITTING"');
     expect(payload).not.toContain('parametersSnapshot');
+    await expect(
+      createMockTaskEventResponse(OWNER_ID, accepted.taskId, 'forged-cursor'),
+    ).rejects.toThrow('INVALID_TASK_CURSOR');
   });
 });
