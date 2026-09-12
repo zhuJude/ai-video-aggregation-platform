@@ -9,10 +9,8 @@ import { commerceGateway } from '../lib/commerce/gateway';
 import { commerceOwnerIdFromPhone } from '../lib/commerce/identity';
 import {
   createMockUploadGrant,
-  verifyMockUploadGrant,
   verifyMockUploadReceipt,
 } from '../lib/commerce/mock-upload-boundary';
-import { reserveMockUpload } from '../lib/commerce/mock-object-store';
 import {
   classifyCommerceCommandError,
   parseAssetPage,
@@ -61,13 +59,9 @@ export async function createUploadSessionAction(
   input: UploadFileDescriptor,
   idempotencyKey: string,
 ): Promise<ActionResult<UploadSessionGrant>> {
-  return authenticated(async (ownerId) => {
-    const grant = parseUploadSessionGrant(createMockUploadGrant(input, idempotencyKey, ownerId));
-    const token = grant.url.split('/').at(-1);
-    if (!token) throw new Error('INVALID_UPLOAD_GRANT');
-    await reserveMockUpload(verifyMockUploadGrant(token));
-    return grant;
-  });
+  return authenticated((ownerId) =>
+    Promise.resolve(parseUploadSessionGrant(createMockUploadGrant(input, idempotencyKey, ownerId))),
+  );
 }
 
 export async function completeUploadAction(

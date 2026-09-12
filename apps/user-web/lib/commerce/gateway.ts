@@ -9,13 +9,14 @@ import { requireMockCommerce } from './mock-config';
 import {
   completeMockUpload,
   deleteMockObject,
+  ensureMockSeedObjects,
   findMockObject,
   listMockObjects,
+  MockObjectStoreError,
   renameMockObject,
 } from './mock-object-store';
 import type {
   AssetFilters,
-  AssetListItem,
   CommerceGateway,
   InvoiceHistoryItem,
   LedgerTransaction,
@@ -38,32 +39,26 @@ function fixtureOwnerId(): string {
   return commerceOwnerIdFromPhone(FIXTURE_PHONE);
 }
 
-const assets: Owned<AssetListItem>[] = [
+const fixtureAssets = [
   {
-    get ownerId() {
-      return fixtureOwnerId();
-    },
-    id: ASSET_ID,
+    assetId: ASSET_ID,
     kind: 'RESULT',
     name: '海边公路.mp4',
     mimeType: 'video/mp4',
-    sizeBytes: '2097152',
     createdAt: '2026-08-31T10:00:00.000Z',
-    posterAlt: '日落时分的海边公路生成视频',
+    bytes: new Uint8Array([
+      0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0,
+    ]),
   },
   {
-    get ownerId() {
-      return fixtureOwnerId();
-    },
-    id: IMAGE_ID,
+    assetId: IMAGE_ID,
     kind: 'UPLOAD',
     name: '山谷起始帧.webp',
     mimeType: 'image/webp',
-    sizeBytes: '826340',
     createdAt: '2026-08-30T08:30:00.000Z',
-    posterAlt: '晨雾山谷起始帧',
+    bytes: new TextEncoder().encode('RIFF0000WEBP'),
   },
-];
+] as const;
 
 const ledger: readonly Owned<LedgerTransaction>[] = [
   {
@@ -133,7 +128,6 @@ const orders: Owned<RechargeOrderView>[] = [
 
 const invoices: Owned<InvoiceHistoryItem>[] = [];
 const invoicedOrders = new Set<string>();
-const deletedAssets = new Set<string>();
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000;
 const IDEMPOTENCY_MAX_ENTRIES = 10_000;
 const idempotency = new Map<
@@ -158,13 +152,15 @@ function publicValue<T extends { readonly ownerId: string }>(value: T): Omit<T, 
   return result;
 }
 
-function ownedAsset(assetId: string, ownerId: string): Owned<AssetListItem> {
-  const asset = assets.find(
-    (candidate) =>
-      candidate.id === assetId && candidate.ownerId === ownerId && !deletedAssets.has(candidate.id),
-  );
-  if (!asset) throw new CommerceCommandError('ASSET_NOT_FOUND');
-  return asset;
+async function ensureFixtureAssets(ownerId: string): Promise<void> {
+  if (ownerId === fixtureOwnerId()) await ensureMockSeedObjects(ownerId, fixtureAssets);
+}
+
+function translateStoreError(error: unknown): never {
+  if (error instanceof MockObjectStoreError && error.code === 'IDEMPOTENCY_CONFLICT') {
+    throw new CommerceCommandError('IDEMPOTENCY_CONFLICT');
+  }
+  throw error;
 }
 
 function command<T>(key: string, ownerId: string, fingerprint: string, create: () => T): T {
@@ -200,18 +196,19 @@ function listOffset(cursor: string | undefined): number {
 export const commerceGateway: CommerceGateway = {
   async listAssets(filters: AssetFilters, context): Promise<unknown> {
     assertOwner(context.ownerId);
+    await ensureFixtureAssets(context.ownerId);
     const stored = (await listMockObjects(context.ownerId)).map((item) => ({
       ownerId: item.ownerId,
       id: item.assetId,
-      kind: 'UPLOAD' as const,
+      kind: item.kind,
       name: item.name,
       mimeType: item.mimeType,
       sizeBytes: item.sizeBytes,
       createdAt: item.createdAt,
       posterAlt: `${item.name} 素材预览`,
     }));
-    const matches = [...stored, ...assets].filter((asset) => {
-      if (asset.ownerId !== context.ownerId || deletedAssets.has(asset.id)) return false;
+    const matches = stored.filter((asset) => {
+      if (asset.ownerId !== context.ownerId) return false;
       if (filters.kind && asset.kind !== filters.kind) return false;
       if (filters.mediaType && !asset.mimeType.startsWith(filters.mediaType.toLowerCase()))
         return false;
@@ -234,6 +231,7 @@ export const commerceGateway: CommerceGateway = {
 
   async requestAssetAccess(assetId, purpose, context): Promise<unknown> {
     assertOwner(context.ownerId);
+    await ensureFixtureAssets(context.ownerId);
     const stored = await findMockObject(assetId, context.ownerId);
     if (stored) {
       return createMockAssetAccess({
@@ -243,14 +241,7 @@ export const commerceGateway: CommerceGateway = {
         purpose,
       });
     }
-    ownedAsset(assetId, context.ownerId);
-    const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
-    const disposition = purpose === 'DOWNLOAD' ? 'attachment' : 'inline';
-    // This URL is deliberately generated per request and never stored with the asset fixture.
-    return Promise.resolve({
-      url: `https://private-cdn.example/${encodeURIComponent(assetId)}?disposition=${disposition}&signature=ephemeral`,
-      expiresAt,
-    });
+    throw new CommerceCommandError('ASSET_NOT_FOUND');
   },
 
   async completeUpload(receipt, context): Promise<unknown> {
@@ -269,41 +260,35 @@ export const commerceGateway: CommerceGateway = {
     const normalized = name.trim();
     if (normalized.length < 1 || normalized.length > 120)
       throw new CommerceCommandError('INVALID_ASSET_NAME');
-    const stored = await findMockObject(assetId, context.ownerId);
-    if (stored) {
-      if (!isUuidV7(context.idempotencyKey))
-        throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
-      const renamed = await renameMockObject(assetId, context.ownerId, normalized);
+    if (!isUuidV7(context.idempotencyKey))
+      throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
+    await ensureFixtureAssets(context.ownerId);
+    try {
+      const renamed = await renameMockObject(
+        assetId,
+        context.ownerId,
+        normalized,
+        context.idempotencyKey,
+      );
       if (!renamed) throw new CommerceCommandError('ASSET_NOT_FOUND');
       return renamed;
+    } catch (error) {
+      translateStoreError(error);
     }
-    const asset = ownedAsset(assetId, context.ownerId);
-    return Promise.resolve(
-      command(context.idempotencyKey, context.ownerId, `rename:${assetId}:${normalized}`, () => {
-        const renamed = { ...asset, name: normalized };
-        const index = assets.indexOf(asset);
-        assets[index] = renamed;
-        return publicValue(renamed);
-      }),
-    );
   },
 
   async deleteAsset(assetId, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const stored = await findMockObject(assetId, context.ownerId);
-    if (stored) {
-      if (!isUuidV7(context.idempotencyKey))
-        throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
-      await deleteMockObject(assetId, context.ownerId);
+    if (!isUuidV7(context.idempotencyKey))
+      throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
+    await ensureFixtureAssets(context.ownerId);
+    try {
+      const deleted = await deleteMockObject(assetId, context.ownerId, context.idempotencyKey);
+      if (!deleted) throw new CommerceCommandError('ASSET_NOT_FOUND');
       return { accepted: true };
+    } catch (error) {
+      translateStoreError(error);
     }
-    return Promise.resolve(
-      command(context.idempotencyKey, context.ownerId, `delete:${assetId}`, () => {
-        ownedAsset(assetId, context.ownerId);
-        deletedAssets.add(assetId);
-        return { accepted: true };
-      }),
-    );
   },
 
   async getWallet(filters, context): Promise<unknown> {

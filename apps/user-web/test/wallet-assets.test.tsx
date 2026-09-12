@@ -190,9 +190,9 @@ describe('commerce identity and mock isolation', () => {
   });
 
   it('maps the authenticated phone to a UUID owner inside server actions', async () => {
-    await expect(requestAssetAccessAction(ASSET_ID, 'PREVIEW')).resolves.toMatchObject({
-      ok: true,
-    });
+    const result = await requestAssetAccessAction(ASSET_ID, 'PREVIEW');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.url).toMatch(/^\/api\/commerce\/mock-assets\//);
   });
 });
 

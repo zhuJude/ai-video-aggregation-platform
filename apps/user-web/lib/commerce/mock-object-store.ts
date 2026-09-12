@@ -23,7 +23,11 @@ import { matchesMockUploadSignature } from './mock-upload-boundary';
 import type { AssetListItem, VerifiedUploadGrant, VerifiedUploadReceipt } from './types';
 
 const STORE_VERSION = 1;
-const STORE_TTL_MS = 24 * 60 * 60_000;
+const OBJECT_TTL_MS = 24 * 60 * 60_000;
+const UPLOAD_RESERVATION_TTL_MS = 2 * 60 * 60_000 + 5 * 60_000;
+const AUXILIARY_TTL_MS = 10 * 60_000;
+const COMMAND_TTL_MS = 24 * 60 * 60_000;
+const MAX_COMMANDS = 1_000;
 const MAX_FILES = 100;
 const MAX_TOTAL_BYTES = 1024n * 1024n * 1024n;
 const STORAGE_KEY = /^[a-f0-9]{64}$/;
@@ -48,16 +52,27 @@ export interface MockObjectMetadata {
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly state: MockObjectState;
+  readonly kind: 'UPLOAD' | 'RESULT';
 }
 
 export class MockObjectStoreError extends Error {
   readonly outcome: 'DEFINITIVE_FAILURE' | 'UNCERTAIN';
 
   constructor(
-    readonly code: 'CAPACITY' | 'CONTENT_MISMATCH' | 'INVALID' | 'LOCK_UNAVAILABLE' | 'NOT_FOUND',
+    readonly code:
+      | 'CAPACITY'
+      | 'CONTENT_MISMATCH'
+      | 'COMMAND_PENDING'
+      | 'IDEMPOTENCY_CONFLICT'
+      | 'INVALID'
+      | 'LOCK_UNAVAILABLE'
+      | 'NOT_FOUND',
   ) {
     super(`MOCK_OBJECT_${code}`);
-    this.outcome = code === 'LOCK_UNAVAILABLE' ? 'UNCERTAIN' : 'DEFINITIVE_FAILURE';
+    this.outcome =
+      code === 'LOCK_UNAVAILABLE' || code === 'COMMAND_PENDING'
+        ? 'UNCERTAIN'
+        : 'DEFINITIVE_FAILURE';
   }
 }
 
@@ -72,7 +87,9 @@ function storeRoot(): string {
 }
 
 function storeAuxiliaryPath(file: string): string {
-  if (!/^\.[a-z0-9-]+$/.test(file)) throw new MockObjectStoreError('INVALID');
+  if (!/^\.[a-z0-9.-]+$/.test(file) || file.includes('..')) {
+    throw new MockObjectStoreError('INVALID');
+  }
   const root = storeRoot();
   const target = resolve(root, file);
   if (dirname(target) !== root || basename(target) !== file) {
@@ -156,7 +173,16 @@ function processLiveness(pid: number): 'ALIVE' | 'DEAD' | 'UNKNOWN' {
   }
 }
 
-async function tryAcquireStoreLock(lockPath: string): Promise<StoreLockOwner | undefined> {
+async function tryAcquireStoreLockWith(
+  lockPath: string,
+  renameDirectory: (source: string, target: string) => Promise<void> = renameDirectoryWithRetry,
+): Promise<StoreLockOwner | undefined> {
+  const recoveryPath = storeAuxiliaryPath('.store-lock-recovery');
+  const recovery = await stat(recoveryPath).catch((error: unknown) => {
+    if (hasErrorCode(error, 'ENOENT')) return undefined;
+    throw error;
+  });
+  if (recovery) return undefined;
   const owner: StoreLockOwner = {
     version: 1,
     pid: process.pid,
@@ -174,7 +200,7 @@ async function tryAcquireStoreLock(lockPath: string): Promise<StoreLockOwner | u
       await handle.close();
     }
     try {
-      await rename(candidatePath, lockPath);
+      await renameDirectory(candidatePath, lockPath);
       return owner;
     } catch (error) {
       const occupied = await stat(lockPath).catch(() => undefined);
@@ -186,60 +212,169 @@ async function tryAcquireStoreLock(lockPath: string): Promise<StoreLockOwner | u
   }
 }
 
-async function recoverDeadStoreLock(
-  lockPath: string,
-  liveness: (pid: number) => 'ALIVE' | 'DEAD' | 'UNKNOWN' = processLiveness,
-): Promise<boolean> {
-  const owner = await readLockOwner(lockPath);
-  if (!owner || liveness(owner.pid) !== 'DEAD') return false;
-  const quarantinePath = storeAuxiliaryPath(`.store-lock-quarantine-${owner.token}`);
+async function createRecoveryCandidate(): Promise<{
+  readonly owner: StoreLockOwner;
+  readonly path: string;
+}> {
+  const owner: StoreLockOwner = {
+    version: 1,
+    pid: process.pid,
+    token: createUuidV7(),
+    createdAt: new Date().toISOString(),
+  };
+  const path = storeAuxiliaryPath(`.store-lock-recovery-candidate-${owner.token}`);
+  await mkdir(path);
   try {
-    await rename(lockPath, quarantinePath);
+    const handle = await open(lockOwnerPath(path), 'wx');
+    try {
+      await handle.writeFile(JSON.stringify(owner), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    return { owner, path };
+  } catch (error) {
+    await rm(path, { force: true, recursive: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function recoverDeadRecoveryFence(
+  recoveryPath: string,
+  liveness: (pid: number) => 'ALIVE' | 'DEAD' | 'UNKNOWN',
+): Promise<boolean> {
+  const owner = await readLockOwner(recoveryPath);
+  if (!owner || liveness(owner.pid) !== 'DEAD') return false;
+  const quarantinePath = storeAuxiliaryPath(`.store-lock-recovery-quarantine-${owner.token}`);
+  try {
+    await renameDirectoryWithRetry(recoveryPath, quarantinePath);
+    const isolated = await readLockOwner(quarantinePath);
+    if (!isolated || isolated.pid !== owner.pid || isolated.token !== owner.token) {
+      throw new MockObjectStoreError('LOCK_UNAVAILABLE');
+    }
+    await rm(quarantinePath, { force: true, recursive: true });
     return true;
   } catch {
     return false;
   }
 }
 
-async function releaseStoreLock(lockPath: string, owner: StoreLockOwner): Promise<void> {
+async function recoverDeadStoreLock(
+  lockPath: string,
+  liveness: (pid: number) => 'ALIVE' | 'DEAD' | 'UNKNOWN' = processLiveness,
+): Promise<boolean> {
+  const deadOwner = await readLockOwner(lockPath);
+  if (!deadOwner || liveness(deadOwner.pid) !== 'DEAD') return false;
+  const recoveryPath = storeAuxiliaryPath('.store-lock-recovery');
+  const candidate = await createRecoveryCandidate();
+  let ownsRecovery = false;
+  try {
+    try {
+      await renameDirectoryWithRetry(candidate.path, recoveryPath);
+      ownsRecovery = true;
+    } catch {
+      return false;
+    }
+    const current = await readLockOwner(lockPath);
+    if (
+      !current ||
+      current.pid !== deadOwner.pid ||
+      current.token !== deadOwner.token ||
+      liveness(current.pid) !== 'DEAD'
+    ) {
+      return false;
+    }
+    const quarantinePath = storeAuxiliaryPath(`.store-lock-quarantine-${deadOwner.token}`);
+    await renameDirectoryWithRetry(lockPath, quarantinePath);
+    const isolated = await readLockOwner(quarantinePath);
+    if (!isolated || isolated.pid !== deadOwner.pid || isolated.token !== deadOwner.token) {
+      throw new MockObjectStoreError('LOCK_UNAVAILABLE');
+    }
+    await rm(quarantinePath, { force: true, recursive: true });
+    return true;
+  } finally {
+    await rm(candidate.path, { force: true, recursive: true }).catch(() => undefined);
+    if (ownsRecovery) {
+      const current = await readLockOwner(recoveryPath);
+      if (current?.pid === candidate.owner.pid && current.token === candidate.owner.token) {
+        const releasePath = storeAuxiliaryPath(
+          `.store-lock-recovery-release-${candidate.owner.token}`,
+        );
+        await renameDirectoryWithRetry(recoveryPath, releasePath);
+        await rm(releasePath, { force: true, recursive: true });
+      }
+    }
+  }
+}
+
+async function renameDirectoryWithRetry(source: string, target: string): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      if (!hasErrorCode(error, 'EPERM') && !hasErrorCode(error, 'EBUSY')) throw error;
+      if (attempt === 19) throw error;
+      await delay(10);
+    }
+  }
+}
+
+async function releaseStoreLockWith(
+  lockPath: string,
+  owner: StoreLockOwner,
+  renameDirectory: (source: string, target: string) => Promise<void> = renameDirectoryWithRetry,
+): Promise<void> {
   const current = await readLockOwner(lockPath);
   if (!current || current.pid !== owner.pid || current.token !== owner.token) {
     throw new MockObjectStoreError('LOCK_UNAVAILABLE');
   }
   const releasePath = storeAuxiliaryPath(`.store-lock-release-${owner.token}`);
-  await rename(lockPath, releasePath);
+  await renameDirectory(lockPath, releasePath);
   await rm(releasePath, { force: true, recursive: true });
 }
 
-interface StoreLockPolicy {
+export interface StoreLockPolicy {
   readonly attempts?: number;
   readonly liveness?: (pid: number) => 'ALIVE' | 'DEAD' | 'UNKNOWN';
+  readonly renameDirectory?: (source: string, target: string) => Promise<void>;
 }
 
 async function withStoreLock<T>(
   operation: () => Promise<T>,
   policy: StoreLockPolicy = {},
+  onReleaseFailure?: () => Promise<void>,
 ): Promise<T> {
   const root = storeRoot();
   await mkdir(root, { recursive: true });
   const lockPath = storeAuxiliaryPath('.store-lock');
   let owner: StoreLockOwner | undefined;
   const attempts = policy.attempts ?? STORE_LOCK_ATTEMPTS;
+  const renameDirectory = policy.renameDirectory ?? renameDirectoryWithRetry;
   if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > STORE_LOCK_ATTEMPTS) {
     throw new MockObjectStoreError('INVALID');
   }
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    owner = await tryAcquireStoreLock(lockPath);
+    const recoveryPath = storeAuxiliaryPath('.store-lock-recovery');
+    await recoverDeadRecoveryFence(recoveryPath, policy.liveness ?? processLiveness);
+    owner = await tryAcquireStoreLockWith(lockPath, renameDirectory);
     if (owner) break;
     if (await recoverDeadStoreLock(lockPath, policy.liveness)) continue;
     await delay(25);
   }
   if (!owner) throw new MockObjectStoreError('LOCK_UNAVAILABLE');
+  const operationResult = await operation().then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ error, ok: false as const }),
+  );
   try {
-    return await operation();
-  } finally {
-    await releaseStoreLock(lockPath, owner);
+    await releaseStoreLockWith(lockPath, owner, renameDirectory);
+  } catch (error) {
+    await onReleaseFailure?.().catch(() => undefined);
+    throw error;
   }
+  if (!operationResult.ok) throw operationResult.error;
+  return operationResult.value;
 }
 
 export async function writeChunkFully(
@@ -286,6 +421,7 @@ function parseMetadata(value: unknown): MockObjectMetadata {
     'createdAt',
     'expiresAt',
     'state',
+    'kind',
   ];
   if (Object.keys(item).some((key) => !allowed.includes(key))) {
     throw new MockObjectStoreError('INVALID');
@@ -315,6 +451,7 @@ function parseMetadata(value: unknown): MockObjectMetadata {
     !Number.isFinite(Date.parse(item.createdAt)) ||
     typeof item.expiresAt !== 'string' ||
     !Number.isFinite(Date.parse(item.expiresAt)) ||
+    (item.kind !== 'UPLOAD' && item.kind !== 'RESULT') ||
     (item.state !== 'UPLOADING' && item.state !== 'STORED' && item.state !== 'AVAILABLE')
   ) {
     throw new MockObjectStoreError('INVALID');
@@ -360,9 +497,139 @@ async function removeObjectFiles(storageKey: string): Promise<void> {
   await removeIfPresent(objectPath(storageKey, '.json'));
 }
 
+type AssetCommandOperation = 'DELETE' | 'RENAME';
+
+interface AssetCommandRecord {
+  readonly version: 1;
+  readonly ownerId: string;
+  readonly operation: AssetCommandOperation;
+  readonly idempotencyKey: string;
+  readonly fingerprint: string;
+  readonly assetId: string;
+  readonly state: 'PENDING' | 'COMPLETE';
+  readonly result: AssetListItem | { readonly accepted: true };
+  readonly createdAt: string;
+  readonly expiresAt: string;
+}
+
+function commandStorageKey(
+  ownerId: string,
+  operation: AssetCommandOperation,
+  idempotencyKey: string,
+): string {
+  return createHash('sha256')
+    .update(`mock-asset-command:v1:${ownerId}:${operation}:${idempotencyKey}`, 'utf8')
+    .digest('hex');
+}
+
+function commandPath(ownerId: string, operation: AssetCommandOperation, idempotencyKey: string) {
+  return storeAuxiliaryPath(
+    `.asset-command-${commandStorageKey(ownerId, operation, idempotencyKey)}.json`,
+  );
+}
+
+function parseAssetResult(value: unknown): AssetListItem | { readonly accepted: true } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new MockObjectStoreError('INVALID');
+  }
+  const item = value as Record<string, unknown>;
+  if (Object.keys(item).length === 1 && item.accepted === true) return { accepted: true };
+  if (
+    Object.keys(item).sort().join(',') !== 'createdAt,id,kind,mimeType,name,posterAlt,sizeBytes' ||
+    typeof item.id !== 'string' ||
+    !UuidSchema.safeParse(item.id).success ||
+    (item.kind !== 'UPLOAD' && item.kind !== 'RESULT') ||
+    typeof item.name !== 'string' ||
+    typeof item.mimeType !== 'string' ||
+    typeof item.sizeBytes !== 'string' ||
+    !/^\d+$/.test(item.sizeBytes) ||
+    typeof item.createdAt !== 'string' ||
+    !Number.isFinite(Date.parse(item.createdAt)) ||
+    typeof item.posterAlt !== 'string'
+  ) {
+    throw new MockObjectStoreError('INVALID');
+  }
+  return item as unknown as AssetListItem;
+}
+
+function parseCommand(value: unknown): AssetCommandRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new MockObjectStoreError('INVALID');
+  }
+  const item = value as Record<string, unknown>;
+  if (
+    Object.keys(item).sort().join(',') !==
+      'assetId,createdAt,expiresAt,fingerprint,idempotencyKey,operation,ownerId,result,state,version' ||
+    item.version !== 1 ||
+    typeof item.ownerId !== 'string' ||
+    !UuidSchema.safeParse(item.ownerId).success ||
+    (item.operation !== 'DELETE' && item.operation !== 'RENAME') ||
+    typeof item.idempotencyKey !== 'string' ||
+    !UuidSchema.safeParse(item.idempotencyKey).success ||
+    typeof item.fingerprint !== 'string' ||
+    !STORAGE_KEY.test(item.fingerprint) ||
+    typeof item.assetId !== 'string' ||
+    !UuidSchema.safeParse(item.assetId).success ||
+    (item.state !== 'PENDING' && item.state !== 'COMPLETE') ||
+    typeof item.createdAt !== 'string' ||
+    !Number.isFinite(Date.parse(item.createdAt)) ||
+    typeof item.expiresAt !== 'string' ||
+    !Number.isFinite(Date.parse(item.expiresAt))
+  ) {
+    throw new MockObjectStoreError('INVALID');
+  }
+  return { ...(item as unknown as AssetCommandRecord), result: parseAssetResult(item.result) };
+}
+
+async function readCommand(
+  ownerId: string,
+  operation: AssetCommandOperation,
+  idempotencyKey: string,
+): Promise<AssetCommandRecord | undefined> {
+  try {
+    return parseCommand(
+      JSON.parse(await readFile(commandPath(ownerId, operation, idempotencyKey), 'utf8')),
+    );
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) return undefined;
+    throw error;
+  }
+}
+
+async function writeCommand(command: AssetCommandRecord): Promise<void> {
+  const target = commandPath(command.ownerId, command.operation, command.idempotencyKey);
+  const temporary = storeAuxiliaryPath(
+    `.asset-command-${commandStorageKey(command.ownerId, command.operation, command.idempotencyKey)}-${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(temporary, JSON.stringify(command), { encoding: 'utf8', flag: 'wx' });
+    await rename(temporary, target);
+  } catch (error) {
+    await removeIfPresent(temporary).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function cleanupCommandsUnlocked(now = Date.now()): Promise<AssetCommandRecord[]> {
+  const commands: AssetCommandRecord[] = [];
+  for (const file of await readdir(storeRoot())) {
+    if (!/^\.asset-command-[a-f0-9]{64}\.json$/.test(file)) continue;
+    const target = storeAuxiliaryPath(file);
+    try {
+      const command = parseCommand(JSON.parse(await readFile(target, 'utf8')));
+      if (Date.parse(command.expiresAt) <= now) await removeIfPresent(target);
+      else commands.push(command);
+    } catch {
+      await removeIfPresent(target);
+    }
+  }
+  return commands;
+}
+
 async function cleanupUnlocked(now = Date.now()): Promise<MockObjectMetadata[]> {
   const root = storeRoot();
   await mkdir(root, { recursive: true });
+  await cleanupCommandsUnlocked(now);
   const files = await readdir(root);
   const metadata: MockObjectMetadata[] = [];
   for (const file of files) {
@@ -407,9 +674,38 @@ async function cleanupUnlocked(now = Date.now()): Promise<MockObjectMetadata[]> 
     const target = resolve(root, file);
     if (dirname(target) !== root || basename(target) !== file) continue;
     const fileStat = await stat(target).catch(() => undefined);
-    if (fileStat && now - fileStat.mtimeMs > STORE_TTL_MS) await removeIfPresent(target);
+    if (fileStat && now - fileStat.mtimeMs > UPLOAD_RESERVATION_TTL_MS)
+      await removeIfPresent(target);
+  }
+  for (const file of await readdir(root)) {
+    const auxiliary =
+      /^\.store-lock-(candidate|quarantine|release|recovery-candidate|recovery-quarantine|recovery-release)-([0-9a-f-]+)$/.exec(
+        file,
+      );
+    const kind = auxiliary?.[1];
+    const token = auxiliary?.[2];
+    if (!kind || !token || !UuidSchema.safeParse(token).success) continue;
+    const target = storeAuxiliaryPath(file);
+    const fileStat = await stat(target).catch(() => undefined);
+    if (!fileStat?.isDirectory() || now - fileStat.mtimeMs <= AUXILIARY_TTL_MS) continue;
+    const auxiliaryOwner = await readLockOwner(target);
+    if (auxiliaryOwner?.token === token && processLiveness(auxiliaryOwner.pid) === 'DEAD') {
+      await rm(target, { force: true, recursive: true });
+    }
   }
   return metadata;
+}
+
+function publicAsset(metadata: MockObjectMetadata): AssetListItem {
+  return {
+    id: metadata.assetId,
+    kind: metadata.kind,
+    name: metadata.name,
+    mimeType: metadata.mimeType,
+    sizeBytes: metadata.sizeBytes,
+    createdAt: metadata.createdAt,
+    posterAlt: `${metadata.name} 素材预览`,
+  };
 }
 
 function matchesGrant(metadata: MockObjectMetadata, grant: VerifiedUploadGrant): boolean {
@@ -425,55 +721,90 @@ function matchesGrant(metadata: MockObjectMetadata, grant: VerifiedUploadGrant):
   );
 }
 
+async function reserveMockUploadUnlocked(grant: VerifiedUploadGrant): Promise<void> {
+  const current = await cleanupUnlocked();
+  const existing = current.find((item) => item.storageKey === grant.storageKey);
+  if (existing) {
+    if (!matchesGrant(existing, grant)) throw new MockObjectStoreError('INVALID');
+    return;
+  }
+  const total = current.reduce((sum, item) => sum + BigInt(item.sizeBytes), 0n);
+  if (current.length >= MAX_FILES || total + BigInt(grant.sizeBytes) > MAX_TOTAL_BYTES) {
+    throw new MockObjectStoreError('CAPACITY');
+  }
+  const createdAt = new Date().toISOString();
+  await writeMetadata({
+    version: STORE_VERSION,
+    ownerId: grant.ownerId,
+    assetId: grant.assetId,
+    grantId: grant.grantId,
+    idempotencyKey: grant.idempotencyKey,
+    storageKey: grant.storageKey,
+    name: grant.name,
+    mimeType: grant.mimeType,
+    sizeBytes: grant.sizeBytes,
+    createdAt,
+    expiresAt: new Date(Date.parse(createdAt) + UPLOAD_RESERVATION_TTL_MS).toISOString(),
+    state: 'UPLOADING',
+    kind: 'UPLOAD',
+  });
+}
+
 export async function reserveMockUpload(
   grant: VerifiedUploadGrant,
   lockPolicy: StoreLockPolicy = {},
 ): Promise<void> {
-  await withStoreLock(async () => {
-    const current = await cleanupUnlocked();
-    const existing = current.find((item) => item.storageKey === grant.storageKey);
-    if (existing) {
-      if (!matchesGrant(existing, grant)) throw new MockObjectStoreError('INVALID');
-      return;
-    }
-    const total = current.reduce((sum, item) => sum + BigInt(item.sizeBytes), 0n);
-    if (current.length >= MAX_FILES || total + BigInt(grant.sizeBytes) > MAX_TOTAL_BYTES) {
-      throw new MockObjectStoreError('CAPACITY');
-    }
-    const createdAt = new Date().toISOString();
-    await writeMetadata({
-      version: STORE_VERSION,
-      ownerId: grant.ownerId,
-      assetId: grant.assetId,
-      grantId: grant.grantId,
-      idempotencyKey: grant.idempotencyKey,
-      storageKey: grant.storageKey,
-      name: grant.name,
-      mimeType: grant.mimeType,
-      sizeBytes: grant.sizeBytes,
-      createdAt,
-      expiresAt: new Date(Date.parse(createdAt) + STORE_TTL_MS).toISOString(),
-      state: 'UPLOADING',
-    });
-  }, lockPolicy);
+  await withStoreLock(() => reserveMockUploadUnlocked(grant), lockPolicy);
 }
 
 export async function storeMockUpload(
   grant: VerifiedUploadGrant,
   body: ReadableStream<Uint8Array>,
+  lockPolicy: StoreLockPolicy = {},
 ): Promise<string> {
-  const metadata = await withStoreLock(() => readMetadata(grant.storageKey));
-  if (!metadata || !matchesGrant(metadata, grant)) throw new MockObjectStoreError('NOT_FOUND');
+  const reader = body.getReader();
   const contentPath = objectPath(grant.storageKey, '.bin');
   const temporary = resolve(dirname(contentPath), `${grant.storageKey}.${randomUUID()}.partial`);
-  const handle = await open(temporary, 'wx');
-  const reader = body.getReader();
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  const releaseState = { failed: false };
   const hash = createHash('sha256');
   const signature = new Uint8Array(64 * 1_024);
   let signatureLength = 0;
   let actual = 0n;
   const publishState = { content: false };
   try {
+    handle = await withStoreLock(
+      async () => {
+        await reserveMockUploadUnlocked(grant);
+        const current = await readMetadata(grant.storageKey);
+        if (!current || !matchesGrant(current, grant)) throw new MockObjectStoreError('NOT_FOUND');
+        try {
+          handle = await open(temporary, 'wx');
+          return handle;
+        } catch (error) {
+          const hasSiblingAttempt = (await readdir(storeRoot())).some(
+            (file) => file.startsWith(`${grant.storageKey}.`) && file.endsWith('.partial'),
+          );
+          if (current.state === 'UPLOADING' && !hasSiblingAttempt) {
+            await removeIfPresent(objectPath(grant.storageKey, '.json'));
+          }
+          throw error;
+        }
+      },
+      lockPolicy,
+      async () => {
+        releaseState.failed = true;
+        await handle?.close().catch(() => undefined);
+        await removeIfPresent(temporary).catch(() => undefined);
+        const current = await readMetadata(grant.storageKey).catch(() => undefined);
+        if (current?.state === 'UPLOADING' && matchesGrant(current, grant)) {
+          const hasSiblingAttempt = (await readdir(storeRoot())).some(
+            (file) => file.startsWith(`${grant.storageKey}.`) && file.endsWith('.partial'),
+          );
+          if (!hasSiblingAttempt) await removeIfPresent(objectPath(grant.storageKey, '.json'));
+        }
+      },
+    );
     let done = false;
     while (!done) {
       const chunk = await reader.read();
@@ -522,16 +853,30 @@ export async function storeMockUpload(
       }
       await rename(temporary, contentPath);
       publishState.content = true;
-      await writeMetadata({ ...current, sha256, state: 'STORED' });
+      await writeMetadata({
+        ...current,
+        sha256,
+        expiresAt: new Date(Date.now() + OBJECT_TTL_MS).toISOString(),
+        state: 'STORED',
+      });
       return sha256;
     });
   } catch (error) {
     await reader.cancel().catch(() => undefined);
-    await handle.close().catch(() => undefined);
+    await handle?.close().catch(() => undefined);
     await removeIfPresent(temporary).catch(() => undefined);
-    if (publishState.content) {
-      await withStoreLock(() => removeIfPresent(contentPath)).catch(() => undefined);
-    }
+    if (!releaseState.failed)
+      await withStoreLock(async () => {
+        const current = await readMetadata(grant.storageKey).catch(() => undefined);
+        if (publishState.content) await removeIfPresent(contentPath);
+        if (current?.state !== 'UPLOADING' || !matchesGrant(current, grant)) return;
+        const prefix = `${grant.storageKey}.`;
+        const hasSiblingAttempt = (await readdir(storeRoot())).some(
+          (file) =>
+            file !== basename(temporary) && file.startsWith(prefix) && file.endsWith('.partial'),
+        );
+        if (!hasSiblingAttempt) await removeIfPresent(objectPath(grant.storageKey, '.json'));
+      }).catch(() => undefined);
     throw error;
   }
 }
@@ -552,15 +897,91 @@ export async function completeMockUpload(receipt: VerifiedUploadReceipt): Promis
       throw new MockObjectStoreError('NOT_FOUND');
     }
     if (metadata.state !== 'AVAILABLE') await writeMetadata({ ...metadata, state: 'AVAILABLE' });
-    return {
-      id: metadata.assetId,
-      kind: 'UPLOAD',
-      name: metadata.name,
-      mimeType: metadata.mimeType,
-      sizeBytes: metadata.sizeBytes,
-      createdAt: metadata.createdAt,
-      posterAlt: `${metadata.name} 素材预览`,
-    };
+    return publicAsset(metadata);
+  });
+}
+
+export interface MockSeedObject {
+  readonly assetId: string;
+  readonly kind: 'UPLOAD' | 'RESULT';
+  readonly name: string;
+  readonly mimeType: string;
+  readonly createdAt: string;
+  readonly bytes: Uint8Array;
+}
+
+export async function ensureMockSeedObjects(
+  ownerId: string,
+  seeds: readonly MockSeedObject[],
+): Promise<void> {
+  await withStoreLock(async () => {
+    const current = await cleanupUnlocked();
+    const commands = await cleanupCommandsUnlocked();
+    let total = current.reduce((sum, item) => sum + BigInt(item.sizeBytes), 0n);
+    let count = current.length;
+    for (const seed of seeds) {
+      if (
+        !UuidSchema.safeParse(seed.assetId).success ||
+        !seed.name.trim() ||
+        !Number.isFinite(Date.parse(seed.createdAt)) ||
+        !matchesMockUploadSignature(
+          seed.name,
+          seed.mimeType,
+          seed.bytes.subarray(0, 64 * 1_024),
+          BigInt(seed.bytes.byteLength),
+        )
+      ) {
+        throw new MockObjectStoreError('INVALID');
+      }
+      if (
+        commands.some(
+          (command) =>
+            command.operation === 'DELETE' &&
+            command.ownerId === ownerId &&
+            command.assetId === seed.assetId &&
+            command.state === 'COMPLETE',
+        )
+      ) {
+        continue;
+      }
+      const storageKey = createHash('sha256')
+        .update(`mock-object:v1:${ownerId}:${seed.assetId}`, 'utf8')
+        .digest('hex');
+      if (current.some((item) => item.storageKey === storageKey)) continue;
+      const size = BigInt(seed.bytes.byteLength);
+      if (count >= MAX_FILES || total + size > MAX_TOTAL_BYTES) {
+        throw new MockObjectStoreError('CAPACITY');
+      }
+      const contentPath = objectPath(storageKey, '.bin');
+      const temporary = resolve(dirname(contentPath), `${storageKey}.${randomUUID()}.tmp`);
+      try {
+        await writeFile(temporary, seed.bytes, { flag: 'wx' });
+        await rename(temporary, contentPath);
+        await writeMetadata({
+          version: STORE_VERSION,
+          ownerId,
+          assetId: seed.assetId,
+          grantId: seed.assetId,
+          idempotencyKey: seed.assetId,
+          storageKey,
+          name: seed.name,
+          mimeType: seed.mimeType,
+          sizeBytes: String(seed.bytes.byteLength),
+          sha256: createHash('sha256').update(seed.bytes).digest('hex'),
+          createdAt: seed.createdAt,
+          expiresAt: new Date(Date.now() + OBJECT_TTL_MS).toISOString(),
+          state: 'AVAILABLE',
+          kind: seed.kind,
+        });
+        total += size;
+        count += 1;
+      } catch (error) {
+        await removeIfPresent(temporary).catch(() => undefined);
+        await removeIfPresent(contentPath).catch(() => undefined);
+        await removeIfPresent(objectPath(storageKey, '.json')).catch(() => undefined);
+        throw error;
+      }
+    }
   });
 }
 
@@ -583,33 +1004,119 @@ export async function renameMockObject(
   assetId: string,
   ownerId: string,
   name: string,
+  idempotencyKey: string,
 ): Promise<AssetListItem | undefined> {
   return withStoreLock(async () => {
-    const metadata = (await cleanupUnlocked()).find(
+    const current = await cleanupUnlocked();
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ assetId, name, operation: 'RENAME' }), 'utf8')
+      .digest('hex');
+    const existing = await readCommand(ownerId, 'RENAME', idempotencyKey);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint || existing.assetId !== assetId) {
+        throw new MockObjectStoreError('IDEMPOTENCY_CONFLICT');
+      }
+      if (existing.state === 'COMPLETE') return existing.result as AssetListItem;
+      const pendingAsset = current.find(
+        (item) =>
+          item.assetId === assetId && item.ownerId === ownerId && item.state === 'AVAILABLE',
+      );
+      if (pendingAsset && pendingAsset.name !== name) {
+        await writeMetadata({ ...pendingAsset, name });
+      }
+      await writeCommand({ ...existing, state: 'COMPLETE' });
+      return existing.result as AssetListItem;
+    }
+    const commands = await cleanupCommandsUnlocked();
+    if (
+      commands.some(
+        (command) =>
+          command.ownerId === ownerId && command.assetId === assetId && command.state === 'PENDING',
+      )
+    ) {
+      throw new MockObjectStoreError('COMMAND_PENDING');
+    }
+    const metadata = current.find(
       (item) => item.assetId === assetId && item.ownerId === ownerId && item.state === 'AVAILABLE',
     );
     if (!metadata) return undefined;
     const renamed = { ...metadata, name };
-    await writeMetadata(renamed);
-    return {
-      id: renamed.assetId,
-      kind: 'UPLOAD',
-      name: renamed.name,
-      mimeType: renamed.mimeType,
-      sizeBytes: renamed.sizeBytes,
-      createdAt: renamed.createdAt,
-      posterAlt: `${renamed.name} 素材预览`,
+    const result = publicAsset(renamed);
+    if (commands.length >= MAX_COMMANDS) throw new MockObjectStoreError('CAPACITY');
+    const createdAt = new Date().toISOString();
+    const command: AssetCommandRecord = {
+      version: 1,
+      ownerId,
+      operation: 'RENAME',
+      idempotencyKey,
+      fingerprint,
+      assetId,
+      state: 'PENDING',
+      result,
+      createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + COMMAND_TTL_MS).toISOString(),
     };
+    await writeCommand(command);
+    await writeMetadata(renamed);
+    await writeCommand({ ...command, state: 'COMPLETE' });
+    return result;
   });
 }
 
-export async function deleteMockObject(assetId: string, ownerId: string): Promise<boolean> {
+export async function deleteMockObject(
+  assetId: string,
+  ownerId: string,
+  idempotencyKey: string,
+): Promise<boolean> {
   return withStoreLock(async () => {
-    const metadata = (await cleanupUnlocked()).find(
+    const current = await cleanupUnlocked();
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ assetId, operation: 'DELETE' }), 'utf8')
+      .digest('hex');
+    const existing = await readCommand(ownerId, 'DELETE', idempotencyKey);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint || existing.assetId !== assetId) {
+        throw new MockObjectStoreError('IDEMPOTENCY_CONFLICT');
+      }
+      if (existing.state === 'COMPLETE') return true;
+      const pendingAsset = current.find(
+        (item) =>
+          item.assetId === assetId && item.ownerId === ownerId && item.state === 'AVAILABLE',
+      );
+      if (pendingAsset) await removeObjectFiles(pendingAsset.storageKey);
+      await writeCommand({ ...existing, state: 'COMPLETE' });
+      return true;
+    }
+    const commands = await cleanupCommandsUnlocked();
+    if (
+      commands.some(
+        (command) =>
+          command.ownerId === ownerId && command.assetId === assetId && command.state === 'PENDING',
+      )
+    ) {
+      throw new MockObjectStoreError('COMMAND_PENDING');
+    }
+    const metadata = current.find(
       (item) => item.assetId === assetId && item.ownerId === ownerId && item.state === 'AVAILABLE',
     );
     if (!metadata) return false;
+    if (commands.length >= MAX_COMMANDS) throw new MockObjectStoreError('CAPACITY');
+    const createdAt = new Date().toISOString();
+    const command: AssetCommandRecord = {
+      version: 1,
+      ownerId,
+      operation: 'DELETE',
+      idempotencyKey,
+      fingerprint,
+      assetId,
+      state: 'PENDING',
+      result: { accepted: true },
+      createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + COMMAND_TTL_MS).toISOString(),
+    };
+    await writeCommand(command);
     await removeObjectFiles(metadata.storageKey);
+    await writeCommand({ ...command, state: 'COMPLETE' });
     return true;
   });
 }
