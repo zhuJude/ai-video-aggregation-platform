@@ -9,12 +9,38 @@ import { createUuidV7 } from '../lib/tasks/identifiers';
 import { taskGateway } from '../lib/tasks/gateway';
 import { parseTaskDetail } from '../lib/tasks/runtime';
 import { createMockStoreTestScope } from './mock-store-scope';
+import type { TaskDetail } from '../lib/tasks/types';
+
+const routerRefresh = vi.hoisted(() => vi.fn());
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), refresh: routerRefresh }),
+}));
+vi.mock('../components/tasks/task-status', () => ({
+  TaskStatus: ({ onChange }: { readonly onChange?: (value: unknown) => void }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onChange?.({
+          eventId: '5:0198f4d4-21c2-7b7d-8a03-08a0da2a7555',
+          revision: 5,
+          status: 'SETTLED',
+          terminal: true,
+          cancelAllowed: false,
+          updatedAt: '2026-09-13T10:05:00.000Z',
+        })
+      }
+    >
+      模拟结算
+    </button>
+  ),
+}));
 
 const OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7401';
 const OTHER_OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7499';
 const scope = createMockStoreTestScope();
 
 beforeEach(() => {
+  routerRefresh.mockClear();
   scope.install();
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
   process.env.USER_WEB_STUDIO_MODE = 'mock';
@@ -107,4 +133,47 @@ it('reveals a signed result link on demand without embedding permanent object pa
     '/api/commerce/mock-assets/signed.token',
   );
   expect(document.body).not.toHaveTextContent('.bin');
+});
+
+it('refreshes the server detail when live status reaches a terminal result', async () => {
+  const { TaskDetailView } = await import('../components/tasks/task-detail-view');
+  const detail: TaskDetail = {
+    id: 'task-live',
+    taskNumber: 'T20260913-0001',
+    generationMode: 'TEXT_TO_VIDEO',
+    modelName: 'Story V3',
+    providerName: '演示平台 West',
+    createdAt: '2026-09-13T10:00:00.000Z',
+    quotedPoints: '240',
+    statusSnapshot: {
+      eventId: '2:0198f4d4-21c2-7b7d-8a03-08a0da2a7552',
+      revision: 2,
+      status: 'RUNNING',
+      terminal: false,
+      cancelAllowed: true,
+      updatedAt: '2026-09-13T10:02:00.000Z',
+    },
+    modelSnapshot: {
+      modelId: 'mock-story-v3',
+      modelName: 'Story V3',
+      providerId: 'mock-provider-west',
+      providerName: '演示平台 West',
+      capabilityVersion: 'cap-text-v4',
+      pricingVersion: 'mock-pricing-v1',
+    },
+    parametersSnapshot: {},
+    parameterSummary: [],
+    financial: {
+      availablePoints: '1000',
+      frozenPoints: '240',
+      settledPoints: '0',
+      refundedPoints: '0',
+    },
+    timeline: [],
+  };
+  const { parametersSnapshot, ...publicDetail } = detail;
+  void parametersSnapshot;
+  render(<TaskDetailView detail={publicDetail} />);
+  fireEvent.click(screen.getByRole('button', { name: '模拟结算' }));
+  expect(routerRefresh).toHaveBeenCalledTimes(1);
 });

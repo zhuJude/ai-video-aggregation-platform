@@ -129,6 +129,7 @@ export function TaskDetailView({
             initial={status}
             onChange={(next) => {
               setStatus(next);
+              if (next.terminal) router.refresh();
             }}
           />
         ) : (
