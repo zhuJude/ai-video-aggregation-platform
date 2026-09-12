@@ -53,7 +53,7 @@ export default async function HomePage() {
           <section className="public-section model-showcase" aria-labelledby="popular-models-title">
             <div className="section-heading">
               <h2 id="popular-models-title">先看能力，再选模型</h2>
-              <p>每个模型都公开常见点数区间、质量倾向和当前状态。</p>
+              <p>查看已发布的生成方式与服务状态，具体参数和点数以工作台实时报价为准。</p>
             </div>
             <div className="featured-models">
               {result.data.popularModels.map((model, index) => (
@@ -65,15 +65,16 @@ export default async function HomePage() {
                     </span>
                   </div>
                   <h3>{model.displayName}</h3>
-                  <p>
-                    {model.modes.map((mode) => generationModeLabels[mode]).join('、')}，
-                    {model.qualityLabel}。
-                  </p>
+                  <p>{model.modes.map((mode) => generationModeLabels[mode]).join('、')}</p>
                   <div className="model-card-meta">
                     <span>
-                      常见 {model.pointRange.min}-{model.pointRange.max} 点数
+                      {model.pointRange
+                        ? `常见 ${model.pointRange.min}-${model.pointRange.max} 点数`
+                        : '点数以提交前报价为准'}
                     </span>
-                    <span>速度倾向：{model.speed}</span>
+                    <span>
+                      {model.speed ? `速度倾向：${model.speed}` : '能力以工作台 Schema 为准'}
+                    </span>
                   </div>
                   <Link href={`/models/${model.id}`}>查看详情</Link>
                 </article>
@@ -89,10 +90,14 @@ export default async function HomePage() {
             <div className="case-list">
               {result.data.creatorCases.map((creatorCase) => (
                 <article key={creatorCase.id}>
-                  <p className="case-category">{creatorCase.category}</p>
+                  {creatorCase.category ? (
+                    <p className="case-category">{creatorCase.category}</p>
+                  ) : null}
                   <h3>{creatorCase.title}</h3>
                   <p>{creatorCase.summary}</p>
-                  <Link href={`/models/${creatorCase.modelId}`}>查看适用模型</Link>
+                  {creatorCase.modelId ? (
+                    <Link href={`/models/${creatorCase.modelId}`}>查看适用模型</Link>
+                  ) : null}
                 </article>
               ))}
             </div>

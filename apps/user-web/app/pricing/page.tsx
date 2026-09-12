@@ -43,13 +43,17 @@ export default async function PricingPage() {
             <p>
               不同模型、时长和输出规格对应不同点数。页面中的常见区间用于比较，实际以提交前报价为准。
             </p>
-            <div className="conversion-callout">
-              <span>点数换算</span>
-              <strong>
-                {formatMinorUnits(result.data.conversion.amountMinor)} 元 ={' '}
-                {formatPoints(result.data.conversion.points)} 点数
-              </strong>
-            </div>
+            {result.data.conversion ? (
+              <div className="conversion-callout">
+                <span>点数换算</span>
+                <strong>
+                  {formatMinorUnits(result.data.conversion.amountMinor)} 元 ={' '}
+                  {formatPoints(result.data.conversion.points)} 点数
+                </strong>
+              </div>
+            ) : (
+              <p role="status">统一换算规则尚未由 Gateway 发布，请以充值包和提交前报价为准。</p>
+            )}
           </section>
 
           <section className="public-section pricing-rules" aria-labelledby="billing-rules-title">
@@ -57,25 +61,29 @@ export default async function PricingPage() {
               <h2 id="billing-rules-title">任务如何计费</h2>
               <p>点数预留与最终结算分开，便于记录每次任务的资金状态。</p>
             </div>
-            <div className="billing-rule-grid">
-              {result.data.modelBillingRules.map((rule) => (
-                <article key={rule.title}>
-                  <h3>{rule.title}</h3>
-                  <p>{rule.description}</p>
-                </article>
-              ))}
-            </div>
+            {result.data.modelBillingRules.length > 0 ? (
+              <div className="billing-rule-grid">
+                {result.data.modelBillingRules.map((rule) => (
+                  <article key={rule.title}>
+                    <h3>{rule.title}</h3>
+                    <p>{rule.description}</p>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p role="status">模型计费细则以工作台提交前报价为准。</p>
+            )}
           </section>
 
           <section className="public-section policy-pair" aria-labelledby="refund-rules-title">
             <h2 id="refund-rules-title">失败与取消</h2>
             <article>
               <h3>失败任务</h3>
-              <p>{result.data.failureRefundRule}</p>
+              <p>{result.data.failureRefundRule ?? '退款规则尚未由 Gateway 发布。'}</p>
             </article>
             <article>
               <h3>取消任务</h3>
-              <p>{result.data.acceptedCancellationRule}</p>
+              <p>{result.data.acceptedCancellationRule ?? '取消规则尚未由 Gateway 发布。'}</p>
             </article>
           </section>
 

@@ -28,21 +28,21 @@ export interface PublicModel {
   provider: ProviderSummary;
   modes: readonly GenerationMode[];
   capabilities: readonly string[];
-  pointRange: PointRange;
-  speed: SpeedLabel;
-  qualityLabel: string;
+  pointRange: PointRange | null;
+  speed: SpeedLabel | null;
+  qualityLabel: string | null;
   state: ModelState;
-  stateMessage: string;
-  publishedDescription: string;
+  stateMessage: string | null;
+  publishedDescription: string | null;
   billingRules: readonly BillingRule[];
 }
 
 export interface CreatorCase {
   id: string;
   title: string;
-  category: string;
+  category: string | null;
   summary: string;
-  modelId: string;
+  modelId: string | null;
 }
 
 export interface HomeResponse {
@@ -88,10 +88,10 @@ export interface RechargePackage {
 }
 
 export interface PricingResponse {
-  conversion: PointConversion;
+  conversion: PointConversion | null;
   modelBillingRules: readonly BillingRule[];
-  failureRefundRule: string;
-  acceptedCancellationRule: string;
+  failureRefundRule: string | null;
+  acceptedCancellationRule: string | null;
   rechargePackages: readonly RechargePackage[] | null;
 }
 
@@ -104,7 +104,7 @@ export interface PublishedHelpArticle {
   slug: readonly string[];
   title: string;
   summary: string;
-  kind: 'GUIDE' | 'FAQ' | 'ANNOUNCEMENT' | 'LEGAL';
+  kind: 'GUIDE' | 'FAQ' | 'ANNOUNCEMENT' | 'LEGAL' | 'HELP';
   publishedAt: string;
   publishedHtml: string;
 }
@@ -304,6 +304,7 @@ function fixtureSuccess<T>(data: T): GatewayResult<T> {
 
 function priceMatches(model: PublicModel, price: ModelFilters['price']): boolean {
   if (!price) return true;
+  if (!model.pointRange) return false;
   const minimum = BigInt(model.pointRange.min);
   if (price === 'UNDER_150') return minimum < 150n;
   if (price === '150_TO_300') {
@@ -393,11 +394,6 @@ function decimal(value: unknown): string {
   return value;
 }
 
-function stringArray(value: unknown, maximumItems = 100): readonly string[] {
-  if (!Array.isArray(value) || value.length > maximumItems) invalidResponse();
-  return value.map((item) => text(item, 256));
-}
-
 function member<T extends string>(value: unknown, values: ReadonlySet<T>): T {
   if (typeof value !== 'string' || !values.has(value as T)) invalidResponse();
   return value as T;
@@ -410,189 +406,258 @@ const generationModes = new Set<GenerationMode>([
   'REFERENCE_VIDEO',
   'EXTEND_VIDEO',
 ]);
-const modelStates = new Set<ModelState>(['ACTIVE', 'MAINTENANCE']);
-const speedLabels = new Set<SpeedLabel>(['较快', '均衡', '深度']);
-
-function provider(value: unknown): ProviderSummary {
-  const source = object(value);
-  exact(source, ['id', 'displayName']);
-  return { id: identifier(source.id), displayName: text(source.displayName, 80) };
+function integer(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) invalidResponse();
+  return value;
 }
 
-function billingRule(value: unknown): BillingRule {
-  const source = object(value);
-  exact(source, ['title', 'description']);
-  return { title: text(source.title, 120), description: text(source.description, 1_000) };
+function nullableIdentifier(value: unknown): string | null {
+  return value === null ? null : identifier(value);
 }
 
-function billingRules(value: unknown): readonly BillingRule[] {
-  if (!Array.isArray(value) || value.length > 20) invalidResponse();
-  return value.map(billingRule);
+function nullableTimestamp(value: unknown): string | null {
+  if (value === null) return null;
+  const parsed = text(value, 64);
+  if (Number.isNaN(Date.parse(parsed))) invalidResponse();
+  return parsed;
 }
 
-function publicModel(value: unknown): PublicModel {
+function timestamp(value: unknown): string {
+  const parsed = nullableTimestamp(value);
+  if (!parsed) invalidResponse();
+  return parsed;
+}
+
+function positiveDecimal(value: unknown): string {
+  const parsed = decimal(value);
+  if (parsed === '0') invalidResponse();
+  return parsed;
+}
+
+function catalogModel(value: unknown): PublicModel {
   const source = object(value);
   exact(source, [
     'id',
+    'providerId',
+    'providerCode',
+    'providerDisplayName',
+    'code',
     'displayName',
-    'provider',
     'modes',
-    'capabilities',
-    'pointRange',
-    'speed',
-    'qualityLabel',
-    'state',
-    'stateMessage',
-    'publishedDescription',
-    'billingRules',
+    'status',
+    'sortOrder',
+    'capabilityVersionId',
   ]);
   if (!Array.isArray(source.modes) || source.modes.length < 1 || source.modes.length > 10)
     invalidResponse();
-  const range = object(source.pointRange);
-  exact(range, ['min', 'max', 'unit']);
-  const min = decimal(range.min);
-  const max = decimal(range.max);
-  if (BigInt(min) > BigInt(max) || range.unit !== '点数') invalidResponse();
+  if (source.status !== 'ACTIVE') invalidResponse();
+  identifier(source.providerCode);
+  identifier(source.code);
+  integer(source.sortOrder);
+  identifier(source.capabilityVersionId);
   return {
     id: identifier(source.id),
     displayName: text(source.displayName, 120),
-    provider: provider(source.provider),
+    provider: {
+      id: identifier(source.providerId),
+      displayName: text(source.providerDisplayName, 80),
+    },
     modes: source.modes.map((mode) => member(mode, generationModes)),
-    capabilities: stringArray(source.capabilities, 50),
-    pointRange: { min, max, unit: '点数' },
-    speed: member(source.speed, speedLabels),
-    qualityLabel: text(source.qualityLabel, 120),
-    state: member(source.state, modelStates),
-    stateMessage: text(source.stateMessage, 500),
-    publishedDescription: text(source.publishedDescription, 4_000),
-    billingRules: billingRules(source.billingRules),
+    capabilities: [],
+    pointRange: null,
+    speed: null,
+    qualityLabel: null,
+    state: 'ACTIVE',
+    stateMessage: null,
+    publishedDescription: null,
+    billingRules: [],
   };
 }
 
-function modelFilters(value: unknown): ModelFilters {
+function catalogModels(value: unknown): readonly PublicModel[] {
   const source = object(value);
-  exact(source, ['modelId', 'mode', 'providerId', 'capability', 'price', 'speed', 'state']);
-  const result: ModelFilters = {};
-  if (source.modelId !== undefined) result.modelId = identifier(source.modelId);
-  if (source.mode !== undefined) result.mode = member(source.mode, generationModes);
-  if (source.providerId !== undefined) result.providerId = identifier(source.providerId);
-  if (source.capability !== undefined) result.capability = text(source.capability, 256);
-  if (source.price !== undefined)
-    result.price = member(source.price, new Set(['UNDER_150', '150_TO_300', 'OVER_300']));
-  if (source.speed !== undefined) result.speed = member(source.speed, speedLabels);
-  if (source.state !== undefined) result.state = member(source.state, modelStates);
-  return result;
+  exact(source, ['items']);
+  if (!Array.isArray(source.items) || source.items.length > 1_000) invalidResponse();
+  return source.items.map(catalogModel);
 }
 
-function modelsResponse(value: unknown): ModelsResponse {
-  const source = object(value);
-  exact(source, ['items', 'total', 'filters', 'modelOptions', 'providers', 'capabilities']);
-  if (
-    !Array.isArray(source.items) ||
-    !Array.isArray(source.modelOptions) ||
-    !Array.isArray(source.providers) ||
-    !Number.isSafeInteger(source.total) ||
-    (source.total as number) < 0
-  )
-    invalidResponse();
+function modelsResponse(value: unknown, filters: ModelFilters): ModelsResponse {
+  const allModels = catalogModels(value);
+  const items = allModels.filter(
+    (model) =>
+      (!filters.modelId || model.id === filters.modelId) &&
+      (!filters.mode || model.modes.includes(filters.mode)) &&
+      (!filters.providerId || model.provider.id === filters.providerId) &&
+      (!filters.capability || model.capabilities.includes(filters.capability)) &&
+      priceMatches(model, filters.price) &&
+      (!filters.speed || model.speed === filters.speed) &&
+      (!filters.state || model.state === filters.state),
+  );
+  const uniqueProviders = new Map(allModels.map((model) => [model.provider.id, model.provider]));
   return {
-    items: source.items.map(publicModel),
-    total: source.total as number,
-    filters: modelFilters(source.filters),
-    modelOptions: source.modelOptions.map((value) => {
-      const option = object(value);
-      exact(option, ['id', 'displayName']);
-      return { id: identifier(option.id), displayName: text(option.displayName, 120) };
-    }),
-    providers: source.providers.map(provider),
-    capabilities: stringArray(source.capabilities, 100),
+    items,
+    total: items.length,
+    filters,
+    modelOptions: allModels.map(({ id, displayName }) => ({ id, displayName })),
+    providers: [...uniqueProviders.values()],
+    capabilities: [],
   };
 }
 
-function homeResponse(value: unknown): HomeResponse {
+const contentKeys = [
+  'id',
+  'entryId',
+  'version',
+  'revision',
+  'status',
+  'basePublishedVersionId',
+  'title',
+  'summary',
+  'bodyHtml',
+  'sortOrder',
+  'activeFrom',
+  'activeUntil',
+  'helpCategoryId',
+  'createdBy',
+  'createdAt',
+  'publishedAt',
+  'retiredAt',
+] as const;
+
+function contentVersion(value: unknown) {
   const source = object(value);
-  exact(source, ['popularModels', 'creatorCases']);
-  if (!Array.isArray(source.popularModels) || !Array.isArray(source.creatorCases))
-    invalidResponse();
+  exact(source, contentKeys);
+  if (source.status !== 'PUBLISHED') invalidResponse();
+  const publishedAt = timestamp(source.publishedAt);
+  identifier(source.entryId);
+  integer(source.version);
+  integer(source.revision);
+  nullableIdentifier(source.basePublishedVersionId);
+  integer(source.sortOrder);
+  nullableTimestamp(source.activeFrom);
+  nullableTimestamp(source.activeUntil);
+  nullableIdentifier(source.helpCategoryId);
+  identifier(source.createdBy);
+  timestamp(source.createdAt);
+  nullableTimestamp(source.retiredAt);
   return {
-    popularModels: source.popularModels.map(publicModel),
-    creatorCases: source.creatorCases.map((value) => {
-      const item = object(value);
-      exact(item, ['id', 'title', 'category', 'summary', 'modelId']);
-      return {
-        id: identifier(item.id),
-        title: text(item.title, 160),
-        category: text(item.category, 80),
-        summary: text(item.summary, 1_000),
-        modelId: identifier(item.modelId),
-      };
-    }),
+    id: identifier(source.id),
+    title: text(source.title, 160),
+    summary: text(source.summary, 1_000),
+    bodyHtml: text(source.bodyHtml, 100_000),
+    publishedAt,
   };
 }
 
-function pricingResponse(value: unknown): PricingResponse {
-  const source = object(value);
-  exact(source, [
-    'conversion',
-    'modelBillingRules',
-    'failureRefundRule',
-    'acceptedCancellationRule',
-    'rechargePackages',
-  ]);
-  const conversion = object(source.conversion);
-  exact(conversion, ['currency', 'amountMinor', 'points']);
-  if (conversion.currency !== 'CNY') invalidResponse();
-  let rechargePackages: readonly RechargePackage[] | null = null;
-  if (source.rechargePackages !== null) {
-    if (!Array.isArray(source.rechargePackages) || source.rechargePackages.length > 50)
+function helpResponse(value: unknown, slug: readonly string[]): HelpResponse {
+  if (!Array.isArray(value) || value.length > 1_000) invalidResponse();
+  const content = value.map(contentVersion);
+  const selected = slug.length === 0 ? content[0] : content.find(({ id }) => id === slug[0]);
+  if (slug.length > 1) return { article: null, navigation: [] };
+  return {
+    article: selected
+      ? {
+          slug: [selected.id],
+          title: selected.title,
+          summary: selected.summary,
+          kind: 'HELP',
+          publishedAt: selected.publishedAt,
+          publishedHtml: selected.bodyHtml,
+        }
+      : null,
+    navigation: content.map(({ id, title }) => ({ slug: [id], title })),
+  };
+}
+
+function bannerCases(value: unknown): readonly CreatorCase[] {
+  if (!Array.isArray(value) || value.length > 100) invalidResponse();
+  return value.map((item) => {
+    const source = object(item);
+    exact(source, ['placement', 'content']);
+    const content = contentVersion(source.content);
+    const placement = object(source.placement);
+    exact(placement, [
+      'id',
+      'contentVersionId',
+      'slot',
+      'sortOrder',
+      'activeFrom',
+      'activeUntil',
+      'createdBy',
+      'createdAt',
+    ]);
+    identifier(placement.id);
+    if (identifier(placement.contentVersionId) !== content.id || placement.slot !== 'HOME_HERO')
       invalidResponse();
-    rechargePackages = source.rechargePackages.map((value) => {
-      const item = object(value);
-      exact(item, ['id', 'title', 'amountMinor', 'points']);
-      return {
-        id: identifier(item.id),
-        title: text(item.title, 120),
-        amountMinor: decimal(item.amountMinor),
-        points: decimal(item.points),
-      };
-    });
-  }
-  return {
-    conversion: {
-      currency: 'CNY',
-      amountMinor: decimal(conversion.amountMinor),
-      points: decimal(conversion.points),
-    },
-    modelBillingRules: billingRules(source.modelBillingRules),
-    failureRefundRule: text(source.failureRefundRule, 2_000),
-    acceptedCancellationRule: text(source.acceptedCancellationRule, 2_000),
-    rechargePackages,
-  };
+    integer(placement.sortOrder);
+    nullableTimestamp(placement.activeFrom);
+    nullableTimestamp(placement.activeUntil);
+    identifier(placement.createdBy);
+    nullableTimestamp(placement.createdAt);
+    return {
+      id: content.id,
+      title: content.title,
+      summary: content.summary,
+      category: null,
+      modelId: null,
+    };
+  });
 }
 
-function helpResponse(value: unknown): HelpResponse {
-  const source = object(value);
-  exact(source, ['article', 'navigation']);
-  if (!Array.isArray(source.navigation)) invalidResponse();
-  const navigation = source.navigation.map((value) => {
-    const item = object(value);
-    exact(item, ['slug', 'title']);
-    return { slug: stringArray(item.slug, 10), title: text(item.title, 160) };
+function rechargePackages(value: unknown): readonly RechargePackage[] {
+  if (!Array.isArray(value) || value.length > 100) invalidResponse();
+  return value.map((raw) => {
+    const source = object(raw);
+    exact(source, [
+      'id',
+      'packageId',
+      'version',
+      'revision',
+      'status',
+      'basePublishedVersionId',
+      'name',
+      'amountMinor',
+      'currency',
+      'points',
+      'bonusPoints',
+      'purchaseLimit',
+      'validityDays',
+      'sortOrder',
+      'activeFrom',
+      'activeUntil',
+      'createdBy',
+      'createdAt',
+      'publishedAt',
+      'retiredAt',
+      'active',
+    ]);
+    if (source.status !== 'PUBLISHED' || source.currency !== 'CNY' || source.active !== true)
+      invalidResponse();
+    identifier(source.packageId);
+    integer(source.version);
+    integer(source.revision);
+    nullableIdentifier(source.basePublishedVersionId);
+    const points = positiveDecimal(source.points);
+    const bonusPoints = decimal(source.bonusPoints);
+    if (
+      !(source.purchaseLimit === null || Number.isSafeInteger(source.purchaseLimit)) ||
+      !(source.validityDays === null || Number.isSafeInteger(source.validityDays))
+    )
+      invalidResponse();
+    integer(source.sortOrder);
+    nullableTimestamp(source.activeFrom);
+    nullableTimestamp(source.activeUntil);
+    identifier(source.createdBy);
+    timestamp(source.createdAt);
+    timestamp(source.publishedAt);
+    nullableTimestamp(source.retiredAt);
+    return {
+      id: identifier(source.id),
+      title: text(source.name, 120),
+      amountMinor: positiveDecimal(source.amountMinor),
+      points: (BigInt(points) + BigInt(bonusPoints)).toString(),
+    };
   });
-  if (source.article === null) return { article: null, navigation };
-  const article = object(source.article);
-  exact(article, ['slug', 'title', 'summary', 'kind', 'publishedAt', 'publishedHtml']);
-  return {
-    article: {
-      slug: stringArray(article.slug, 10),
-      title: text(article.title, 160),
-      summary: text(article.summary, 1_000),
-      kind: member(article.kind, new Set(['GUIDE', 'FAQ', 'ANNOUNCEMENT', 'LEGAL'])),
-      publishedAt: text(article.publishedAt, 64),
-      publishedHtml: text(article.publishedHtml, 100_000),
-    },
-    navigation,
-  };
 }
 
 function gatewayBaseUrl(): URL {
@@ -629,9 +694,10 @@ class HttpPublicSiteGateway implements PublicSiteGateway {
       }
       if (!response.headers.get('content-type')?.toLowerCase().startsWith('application/json'))
         invalidResponse();
-      const version = response.headers.get('x-api-version');
-      if (!version || !/^[A-Za-z0-9._-]{1,64}$/.test(version)) invalidResponse();
-      return success(parse((await response.json()) as unknown), { transport: 'http', version });
+      return success(parse((await response.json()) as unknown), {
+        transport: 'http',
+        version: 'v1',
+      });
     } catch (error) {
       const invalid = error instanceof Error && error.message === 'INVALID_PUBLIC_GATEWAY_RESPONSE';
       return {
@@ -645,13 +711,21 @@ class HttpPublicSiteGateway implements PublicSiteGateway {
     }
   }
 
-  getHome(): Promise<GatewayResult<HomeResponse>> {
-    return this.get('/v1/public/home', homeResponse);
+  async getHome(): Promise<GatewayResult<HomeResponse>> {
+    const [catalog, banners] = await Promise.all([
+      this.get('/v1/models', catalogModels),
+      this.get('/v1/banners/HOME_HERO', bannerCases),
+    ]);
+    if (!catalog.ok) return catalog;
+    if (!banners.ok) return banners;
+    return success(
+      { popularModels: catalog.data, creatorCases: banners.data },
+      { transport: 'http', version: 'v1' },
+    );
   }
 
   getHelp(slug: readonly string[]): Promise<GatewayResult<HelpResponse>> {
-    const suffix = slug.map(encodeURIComponent).join('/');
-    return this.get(`/v1/public/help${suffix ? `/${suffix}` : ''}`, helpResponse);
+    return this.get('/v1/help', (value) => helpResponse(value, slug));
   }
 
   getModel(id: string): Promise<GatewayResult<PublicModel | null>> {
@@ -660,28 +734,24 @@ class HttpPublicSiteGateway implements PublicSiteGateway {
         ok: false,
         error: { code: 'INVALID_PUBLIC_REQUEST', message: '模型编号无效。', retryable: false },
       });
-    return this.get(`/v1/public/models/${encodeURIComponent(id)}`, (value) =>
-      value === null ? null : publicModel(value),
+    return this.get(
+      '/v1/models',
+      (value) => catalogModels(value).find((model) => model.id === id) ?? null,
     );
   }
 
   getModels(filters: ModelFilters): Promise<GatewayResult<ModelsResponse>> {
-    const query = new URLSearchParams();
-    const set = (key: string, value: string | undefined) => {
-      if (value !== undefined) query.set(key, value);
-    };
-    set('modelId', filters.modelId);
-    set('mode', filters.mode);
-    set('providerId', filters.providerId);
-    set('capability', filters.capability);
-    set('price', filters.price);
-    set('speed', filters.speed);
-    set('state', filters.state);
-    return this.get(`/v1/public/models${query.size ? `?${query.toString()}` : ''}`, modelsResponse);
+    return this.get('/v1/models', (value) => modelsResponse(value, filters));
   }
 
   getPricing(): Promise<GatewayResult<PricingResponse>> {
-    return this.get('/v1/public/pricing', pricingResponse);
+    return this.get('/v1/recharge-packages', (value) => ({
+      conversion: null,
+      modelBillingRules: [],
+      failureRefundRule: null,
+      acceptedCancellationRule: null,
+      rechargePackages: rechargePackages(value),
+    }));
   }
 }
 

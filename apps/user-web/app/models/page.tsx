@@ -181,21 +181,23 @@ export default async function ModelsPage({
                     <p className="model-mode-list">
                       {model.modes.map((mode) => `${generationModeLabels[mode]}能力`).join('、')}
                     </p>
-                    <p>{model.publishedDescription}</p>
+                    <p>{model.publishedDescription ?? '详细能力以工作台发布的 Schema 为准。'}</p>
                     <dl className="model-facts">
                       <div>
                         <dt>常见价格</dt>
                         <dd>
-                          {model.pointRange.min}-{model.pointRange.max} 点
+                          {model.pointRange
+                            ? `${model.pointRange.min}-${model.pointRange.max} 点`
+                            : '以报价为准'}
                         </dd>
                       </div>
                       <div>
                         <dt>速度</dt>
-                        <dd>{model.speed}</dd>
+                        <dd>{model.speed ?? '未发布'}</dd>
                       </div>
                       <div>
                         <dt>质量倾向</dt>
-                        <dd>{model.qualityLabel}</dd>
+                        <dd>{model.qualityLabel ?? '未发布'}</dd>
                       </div>
                     </dl>
                     <Link href={`/models/${model.id}`}>查看详情</Link>

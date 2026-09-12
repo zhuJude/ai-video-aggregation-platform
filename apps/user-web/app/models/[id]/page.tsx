@@ -50,15 +50,17 @@ export default async function ModelDetailPage({ params }: ModelDetailPageProps) 
             </Link>
             <p className="section-kicker">{model.provider.displayName}</p>
             <h1>{model.displayName}</h1>
-            <p>{model.publishedDescription}</p>
+            <p>{model.publishedDescription ?? '详细能力以工作台发布的 Schema 为准。'}</p>
           </div>
           <aside className="model-state-panel" aria-label="模型状态与价格">
             <span data-tone={model.state === 'MAINTENANCE' ? 'warning' : 'healthy'}>
               {modelStateLabels[model.state]}
             </span>
-            <p>{model.stateMessage}</p>
+            <p>{model.stateMessage ?? '模型已在目录中发布。'}</p>
             <strong>
-              常见 {model.pointRange.min}-{model.pointRange.max} {model.pointRange.unit}
+              {model.pointRange
+                ? `常见 ${model.pointRange.min}-${model.pointRange.max} ${model.pointRange.unit}`
+                : '点数以提交前报价为准'}
             </strong>
             {model.state === 'ACTIVE' ? (
               <Link className="button-link button-primary" href={`/studio?model=${model.id}`}>
@@ -90,14 +92,18 @@ export default async function ModelDetailPage({ params }: ModelDetailPageProps) 
 
         <section className="model-detail-section" aria-labelledby="billing-title">
           <h2 id="billing-title">点数规则</h2>
-          <div className="billing-rule-grid">
-            {model.billingRules.map((rule) => (
-              <article key={rule.title}>
-                <h3>{rule.title}</h3>
-                <p>{rule.description}</p>
-              </article>
-            ))}
-          </div>
+          {model.billingRules.length > 0 ? (
+            <div className="billing-rule-grid">
+              {model.billingRules.map((rule) => (
+                <article key={rule.title}>
+                  <h3>{rule.title}</h3>
+                  <p>{rule.description}</p>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p role="status">目录未发布点数规则，请以工作台提交前报价为准。</p>
+          )}
           <Link href="/pricing">查看完整点数与退回规则</Link>
         </section>
       </article>
