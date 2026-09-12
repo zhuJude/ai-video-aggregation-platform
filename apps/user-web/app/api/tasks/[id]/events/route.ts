@@ -2,8 +2,10 @@ import {
   AuthenticationRequiredError,
   SessionRefreshRequiredError,
   authenticatedGatewayFetch,
+  requireAuthenticatedServerSession,
 } from '../../../../../lib/auth/server-session';
 import { isTaskEventCursor } from '../../../../../lib/tasks/identifiers';
+import { createMockTaskEventResponse } from '../../../../../lib/tasks/mock-transport';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +15,10 @@ export async function GET(
 ): Promise<Response> {
   try {
     const { id } = await context.params;
+    if (process.env.USER_WEB_STUDIO_MODE === 'mock') {
+      const session = await requireAuthenticatedServerSession();
+      return await createMockTaskEventResponse(session.ownerId, id);
+    }
     const headers = new Headers({ accept: 'text/event-stream' });
     const cursor = request.headers.get('last-event-id');
     if (cursor !== null) {

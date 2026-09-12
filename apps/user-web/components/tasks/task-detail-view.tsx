@@ -15,6 +15,7 @@ import {
 import { createUuidV7 } from '../../lib/tasks/identifiers';
 import type { TaskDetail } from '../../lib/tasks/types';
 import { TaskStatus } from './task-status';
+import { TaskResultActions } from './task-result-actions';
 
 export interface TaskDetailCommands {
   cancelTask(taskId: string, options: { readonly idempotencyKey: string }): Promise<unknown>;
@@ -160,6 +161,9 @@ export function TaskDetailView({
       </div>
 
       <div className="task-detail-grid">
+        {detail.result && status.status === 'SETTLED' ? (
+          <TaskResultActions taskId={detail.id} />
+        ) : null}
         <section className="task-panel" aria-labelledby="snapshot-title">
           <div className="panel-heading">
             <h2 id="snapshot-title">模型与报价快照</h2>

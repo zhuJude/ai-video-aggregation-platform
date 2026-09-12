@@ -2,7 +2,9 @@ import {
   AuthenticationRequiredError,
   SessionRefreshRequiredError,
   authenticatedGatewayFetch,
+  requireAuthenticatedServerSession,
 } from '../../../../lib/auth/server-session';
+import { createMockTaskPollResponse } from '../../../../lib/tasks/mock-transport';
 import { parseTaskDetail } from '../../../../lib/tasks/runtime';
 
 export const dynamic = 'force-dynamic';
@@ -13,6 +15,10 @@ export async function GET(
 ): Promise<Response> {
   try {
     const { id } = await context.params;
+    if (process.env.USER_WEB_STUDIO_MODE === 'mock') {
+      const session = await requireAuthenticatedServerSession();
+      return await createMockTaskPollResponse(session.ownerId, id);
+    }
     const headers = new Headers();
     for (const name of ['x-trace-id', 'x-correlation-id'] as const) {
       const value = request.headers.get(name);

@@ -5,8 +5,10 @@ import {
   requireMutableAuthenticatedServerSession,
   SessionRefreshRequiredError,
 } from '../../lib/auth/server-session';
-import { parseRetryDraft, parseTaskStatusSnapshot } from '../../lib/tasks/runtime';
+import { parseRetryDraft, parseTaskDetail, parseTaskStatusSnapshot } from '../../lib/tasks/runtime';
 import type { CancelTaskResult, RetryDraftActionResult } from '../../lib/tasks/types';
+import { commerceGateway } from '../../lib/commerce/gateway';
+import { parseSignedAssetUrl } from '../../lib/commerce/runtime';
 
 export async function cancelTaskAction(
   taskId: string,
@@ -38,5 +40,33 @@ export async function createRetryDraftAction(taskId: string): Promise<RetryDraft
       return { ok: false, outcome: 'SESSION_REFRESH_REQUIRED' };
     }
     throw error;
+  }
+}
+
+export async function requestTaskResultAccessAction(
+  taskId: string,
+  purpose: 'PREVIEW' | 'DOWNLOAD',
+): Promise<
+  | { readonly ok: true; readonly url: string; readonly expiresAt: string }
+  | { readonly ok: false; readonly outcome: 'SESSION_REFRESH_REQUIRED' | 'DEFINITIVE_FAILURE' }
+> {
+  try {
+    const session = await requireMutableAuthenticatedServerSession();
+    const detail = parseTaskDetail(await taskGateway.getTask(taskId, session));
+    if (detail.statusSnapshot.status !== 'SETTLED' || !detail.result) {
+      return { ok: false, outcome: 'DEFINITIVE_FAILURE' };
+    }
+    const access = parseSignedAssetUrl(
+      await commerceGateway.requestAssetAccess(detail.result.assetId, purpose, session),
+    );
+    return { ok: true, ...access };
+  } catch (error) {
+    return {
+      ok: false,
+      outcome:
+        error instanceof SessionRefreshRequiredError
+          ? 'SESSION_REFRESH_REQUIRED'
+          : 'DEFINITIVE_FAILURE',
+    };
   }
 }
