@@ -62,7 +62,11 @@ async function deviceId(): Promise<string> {
 }
 
 export async function updateProfileAction(
-  input: { readonly nickname: string; readonly avatarPreset: ProfileView['avatarPreset'] },
+  input: {
+    readonly nickname: string;
+    readonly avatarPreset: ProfileView['avatarPreset'];
+    readonly avatarAssetId?: string;
+  },
   idempotencyKey: string,
 ): Promise<AccountActionResult<ProfileView>> {
   try {
@@ -76,6 +80,35 @@ export async function updateProfileAction(
           },
         ),
       ),
+    };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function requestAccountDeletionCodeAction(
+  idempotencyKey: string,
+): Promise<AccountActionResult<PhoneCodeRequestResult>> {
+  try {
+    const result = await accountGateway.requestAccountDeletionCode(
+      { deviceId: await deviceId() },
+      (await context(idempotencyKey)) as Awaited<ReturnType<typeof context>> & {
+        idempotencyKey: string;
+      },
+    );
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      Array.isArray(result) ||
+      !('cooldownSeconds' in result) ||
+      !Number.isSafeInteger(result.cooldownSeconds) ||
+      !('message' in result) ||
+      result.message !== '如果账号可操作，验证码将尽快发送。'
+    )
+      throw new Error('INVALID_DELETE_REQUEST_RESULT');
+    return {
+      ok: true,
+      data: { cooldownSeconds: result.cooldownSeconds as number, message: result.message },
     };
   } catch (error) {
     return failure(error);

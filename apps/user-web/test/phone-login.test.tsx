@@ -3,12 +3,14 @@ import '@testing-library/jest-dom/vitest';
 import type { ApiError } from '@repo/contracts/common';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PhoneLoginForm } from '../components/auth/phone-login-form';
 import { cancelTaskAction } from '../app/tasks/actions';
+import { createMockStoreTestScope } from './mock-store-scope';
 
 const LOGIN_OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6101';
+const mockStoreScope = createMockStoreTestScope();
 const LOGIN_SESSION_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6111';
 process.env.USER_WEB_SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64url');
 const encodeJwtSegment = (value: unknown) =>
@@ -187,9 +189,11 @@ const gatewayMock = {
 };
 
 beforeEach(() => {
+  mockStoreScope.install();
   process.env.GATEWAY_URL = 'https://gateway.internal';
   process.env.USER_WEB_MOCK_IDENTITY_KEY = Buffer.alloc(32, 23).toString('base64url');
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
+  process.env.USER_WEB_SUPPORT_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 29).toString('base64url');
   loginCookies.clear();
   loginCookieWrites.length = 0;
@@ -217,7 +221,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.USER_WEB_MOCK_IDENTITY_KEY;
   delete process.env.USER_WEB_COMMERCE_MODE;
+  delete process.env.USER_WEB_SUPPORT_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
+});
+
+afterAll(async () => {
+  await mockStoreScope.cleanup();
 });
 
 describe('PhoneLoginForm', () => {

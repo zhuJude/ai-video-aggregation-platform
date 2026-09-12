@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { randomBytes } from 'node:crypto';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const refresh = vi.hoisted(() => vi.fn<() => Promise<boolean>>());
 
@@ -11,12 +11,16 @@ vi.mock('../lib/auth/client-session', () => ({ coordinateSessionRefresh: refresh
 
 import { AccountDeletion } from '../components/account/account-deletion';
 import { PhoneChangeForm } from '../components/account/phone-change-form';
+import { ProfileSettings } from '../components/account/profile-settings';
 import { SessionList } from '../components/account/session-list';
 import { runAccountActionWithRefresh } from '../lib/account/client-command';
 import { accountGateway } from '../lib/account/gateway';
+import { registerAccountSession } from '../lib/account/mock-store';
 import { resolveOrCreateMockSubjectForVerifiedPhone } from '../lib/auth/mock-subject-store';
+import { ensureMockSeedObjects } from '../lib/commerce/mock-object-store';
 import { createUuidV7 } from '../lib/tasks/identifiers';
 import type { AccountActionResult, SecuritySessionView } from '../lib/account/types';
+import { createMockStoreTestScope } from './mock-store-scope';
 
 const sessions: readonly SecuritySessionView[] = [
   {
@@ -40,13 +44,19 @@ const sessions: readonly SecuritySessionView[] = [
 ];
 
 const ok = <T,>(data: T): AccountActionResult<T> => ({ ok: true, data });
+const mockStoreScope = createMockStoreTestScope();
 
 beforeEach(() => {
+  mockStoreScope.install();
   refresh.mockReset();
   process.env.USER_WEB_SUPPORT_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = randomBytes(32).toString('base64url');
   process.env.USER_WEB_MOCK_IDENTITY_KEY = randomBytes(32).toString('base64url');
+});
+
+afterAll(async () => {
+  await mockStoreScope.cleanup();
 });
 
 afterEach(() => {
@@ -97,6 +107,8 @@ describe('security settings', () => {
       currentSessionId: createUuidV7(),
       verifiedPhone: '+8613600136000',
     };
+    await registerAccountSession(first.ownerId, first.currentSessionId, first.verifiedPhone);
+    await registerAccountSession(second.ownerId, second.currentSessionId, second.verifiedPhone);
     const listed = (await accountGateway.listSessions(first)) as readonly SecuritySessionView[];
     const current = listed.find((session) => session.current);
     const other = listed.find((session) => !session.current);
@@ -122,6 +134,7 @@ describe('security settings', () => {
       currentSessionId: createUuidV7(),
       verifiedPhone: '+8613700137000',
     };
+    await registerAccountSession(context.ownerId, context.currentSessionId, context.verifiedPhone);
     const listed = (await accountGateway.listSessions(context)) as readonly SecuritySessionView[];
     const other = listed.find((session) => !session.current);
     expect(other).toBeDefined();
@@ -185,7 +198,133 @@ describe('security settings', () => {
     await user.type(screen.getByLabelText('新手机号验证码'), '111111');
     await user.click(screen.getByRole('button', { name: '确认换绑手机号' }));
     expect(screen.getByRole('alert')).toHaveTextContent('无法完成验证，请检查验证码或稍后重试');
+    expect(screen.getByLabelText('原手机号验证码')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('新手机号验证码')).toHaveAccessibleDescription(
+      '无法完成验证，请检查验证码或稍后重试。',
+    );
     expect(screen.queryByText(/已注册|未注册|占用/)).toBeNull();
+  });
+
+  it('uploads and displays a real owner-bound avatar before saving its asset id', async () => {
+    const user = userEvent.setup();
+    const avatarId = createUuidV7();
+    const onUploadAvatar = vi
+      .fn()
+      .mockResolvedValue(
+        ok({ assetId: avatarId, previewUrl: '/api/commerce/mock-assets/signed-avatar' }),
+      );
+    const onSave = vi.fn().mockResolvedValue(
+      ok({
+        nickname: '光帧创作者',
+        phoneMasked: '138****8000',
+        avatarPreset: 'AMBER',
+        avatarAssetId: avatarId,
+        updatedAt: '2026-08-31T02:00:00.000Z',
+      }),
+    );
+    render(
+      <ProfileSettings
+        initial={{
+          nickname: '光帧创作者',
+          phoneMasked: '138****8000',
+          avatarPreset: 'AMBER',
+          updatedAt: '2026-08-31T02:00:00.000Z',
+        }}
+        onUploadAvatar={onUploadAvatar}
+        onSave={onSave}
+      />,
+    );
+    const file = new File(
+      [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+      '头像.png',
+      { type: 'image/png' },
+    );
+
+    await user.upload(screen.getByLabelText('上传头像图片'), file);
+    expect(onUploadAvatar).toHaveBeenCalledWith(file, expect.any(String));
+    expect(screen.getByRole('img', { name: '光帧创作者的头像' })).toHaveAttribute(
+      'src',
+      '/api/commerce/mock-assets/signed-avatar',
+    );
+    await user.click(screen.getByRole('button', { name: '保存资料' }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ avatarAssetId: avatarId }),
+      expect.any(String),
+    );
+  });
+
+  it('accepts only an available image avatar owned by the current subject', async () => {
+    const ownerId = createUuidV7();
+    const assetId = createUuidV7();
+    await ensureMockSeedObjects(ownerId, [
+      {
+        assetId,
+        kind: 'UPLOAD',
+        name: '头像.png',
+        mimeType: 'image/png',
+        createdAt: new Date().toISOString(),
+        bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      },
+    ]);
+    const context = {
+      ownerId,
+      currentSessionId: createUuidV7(),
+      verifiedPhone: '+8613500135000',
+      idempotencyKey: createUuidV7(),
+    };
+    await registerAccountSession(context.ownerId, context.currentSessionId, context.verifiedPhone);
+    await expect(
+      accountGateway.updateProfile(
+        { nickname: '头像所有者', avatarPreset: 'BLUE', avatarAssetId: assetId },
+        context,
+      ),
+    ).resolves.toMatchObject({ avatarAssetId: assetId });
+    const otherContext = {
+      ...context,
+      ownerId: createUuidV7(),
+      idempotencyKey: createUuidV7(),
+    };
+    await registerAccountSession(
+      otherContext.ownerId,
+      otherContext.currentSessionId,
+      otherContext.verifiedPhone,
+    );
+    await expect(
+      accountGateway.updateProfile(
+        { nickname: '其他用户', avatarPreset: 'BLUE', avatarAssetId: assetId },
+        otherContext,
+      ),
+    ).rejects.toThrow('INVALID_AVATAR');
+  });
+
+  it('requires a fresh owner-scoped deletion challenge and rate limits new requests', async () => {
+    const context = {
+      ownerId: createUuidV7(),
+      currentSessionId: createUuidV7(),
+      verifiedPhone: '+8613600136000',
+    };
+    await registerAccountSession(context.ownerId, context.currentSessionId, context.verifiedPhone);
+    const operationId = createUuidV7();
+    await expect(
+      accountGateway.closeAccount(
+        { code: '123456', operationId },
+        { ...context, idempotencyKey: operationId },
+      ),
+    ).rejects.toThrow('FRESH_CHALLENGE_REQUIRED');
+    const requestContext = { ...context, idempotencyKey: createUuidV7() };
+    const first = await accountGateway.requestAccountDeletionCode(
+      { deviceId: 'delete-test-device' },
+      requestContext,
+    );
+    await expect(
+      accountGateway.requestAccountDeletionCode({ deviceId: 'delete-test-device' }, requestContext),
+    ).resolves.toEqual(first);
+    await expect(
+      accountGateway.requestAccountDeletionCode(
+        { deviceId: 'delete-test-device' },
+        { ...context, idempotencyKey: createUuidV7() },
+      ),
+    ).rejects.toThrow('RATE_LIMITED');
   });
 
   it('rate limits repeated server-side phone change requests without account disclosure', async () => {
@@ -194,6 +333,7 @@ describe('security settings', () => {
       currentSessionId: createUuidV7(),
       verifiedPhone: '+8613500135000',
     };
+    await registerAccountSession(context.ownerId, context.currentSessionId, context.verifiedPhone);
     const first = await accountGateway.requestPhoneChangeCodes(
       { newPhoneE164: '+8613400134000', deviceId: 'test-device' },
       { ...context, idempotencyKey: createUuidV7() },
@@ -214,6 +354,7 @@ describe('security settings', () => {
       verifiedPhone: '+8613500135000',
       idempotencyKey: createUuidV7(),
     };
+    await registerAccountSession(context.ownerId, context.currentSessionId, context.verifiedPhone);
     const input = { newPhoneE164: '+8613400134000', deviceId: 'test-device' };
 
     const first = await accountGateway.requestPhoneChangeCodes(input, context);
@@ -225,6 +366,7 @@ describe('security settings', () => {
     const newPhone = '+8613400134000';
     const ownerId = await resolveOrCreateMockSubjectForVerifiedPhone(oldPhone);
     const base = { ownerId, currentSessionId: createUuidV7(), verifiedPhone: oldPhone };
+    await registerAccountSession(base.ownerId, base.currentSessionId, base.verifiedPhone);
     await accountGateway.requestPhoneChangeCodes(
       { newPhoneE164: newPhone, deviceId: 'test-device' },
       { ...base, idempotencyKey: createUuidV7() },
@@ -250,7 +392,18 @@ describe('security settings', () => {
   it('requires the exact deletion phrase before the second confirmation', async () => {
     const user = userEvent.setup();
     const closeAccount = vi.fn().mockResolvedValue(ok({ closed: true }));
-    render(<AccountDeletion onDelete={closeAccount} cooldownSeconds={0} />);
+    const requestCode = vi
+      .fn()
+      .mockResolvedValue(
+        ok({ cooldownSeconds: 60, message: '如果账号可操作，验证码将尽快发送。' }),
+      );
+    render(
+      <AccountDeletion onDelete={closeAccount} onRequestCode={requestCode} cooldownSeconds={0} />,
+    );
+
+    await user.click(screen.getByRole('button', { name: '获取注销验证码' }));
+    expect(requestCode).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('status')).toHaveTextContent('如果账号可操作');
 
     const continueButton = screen.getByRole('button', { name: '继续注销' });
     expect(continueButton).toBeDisabled();
@@ -268,7 +421,18 @@ describe('security settings', () => {
 
   it('traps focus inside destructive confirmation dialogs', async () => {
     const user = userEvent.setup();
-    render(<AccountDeletion onDelete={vi.fn()} cooldownSeconds={0} />);
+    render(
+      <AccountDeletion
+        onDelete={vi.fn()}
+        onRequestCode={vi
+          .fn()
+          .mockResolvedValue(
+            ok({ cooldownSeconds: 60, message: '如果账号可操作，验证码将尽快发送。' }),
+          )}
+        cooldownSeconds={0}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '获取注销验证码' }));
     await user.type(screen.getByLabelText('输入确认短语'), '注销账号');
     await user.type(screen.getByLabelText('短信验证码'), '123456');
     await user.click(screen.getByRole('button', { name: '继续注销' }));

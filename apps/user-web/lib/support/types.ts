@@ -49,6 +49,22 @@ export interface TicketStatusHistoryView {
   readonly label: string;
 }
 
+export interface TicketSatisfactionView {
+  readonly rating: 1 | 2 | 3 | 4 | 5;
+  readonly comment?: string;
+  readonly createdAt: string;
+}
+
+export type FeedbackKind = 'MODEL_RESULT' | 'FAILED_TASK' | 'PRODUCT_SUGGESTION';
+
+export interface FeedbackView {
+  readonly id: string;
+  readonly kind: FeedbackKind;
+  readonly body: string;
+  readonly referenceId?: string;
+  readonly createdAt: string;
+}
+
 export interface TicketView {
   readonly id: string;
   readonly subject: string;
@@ -60,6 +76,7 @@ export interface TicketView {
   readonly statusHistory: readonly TicketStatusHistoryView[];
   readonly canClose: boolean;
   readonly canReopen: boolean;
+  readonly satisfaction?: TicketSatisfactionView;
 }
 
 export interface TicketPage {
@@ -102,6 +119,19 @@ export interface SupportGateway {
   changeTicketStatus(
     ticketId: string,
     action: 'CLOSE' | 'REOPEN',
+    context: { readonly ownerId: string; readonly idempotencyKey: string },
+  ): Promise<unknown>;
+  submitTicketSatisfaction(
+    ticketId: string,
+    input: { readonly rating: number; readonly comment?: string },
+    context: { readonly ownerId: string; readonly idempotencyKey: string },
+  ): Promise<unknown>;
+  submitFeedback(
+    input: {
+      readonly kind: FeedbackKind;
+      readonly body: string;
+      readonly referenceId?: string;
+    },
     context: { readonly ownerId: string; readonly idempotencyKey: string },
   ): Promise<unknown>;
 }

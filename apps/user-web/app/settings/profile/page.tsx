@@ -7,6 +7,8 @@ import {
 } from '../../../lib/auth/server-session';
 import { accountGateway } from '../../../lib/account/gateway';
 import { parseProfile } from '../../../lib/account/runtime';
+import { commerceGateway } from '../../../lib/commerce/gateway';
+import { parseSignedAssetUrl } from '../../../lib/commerce/runtime';
 
 export default async function ProfilePage() {
   const state = await readAuthenticatedServerSessionState();
@@ -22,9 +24,24 @@ export default async function ProfilePage() {
         verifiedPhone: identity.verifiedPhone,
       }),
     );
+    let avatarUrl: string | undefined;
+    if (profile.avatarAssetId) {
+      try {
+        avatarUrl = parseSignedAssetUrl(
+          await commerceGateway.requestAssetAccess(profile.avatarAssetId, 'PREVIEW', {
+            ownerId: identity.ownerId,
+          }),
+        ).url;
+      } catch {
+        // Keep the rest of the profile usable when a short-lived preview cannot be issued.
+      }
+    }
     return (
       <div className="settings-page">
-        <ProfileSettings initial={profile} />
+        <ProfileSettings
+          initial={profile}
+          {...(avatarUrl ? { initialAvatarUrl: avatarUrl } : {})}
+        />
       </div>
     );
   } catch {

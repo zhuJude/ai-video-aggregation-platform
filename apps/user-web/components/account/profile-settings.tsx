@@ -3,18 +3,93 @@
 import { useState } from 'react';
 
 import { updateProfileAction } from '../../app/account-actions';
+import {
+  completeUploadAction,
+  createUploadSessionAction,
+  requestAssetAccessAction,
+} from '../../app/commerce-actions';
 import { runAccountActionWithRefresh } from '../../lib/account/client-command';
+import { runCommerceActionWithRefresh } from '../../lib/commerce/client-command';
+import { uploadAssetBytesWithSessionRefresh } from '../../lib/commerce/upload-client';
 import { formatAccountDate } from '../../lib/account/runtime';
 import { createUuidV7 } from '../../lib/tasks/identifiers';
-import type { ProfileView } from '../../lib/account/types';
+import type { AccountActionResult, ProfileView } from '../../lib/account/types';
 
-export function ProfileSettings({ initial }: { readonly initial: ProfileView }) {
+type ProfileInput = Pick<ProfileView, 'nickname' | 'avatarPreset' | 'avatarAssetId'>;
+
+export function ProfileSettings({
+  initial,
+  initialAvatarUrl,
+  onSave,
+  onUploadAvatar,
+}: {
+  readonly initial: ProfileView;
+  readonly initialAvatarUrl?: string;
+  readonly onSave?: (input: ProfileInput, key: string) => Promise<AccountActionResult<ProfileView>>;
+  readonly onUploadAvatar?: (
+    file: File,
+    key: string,
+  ) => Promise<AccountActionResult<{ readonly assetId: string; readonly previewUrl: string }>>;
+}) {
   const [saved, setSaved] = useState(initial);
   const [nickname, setNickname] = useState(initial.nickname);
   const [avatarPreset, setAvatarPreset] = useState(initial.avatarPreset);
+  const [avatarAssetId, setAvatarAssetId] = useState(initial.avatarAssetId);
+  const [avatarUrl, setAvatarUrl] = useState(initialAvatarUrl);
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<string>();
   const [error, setError] = useState<string>();
+  const uploadAvatar = async (file: File | undefined) => {
+    if (!file || pending) return;
+    if (
+      !['image/jpeg', 'image/png', 'image/webp'].includes(file.type) ||
+      file.size <= 0 ||
+      file.size > 5 * 1024 * 1024
+    ) {
+      setError('头像仅支持 JPG、PNG、WebP，且不超过 5 MB。');
+      return;
+    }
+    setPending(true);
+    setError(undefined);
+    const key = createUuidV7();
+    try {
+      let uploaded: { readonly assetId: string; readonly previewUrl: string };
+      if (onUploadAvatar) {
+        const result = await onUploadAvatar(file, key);
+        if (!result.ok) throw new Error(result.outcome);
+        uploaded = result.data;
+      } else {
+        const grant = await runCommerceActionWithRefresh(() =>
+          createUploadSessionAction({ name: file.name, size: file.size, type: file.type }, key),
+        );
+        if (!grant.ok) throw new Error(grant.outcome);
+        const receipt = await uploadAssetBytesWithSessionRefresh(grant.data, file, {
+          signal: new AbortController().signal,
+          onProgress: () => undefined,
+        });
+        const completed = await runCommerceActionWithRefresh(() =>
+          completeUploadAction(receipt, key),
+        );
+        if (!completed.ok) throw new Error(completed.outcome);
+        const preview = await runCommerceActionWithRefresh(() =>
+          requestAssetAccessAction(completed.data.id, 'PREVIEW'),
+        );
+        if (!preview.ok) throw new Error(preview.outcome);
+        uploaded = { assetId: completed.data.id, previewUrl: preview.data.url };
+      }
+      setAvatarAssetId(uploaded.assetId);
+      setAvatarUrl(uploaded.previewUrl);
+      setFeedback('头像已上传，保存资料后生效。');
+    } catch (caught) {
+      setError(
+        caught instanceof Error && caught.message === 'UNCERTAIN'
+          ? '头像上传结果待确认，请到素材页核对。'
+          : '头像上传失败，请检查图片后重试。',
+      );
+    } finally {
+      setPending(false);
+    }
+  };
   const submit = async () => {
     const normalized = nickname.trim();
     if (
@@ -29,14 +104,24 @@ export function ProfileSettings({ initial }: { readonly initial: ProfileView }) 
       return;
     }
     const previous = saved;
-    setSaved({ ...saved, nickname: normalized, avatarPreset });
+    setSaved({
+      ...saved,
+      nickname: normalized,
+      avatarPreset,
+      ...(avatarAssetId ? { avatarAssetId } : {}),
+    });
     setPending(true);
     setError(undefined);
     setFeedback('正在保存…');
     const key = createUuidV7();
-    const result = await runAccountActionWithRefresh(key, (sameKey) =>
-      updateProfileAction({ nickname: normalized, avatarPreset }, sameKey),
-    );
+    const input = {
+      nickname: normalized,
+      avatarPreset,
+      ...(avatarAssetId ? { avatarAssetId } : {}),
+    };
+    const result = onSave
+      ? await onSave(input, key)
+      : await runAccountActionWithRefresh(key, (sameKey) => updateProfileAction(input, sameKey));
     setPending(false);
     if (result.ok) {
       setSaved(result.data);
@@ -56,7 +141,11 @@ export function ProfileSettings({ initial }: { readonly initial: ProfileView }) 
       <p className="section-kicker">个人资料</p>
       <h1 id="profile-title">资料设置</h1>
       <div className="profile-preview" data-avatar={saved.avatarPreset}>
-        <span aria-hidden="true">{saved.nickname.slice(0, 1)}</span>
+        {avatarUrl ? (
+          <img src={avatarUrl} alt={`${saved.nickname}的头像`} />
+        ) : (
+          <span aria-hidden="true">{saved.nickname.slice(0, 1)}</span>
+        )}
         <div>
           <strong>{saved.nickname}</strong>
           <p>{saved.phoneMasked}</p>
@@ -74,6 +163,18 @@ export function ProfileSettings({ initial }: { readonly initial: ProfileView }) 
           }}
         />
         <small id="nickname-help">1–40 个字符。</small>
+        <label htmlFor="avatar-upload">上传头像图片</label>
+        <input
+          id="avatar-upload"
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          disabled={pending}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            void uploadAvatar(file);
+          }}
+        />
         <label htmlFor="avatar-preset">头像配色</label>
         <select
           id="avatar-preset"

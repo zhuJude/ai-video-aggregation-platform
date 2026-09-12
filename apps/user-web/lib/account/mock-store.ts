@@ -28,29 +28,46 @@ interface PhoneChangeState {
   readonly attempts: number;
 }
 
+interface DeletionChallengeState {
+  readonly requestedAt: string;
+  readonly cooldownUntil: string;
+  readonly expiresAt: string;
+}
+
 interface AccountCommand {
   readonly key: string;
-  readonly kind: 'PROFILE' | 'REVOKE' | 'EXIT_ALL' | 'PHONE_REQUEST' | 'PHONE_VERIFY' | 'DELETE';
+  readonly kind:
+    | 'PROFILE'
+    | 'REVOKE'
+    | 'EXIT_ALL'
+    | 'PHONE_REQUEST'
+    | 'PHONE_VERIFY'
+    | 'DELETE_REQUEST'
+    | 'DELETE';
   readonly fingerprint: string;
   readonly result: unknown;
   readonly expiresAt: string;
 }
 
 export interface AccountState {
-  readonly version: 1;
+  readonly version: 2;
   readonly ownerId: string;
   readonly closed: boolean;
+  readonly verifiedPhone: string;
   readonly profile: ProfileView;
   readonly sessions: readonly StoredSecuritySession[];
   readonly phoneChange?: PhoneChangeState;
+  readonly deletionChallenge?: DeletionChallengeState;
   readonly commands: readonly AccountCommand[];
 }
 
 export interface MutableAccountState {
   closed: boolean;
+  verifiedPhone: string;
   profile: ProfileView;
   sessions: StoredSecuritySession[];
   phoneChange?: PhoneChangeState;
+  deletionChallenge?: DeletionChallengeState;
 }
 
 export class AccountStoreError extends Error {
@@ -60,7 +77,7 @@ export class AccountStoreError extends Error {
 function fileName(ownerId: string): string {
   if (process.env.USER_WEB_SUPPORT_MODE !== 'mock') throw new Error('IDENTITY_GATEWAY_UNAVAILABLE');
   if (!UuidSchema.safeParse(ownerId).success) throw new AccountStoreError('INVALID_OWNER');
-  return `.account-${createHash('sha256').update(`account:v1:${ownerId}`).digest('hex')}.json`;
+  return `.account-${createHash('sha256').update(`account:v2:${ownerId}`).digest('hex')}.json`;
 }
 
 function parseSession(value: unknown): StoredSecuritySession {
@@ -99,17 +116,35 @@ function parseState(value: unknown, ownerId: string): AccountState {
           'version',
           'ownerId',
           'closed',
+          'verifiedPhone',
           'profile',
           'sessions',
           'phoneChange',
+          'deletionChallenge',
           'commands',
         ].includes(key),
     ) ||
-    state.version !== 1 ||
+    state.version !== 2 ||
     state.ownerId !== ownerId ||
     typeof state.closed !== 'boolean' ||
+    typeof state.verifiedPhone !== 'string' ||
+    !/^\+861[3-9]\d{9}$/.test(state.verifiedPhone) ||
     !Array.isArray(state.sessions) ||
     !Array.isArray(state.commands)
+  )
+    throw new AccountStoreError('INVALID_STATE');
+  const deletionChallenge =
+    state.deletionChallenge === undefined
+      ? undefined
+      : (state.deletionChallenge as Record<string, unknown>);
+  if (
+    deletionChallenge &&
+    (Object.keys(deletionChallenge).sort().join(',') !== 'cooldownUntil,expiresAt,requestedAt' ||
+      !['requestedAt', 'cooldownUntil', 'expiresAt'].every(
+        (key) =>
+          typeof deletionChallenge[key] === 'string' &&
+          Number.isFinite(Date.parse(deletionChallenge[key])),
+      ))
   )
     throw new AccountStoreError('INVALID_STATE');
   const phoneChange =
@@ -136,9 +171,15 @@ function parseState(value: unknown, ownerId: string): AccountState {
       Object.keys(command).sort().join(',') !== 'expiresAt,fingerprint,key,kind,result' ||
       !isUuidV7(command.key) ||
       typeof command.fingerprint !== 'string' ||
-      !['PROFILE', 'REVOKE', 'EXIT_ALL', 'PHONE_REQUEST', 'PHONE_VERIFY', 'DELETE'].includes(
-        command.kind as string,
-      ) ||
+      ![
+        'PROFILE',
+        'REVOKE',
+        'EXIT_ALL',
+        'PHONE_REQUEST',
+        'PHONE_VERIFY',
+        'DELETE_REQUEST',
+        'DELETE',
+      ].includes(command.kind as string) ||
       typeof command.expiresAt !== 'string' ||
       !Number.isFinite(Date.parse(command.expiresAt))
     )
@@ -146,12 +187,16 @@ function parseState(value: unknown, ownerId: string): AccountState {
     return command as unknown as AccountCommand;
   });
   return {
-    version: 1,
+    version: 2,
     ownerId,
     closed: state.closed,
+    verifiedPhone: state.verifiedPhone,
     profile: parseProfile(state.profile),
     sessions: state.sessions.map(parseSession),
     ...(phoneChange ? { phoneChange: phoneChange as unknown as PhoneChangeState } : {}),
+    ...(deletionChallenge
+      ? { deletionChallenge: deletionChallenge as unknown as DeletionChallengeState }
+      : {}),
     commands,
   };
 }
@@ -160,9 +205,10 @@ function seed(ownerId: string, currentSessionId: string, verifiedPhone: string):
   const now = Date.now();
   return parseState(
     {
-      version: 1,
+      version: 2,
       ownerId,
       closed: false,
+      verifiedPhone,
       profile: {
         nickname: '光帧创作者',
         phoneMasked: maskPhone(verifiedPhone),
@@ -193,26 +239,12 @@ function seed(ownerId: string, currentSessionId: string, verifiedPhone: string):
   );
 }
 
-function withCurrent(state: AccountState, currentSessionId: string): AccountState {
-  if (state.closed || state.sessions.some(({ id }) => id === currentSessionId)) return state;
-  const now = Date.now();
-  return parseState(
-    {
-      ...state,
-      sessions: [
-        {
-          id: currentSessionId,
-          deviceName: '当前浏览器',
-          locationMasked: '本次登录地区',
-          createdAt: new Date(now).toISOString(),
-          lastSeenAt: new Date(now).toISOString(),
-          expiresAt: new Date(now + 30 * 24 * 60 * 60_000).toISOString(),
-        },
-        ...state.sessions,
-      ],
-    },
-    state.ownerId,
-  );
+function requireCurrent(state: AccountState, currentSessionId: string): AccountState {
+  if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
+  const current = state.sessions.find(({ id }) => id === currentSessionId);
+  if (!current || Date.parse(current.expiresAt) <= Date.now())
+    throw new AccountStoreError('SESSION_NOT_FOUND');
+  return state;
 }
 
 export async function readAccountState(
@@ -224,14 +256,101 @@ export async function readAccountState(
     throw new AccountStoreError('INVALID_CONTEXT');
   const now = Date.now();
   return transactMockStoreJson(fileName(ownerId), (raw) => {
-    const initial = parseState(raw ?? seed(ownerId, currentSessionId, verifiedPhone), ownerId);
-    const current = withCurrent(initial, currentSessionId);
+    if (raw === undefined) throw new AccountStoreError('SESSION_NOT_FOUND');
+    const current = requireCurrent(parseState(raw, ownerId), currentSessionId);
     const commands = current.commands.filter(({ expiresAt }) => Date.parse(expiresAt) > now);
-    const next =
-      raw === undefined || current !== initial || commands.length !== current.commands.length
-        ? { ...current, commands }
-        : undefined;
+    const next = commands.length !== current.commands.length ? { ...current, commands } : undefined;
     return { result: next ? parseState(next, ownerId) : current, ...(next ? { next } : {}) };
+  });
+}
+
+/** Registers a login-issued session. This is the only path allowed to create an active session. */
+export async function registerAccountSession(
+  ownerId: string,
+  sessionId: string,
+  verifiedPhone: string,
+): Promise<void> {
+  if (!isUuidV7(sessionId) || !/^\+861[3-9]\d{9}$/.test(verifiedPhone))
+    throw new AccountStoreError('INVALID_CONTEXT');
+  await transactMockStoreJson(fileName(ownerId), (raw) => {
+    const state = parseState(raw ?? seed(ownerId, sessionId, verifiedPhone), ownerId);
+    if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
+    if (state.verifiedPhone !== verifiedPhone)
+      throw new AccountStoreError('SUBJECT_BINDING_NOT_FOUND');
+    if (state.sessions.some(({ id }) => id === sessionId))
+      return { result: undefined, ...(raw === undefined ? { next: state } : {}) };
+    const now = Date.now();
+    const next = parseState(
+      {
+        ...state,
+        sessions: [
+          {
+            id: sessionId,
+            deviceName: '当前浏览器',
+            locationMasked: '本次登录地区',
+            createdAt: new Date(now).toISOString(),
+            lastSeenAt: new Date(now).toISOString(),
+            expiresAt: new Date(now + 30 * 24 * 60 * 60_000).toISOString(),
+          },
+          ...state.sessions,
+        ],
+      },
+      ownerId,
+    );
+    return { result: undefined, next };
+  });
+}
+
+/** Read-only authorization check. Missing, revoked, expired, closed, or unreadable state denies access. */
+export async function validateAccountSession(
+  ownerId: string,
+  sessionId: string,
+): Promise<{ readonly verifiedPhone: string }> {
+  if (!isUuidV7(sessionId)) throw new AccountStoreError('INVALID_CONTEXT');
+  return transactMockStoreJson(fileName(ownerId), (raw) => {
+    if (raw === undefined) throw new AccountStoreError('SESSION_NOT_FOUND');
+    const state = parseState(raw, ownerId);
+    if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
+    const active = state.sessions.find(({ id }) => id === sessionId);
+    if (!active || Date.parse(active.expiresAt) <= Date.now())
+      throw new AccountStoreError('SESSION_NOT_FOUND');
+    return { result: { verifiedPhone: state.verifiedPhone } };
+  });
+}
+
+/** Atomically proves the old session is still active and replaces it during refresh. */
+export async function rotateAccountSession(
+  ownerId: string,
+  oldSessionId: string,
+  newSessionId: string,
+): Promise<{ readonly verifiedPhone: string }> {
+  if (!isUuidV7(oldSessionId) || !isUuidV7(newSessionId))
+    throw new AccountStoreError('INVALID_CONTEXT');
+  return transactMockStoreJson(fileName(ownerId), (raw) => {
+    if (raw === undefined) throw new AccountStoreError('SESSION_NOT_FOUND');
+    const state = parseState(raw, ownerId);
+    if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
+    const old = state.sessions.find(({ id }) => id === oldSessionId);
+    if (!old || Date.parse(old.expiresAt) <= Date.now())
+      throw new AccountStoreError('SESSION_NOT_FOUND');
+    const now = Date.now();
+    const replacement = {
+      ...old,
+      id: newSessionId,
+      lastSeenAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 30 * 24 * 60 * 60_000).toISOString(),
+    };
+    const next = parseState(
+      {
+        ...state,
+        sessions: [
+          replacement,
+          ...state.sessions.filter(({ id }) => id !== oldSessionId && id !== newSessionId),
+        ],
+      },
+      ownerId,
+    );
+    return { result: { verifiedPhone: state.verifiedPhone }, next };
   });
 }
 
@@ -251,11 +370,8 @@ export async function runAccountCommand<T>(
   if (!isUuidV7(request.key)) throw new AccountStoreError('INVALID_IDEMPOTENCY_KEY');
   const now = Date.now();
   return transactMockStoreJson(fileName(context.ownerId), (raw) => {
-    const seeded = parseState(
-      raw ?? seed(context.ownerId, context.currentSessionId, context.verifiedPhone),
-      context.ownerId,
-    );
-    const state = withCurrent(seeded, context.currentSessionId);
+    if (raw === undefined) throw new AccountStoreError('SESSION_NOT_FOUND');
+    const state = requireCurrent(parseState(raw, context.ownerId), context.currentSessionId);
     const commands = state.commands.filter(({ expiresAt }) => Date.parse(expiresAt) > now);
     const existing = commands.find(({ key }) => key === request.key);
     if (existing) {
@@ -267,18 +383,26 @@ export async function runAccountCommand<T>(
     if (commands.length >= MAX_COMMANDS) throw new AccountStoreError('IDEMPOTENCY_CAPACITY');
     const mutable: MutableAccountState = {
       closed: state.closed,
+      verifiedPhone: state.verifiedPhone,
       profile: structuredClone(state.profile),
       sessions: [...structuredClone(state.sessions)],
       ...(state.phoneChange ? { phoneChange: structuredClone(state.phoneChange) } : {}),
+      ...(state.deletionChallenge
+        ? { deletionChallenge: structuredClone(state.deletionChallenge) }
+        : {}),
     };
     const result = mutate(mutable);
     const next = parseState(
       {
         ...state,
         closed: mutable.closed,
+        verifiedPhone: mutable.verifiedPhone,
         profile: mutable.profile,
         sessions: mutable.sessions,
         ...(mutable.phoneChange ? { phoneChange: mutable.phoneChange } : {}),
+        ...(mutable.deletionChallenge
+          ? { deletionChallenge: mutable.deletionChallenge }
+          : { deletionChallenge: undefined }),
         commands: [
           ...commands,
           {

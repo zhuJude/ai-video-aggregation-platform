@@ -22,9 +22,9 @@ export function MessageCenter({
   ) => Promise<SupportActionResult<{ readonly readAt: string }>>;
 }) {
   const [items, setItems] = useState(initial.items);
+  const [unreadCount, setUnreadCount] = useState(initial.unreadCount);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const unreadCount = items.filter(({ readAt }) => !readAt).length;
 
   const mark = async (ids: readonly string[]) => {
     if (pending || ids.length === 0) return;
@@ -37,6 +37,8 @@ export function MessageCenter({
     setPending(false);
     if (result.ok) {
       const selected = new Set(ids);
+      const newlyRead = items.filter((item) => selected.has(item.id) && !item.readAt).length;
+      setUnreadCount((current) => Math.max(0, current - newlyRead));
       setItems((current) =>
         current.map((item) =>
           selected.has(item.id) ? { ...item, readAt: result.data.readAt } : item,
@@ -66,7 +68,7 @@ export function MessageCenter({
           disabled={pending || unreadCount === 0}
           onClick={() => void mark(items.filter(({ readAt }) => !readAt).map(({ id }) => id))}
         >
-          全部标为已读
+          将本页标为已读
         </button>
       </div>
       {error ? <p role="alert">{error}</p> : null}

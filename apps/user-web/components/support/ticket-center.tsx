@@ -8,13 +8,20 @@ import {
   changeTicketStatusAction,
   createTicketAction,
   replyTicketAction,
+  submitFeedbackAction,
+  submitTicketSatisfactionAction,
 } from '../../app/support-actions';
 import { runCommerceActionWithRefresh } from '../../lib/commerce/client-command';
 import { uploadAssetBytesWithSessionRefresh } from '../../lib/commerce/upload-client';
 import { runSupportActionWithRefresh } from '../../lib/support/client-command';
 import { formatSupportDate } from '../../lib/support/runtime';
 import { createUuidV7 } from '../../lib/tasks/identifiers';
-import type { SupportActionResult, TicketPage, TicketView } from '../../lib/support/types';
+import type {
+  FeedbackKind,
+  SupportActionResult,
+  TicketPage,
+  TicketView,
+} from '../../lib/support/types';
 import type { AssetListItem } from '../../lib/commerce/types';
 import { AccessibleDialog } from '../commerce/accessible-dialog';
 
@@ -57,18 +64,19 @@ export function TicketCenter({
   const [pending, setPending] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState<string>();
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   const create = async () => {
     if (pending || uncertain) return;
     const normalizedSubject = subject.trim();
     const normalizedBody = body.trim();
     if (
-      !normalizedSubject ||
+      normalizedSubject.length < 4 ||
       normalizedSubject.length > 120 ||
       normalizedBody.length < 10 ||
       normalizedBody.length > 4_000
     ) {
-      setError('标题须为 1–120 字，问题描述须为 10–4000 字。');
+      setError('标题须为 4–120 字，问题描述须为 10–4000 字。');
       return;
     }
     setPending(true);
@@ -94,7 +102,7 @@ export function TicketCenter({
       setUncertain(true);
       setError('提交结果待确认。请先刷新工单列表核对，避免重复创建。');
     } else {
-      setError('工单未创建，请检查内容后重试。');
+      setError('工单未提交，请检查内容和附件。');
     }
   };
 
@@ -112,6 +120,14 @@ export function TicketCenter({
           }}
         >
           创建新工单
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setFeedbackOpen(true);
+          }}
+        >
+          提交产品反馈
         </button>
       </div>
       {items.length === 0 ? (
@@ -147,6 +163,9 @@ export function TicketCenter({
               id="ticket-subject"
               value={subject}
               maxLength={120}
+              minLength={4}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? 'ticket-create-error' : undefined}
               onChange={(event) => {
                 setSubject(event.target.value);
               }}
@@ -171,6 +190,8 @@ export function TicketCenter({
               value={body}
               maxLength={4_000}
               rows={5}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? 'ticket-create-error' : undefined}
               onChange={(event) => {
                 setBody(event.target.value);
               }}
@@ -182,7 +203,11 @@ export function TicketCenter({
               disabled={pending || uncertain}
             />
           </div>
-          {error ? <p role="alert">{error}</p> : null}
+          {error ? (
+            <p id="ticket-create-error" role="alert">
+              {error}
+            </p>
+          ) : null}
           {uncertain ? <Link href="/tickets">刷新工单列表核对</Link> : null}
           <div className="dialog-actions">
             <button type="button" disabled={pending || uncertain} onClick={() => void create()}>
@@ -200,6 +225,13 @@ export function TicketCenter({
           </div>
         </AccessibleDialog>
       ) : null}
+      {feedbackOpen ? (
+        <FeedbackDialog
+          onClose={() => {
+            setFeedbackOpen(false);
+          }}
+        />
+      ) : null}
     </section>
   );
 }
@@ -215,6 +247,7 @@ function TicketCard({
   const [attachments, setAttachments] = useState<readonly AssetListItem[]>([]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [ratingOpen, setRatingOpen] = useState(false);
   const run = async (operation: (key: string) => Promise<SupportActionResult<TicketView>>) => {
     if (pending) return false;
     setPending(true);
@@ -274,6 +307,8 @@ function TicketCard({
             rows={3}
             value={reply}
             maxLength={4_000}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? `ticket-reply-error-${ticket.id}` : undefined}
             onChange={(event) => {
               setReply(event.target.value);
             }}
@@ -325,9 +360,194 @@ function TicketCard({
             重新打开
           </button>
         ) : null}
+        {(ticket.status === 'RESOLVED' || ticket.status === 'CLOSED') && !ticket.satisfaction ? (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              setRatingOpen(true);
+            }}
+          >
+            评价本次服务
+          </button>
+        ) : null}
+      </div>
+      {error ? (
+        <p id={`ticket-reply-error-${ticket.id}`} role="alert">
+          {error}
+        </p>
+      ) : null}
+      {ratingOpen ? (
+        <SatisfactionDialog
+          ticket={ticket}
+          onSaved={(satisfaction) => {
+            onChange({ ...ticket, satisfaction });
+            setRatingOpen(false);
+          }}
+          onClose={() => {
+            setRatingOpen(false);
+          }}
+        />
+      ) : null}
+    </article>
+  );
+}
+
+function SatisfactionDialog({
+  ticket,
+  onSaved,
+  onClose,
+}: {
+  readonly ticket: TicketView;
+  readonly onSaved: (satisfaction: NonNullable<TicketView['satisfaction']>) => void;
+  readonly onClose: () => void;
+}) {
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  const submit = async () => {
+    setPending(true);
+    setError(undefined);
+    const key = createUuidV7();
+    const result = await runSupportActionWithRefresh(key, (sameKey) =>
+      submitTicketSatisfactionAction(
+        ticket.id,
+        { rating, ...(comment.trim() ? { comment: comment.trim() } : {}) },
+        sameKey,
+      ),
+    );
+    setPending(false);
+    if (result.ok) onSaved(result.data);
+    else setError(result.outcome === 'UNCERTAIN' ? '评价结果待确认，请刷新核对。' : '评价未提交。');
+  };
+  return (
+    <AccessibleDialog
+      labelledBy={`satisfaction-title-${ticket.id}`}
+      onClose={onClose}
+      busy={pending}
+    >
+      <h2 id={`satisfaction-title-${ticket.id}`}>评价本次服务</h2>
+      <div className="settings-form">
+        <label htmlFor={`satisfaction-rating-${ticket.id}`}>满意度</label>
+        <select
+          id={`satisfaction-rating-${ticket.id}`}
+          value={rating}
+          onChange={(event) => {
+            setRating(Number(event.target.value));
+          }}
+        >
+          {[5, 4, 3, 2, 1].map((value) => (
+            <option key={value} value={value}>
+              {value} 星
+            </option>
+          ))}
+        </select>
+        <label htmlFor={`satisfaction-comment-${ticket.id}`}>补充说明（可选）</label>
+        <textarea
+          id={`satisfaction-comment-${ticket.id}`}
+          maxLength={500}
+          value={comment}
+          onChange={(event) => {
+            setComment(event.target.value);
+          }}
+        />
       </div>
       {error ? <p role="alert">{error}</p> : null}
-    </article>
+      <div className="dialog-actions">
+        <button type="button" disabled={pending} onClick={() => void submit()}>
+          提交评价
+        </button>
+        <button type="button" disabled={pending} onClick={onClose}>
+          取消
+        </button>
+      </div>
+    </AccessibleDialog>
+  );
+}
+
+function FeedbackDialog({ onClose }: { readonly onClose: () => void }) {
+  const [kind, setKind] = useState<FeedbackKind>('PRODUCT_SUGGESTION');
+  const [referenceId, setReferenceId] = useState('');
+  const [body, setBody] = useState('');
+  const [pending, setPending] = useState(false);
+  const [status, setStatus] = useState<string>();
+  const submit = async () => {
+    if (body.trim().length < 10 || pending) return;
+    setPending(true);
+    const key = createUuidV7();
+    const result = await runSupportActionWithRefresh(key, (sameKey) =>
+      submitFeedbackAction(
+        {
+          kind,
+          body: body.trim(),
+          ...(kind !== 'PRODUCT_SUGGESTION' ? { referenceId: referenceId.trim() } : {}),
+        },
+        sameKey,
+      ),
+    );
+    setPending(false);
+    if (result.ok) setStatus('反馈已提交，感谢你的建议。');
+    else
+      setStatus(
+        result.outcome === 'UNCERTAIN'
+          ? '反馈结果待确认，请勿重复提交。'
+          : '反馈未提交，请检查内容。',
+      );
+  };
+  return (
+    <AccessibleDialog labelledBy="feedback-title" onClose={onClose} busy={pending}>
+      <h2 id="feedback-title">提交产品反馈</h2>
+      <div className="settings-form">
+        <label htmlFor="feedback-kind">反馈类型</label>
+        <select
+          id="feedback-kind"
+          value={kind}
+          onChange={(event) => {
+            setKind(event.target.value as FeedbackKind);
+          }}
+        >
+          <option value="PRODUCT_SUGGESTION">产品建议</option>
+          <option value="MODEL_RESULT">模型效果</option>
+          <option value="FAILED_TASK">失败任务</option>
+        </select>
+        {kind !== 'PRODUCT_SUGGESTION' ? (
+          <>
+            <label htmlFor="feedback-reference">关联任务编号</label>
+            <input
+              id="feedback-reference"
+              value={referenceId}
+              onChange={(event) => {
+                setReferenceId(event.target.value);
+              }}
+            />
+          </>
+        ) : null}
+        <label htmlFor="feedback-body">反馈内容</label>
+        <textarea
+          id="feedback-body"
+          minLength={10}
+          maxLength={2_000}
+          value={body}
+          onChange={(event) => {
+            setBody(event.target.value);
+          }}
+        />
+      </div>
+      {status ? <p role={status.includes('感谢') ? 'status' : 'alert'}>{status}</p> : null}
+      <div className="dialog-actions">
+        <button
+          type="button"
+          disabled={pending || body.trim().length < 10}
+          onClick={() => void submit()}
+        >
+          提交反馈
+        </button>
+        <button type="button" disabled={pending} onClick={onClose}>
+          取消
+        </button>
+      </div>
+    </AccessibleDialog>
   );
 }
 

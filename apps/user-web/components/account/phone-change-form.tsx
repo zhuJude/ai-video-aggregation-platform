@@ -117,7 +117,8 @@ export function PhoneChangeForm({
           onChange={(event) => {
             setNewPhone(event.target.value);
           }}
-          aria-describedby="phone-help"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? 'phone-help phone-change-error' : 'phone-help'}
         />
         <small id="phone-help">输入 11 位中国大陆手机号。</small>
         <button type="button" disabled={busy || cooldown > 0} onClick={() => void request()}>
@@ -134,6 +135,8 @@ export function PhoneChangeForm({
               onChange={(event) => {
                 setOldCode(event.target.value);
               }}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? 'phone-change-error' : undefined}
             />
             <label htmlFor="new-phone-code">新手机号验证码</label>
             <input
@@ -144,6 +147,8 @@ export function PhoneChangeForm({
               onChange={(event) => {
                 setNewCode(event.target.value);
               }}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? 'phone-change-error' : undefined}
             />
             <button type="button" disabled={busy} onClick={() => void verify()}>
               确认换绑手机号
@@ -153,7 +158,7 @@ export function PhoneChangeForm({
       </div>
       {status ? <p role="status">{status}</p> : null}
       {error ? (
-        <p role="alert" aria-live="assertive">
+        <p id="phone-change-error" role="alert" aria-live="assertive">
           {error}
         </p>
       ) : null}

@@ -3,6 +3,7 @@ import 'server-only';
 import { createHmac } from 'node:crypto';
 
 import { closeMockSubject, rebindMockSubjectPhone } from '../auth/mock-subject-store';
+import { findMockObject } from '../commerce/mock-object-store';
 import { isUuidV7 } from '../tasks/identifiers';
 import { maskPhone, validateProfileInput } from './runtime';
 import { readAccountState, replayAccountCommand, runAccountCommand } from './mock-store';
@@ -14,6 +15,7 @@ export const WS10_IDENTITY_ROUTES = {
   profile: '/v1/profile',
   phoneRequest: '/v1/phone-change/sms/request',
   phoneVerify: '/v1/phone-change/sms/verify',
+  deletionCodeRequest: '/v1/auth/sms/request',
   closeAccount: '/v1/account',
 } as const;
 
@@ -69,6 +71,16 @@ export const accountGateway: AccountGateway = {
 
   async updateProfile(input, context) {
     const profile = validateProfileInput(input);
+    if (profile.avatarAssetId) {
+      const avatar = await findMockObject(profile.avatarAssetId, context.ownerId);
+      if (
+        !avatar ||
+        avatar.state !== 'AVAILABLE' ||
+        !/^image\/(?:jpeg|png|webp)$/.test(avatar.mimeType) ||
+        BigInt(avatar.sizeBytes) > 5n * 1024n * 1024n
+      )
+        throw new AccountGatewayError('INVALID_AVATAR');
+    }
     return runAccountCommand(
       context,
       {
@@ -205,6 +217,7 @@ export const accountGateway: AccountGateway = {
     }
     await rebindMockSubjectPhone(context.ownerId, context.verifiedPhone, newPhoneE164);
     return runAccountCommand(context, command, (state) => {
+      state.verifiedPhone = newPhoneE164;
       state.profile = {
         ...state.profile,
         phoneMasked: maskPhone(newPhoneE164),
@@ -213,6 +226,38 @@ export const accountGateway: AccountGateway = {
       delete state.phoneChange;
       return { changed: true, verifiedPhone: newPhoneE164 } as const;
     });
+  },
+
+  async requestAccountDeletionCode(input, context) {
+    if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(input.deviceId))
+      throw new AccountGatewayError('INVALID_DEVICE');
+    const now = Date.now();
+    return runAccountCommand(
+      context,
+      {
+        key: context.idempotencyKey,
+        kind: 'DELETE_REQUEST',
+        fingerprint: `delete-request:${input.deviceId}`,
+      },
+      (state) => {
+        if (state.deletionChallenge && Date.parse(state.deletionChallenge.cooldownUntil) > now) {
+          throw new AccountGatewayError(
+            'RATE_LIMITED',
+            Math.max(
+              1,
+              Math.ceil((Date.parse(state.deletionChallenge.cooldownUntil) - now) / 1_000),
+            ),
+          );
+        }
+        const requestedAt = new Date(now).toISOString();
+        state.deletionChallenge = {
+          requestedAt,
+          cooldownUntil: new Date(now + 60_000).toISOString(),
+          expiresAt: new Date(now + 10 * 60_000).toISOString(),
+        };
+        return { cooldownSeconds: 60, message: '如果账号可操作，验证码将尽快发送。' };
+      },
+    );
   },
 
   async closeAccount(input, context) {
@@ -224,8 +269,11 @@ export const accountGateway: AccountGateway = {
       context,
       { key: context.idempotencyKey, kind: 'DELETE', fingerprint: 'account-delete' },
       (state) => {
+        if (!state.deletionChallenge || Date.parse(state.deletionChallenge.expiresAt) <= Date.now())
+          throw new AccountGatewayError('FRESH_CHALLENGE_REQUIRED');
         state.closed = true;
         state.sessions = [];
+        delete state.deletionChallenge;
         return { closed: true } as const;
       },
     );

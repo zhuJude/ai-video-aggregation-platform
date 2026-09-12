@@ -8,6 +8,8 @@ import type {
   MessagePage,
   MessageView,
   TicketAttachmentView,
+  FeedbackKind,
+  FeedbackView,
   TicketFilters,
   TicketPage,
   TicketReplyView,
@@ -230,6 +232,7 @@ function parseTicket(value: unknown): TicketView {
       'statusHistory',
       'canClose',
       'canReopen',
+      'satisfaction',
     ],
     'INVALID_TICKET',
   );
@@ -239,9 +242,22 @@ function parseTicket(value: unknown): TicketView {
     throw new Error('INVALID_TICKET');
   if (typeof ticket.canClose !== 'boolean' || typeof ticket.canReopen !== 'boolean')
     throw new Error('INVALID_TICKET');
+  const satisfaction =
+    ticket.satisfaction === undefined ? undefined : record(ticket.satisfaction, 'INVALID_TICKET');
+  if (satisfaction) {
+    exact(satisfaction, ['rating', 'comment', 'createdAt'], 'INVALID_TICKET');
+    if (
+      !Number.isSafeInteger(satisfaction.rating) ||
+      (satisfaction.rating as number) < 1 ||
+      (satisfaction.rating as number) > 5
+    )
+      throw new Error('INVALID_TICKET');
+  }
+  const subject = text(ticket.subject, 'INVALID_TICKET', 120);
+  if (subject.length < 4) throw new Error('INVALID_TICKET');
   return {
     id: uuid(ticket.id, 'INVALID_TICKET'),
-    subject: text(ticket.subject, 'INVALID_TICKET', 120),
+    subject,
     category: ticket.category as TicketView['category'],
     status: parseStatus(ticket.status),
     createdAt: instant(ticket.createdAt, 'INVALID_TICKET'),
@@ -258,6 +274,38 @@ function parseTicket(value: unknown): TicketView {
     }),
     canClose: ticket.canClose,
     canReopen: ticket.canReopen,
+    ...(satisfaction
+      ? {
+          satisfaction: {
+            rating: satisfaction.rating as 1 | 2 | 3 | 4 | 5,
+            ...(satisfaction.comment === undefined
+              ? {}
+              : { comment: text(satisfaction.comment, 'INVALID_TICKET', 500) }),
+            createdAt: instant(satisfaction.createdAt, 'INVALID_TICKET'),
+          },
+        }
+      : {}),
+  };
+}
+
+const FEEDBACK_KINDS = new Set<FeedbackKind>(['MODEL_RESULT', 'FAILED_TASK', 'PRODUCT_SUGGESTION']);
+
+export function parseFeedback(value: unknown): FeedbackView {
+  const feedback = record(value, 'INVALID_FEEDBACK');
+  exact(feedback, ['id', 'kind', 'body', 'referenceId', 'createdAt'], 'INVALID_FEEDBACK');
+  if (!FEEDBACK_KINDS.has(feedback.kind as FeedbackKind)) throw new Error('INVALID_FEEDBACK');
+  if (
+    feedback.referenceId !== undefined &&
+    (typeof feedback.referenceId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(feedback.referenceId))
+  )
+    throw new Error('INVALID_FEEDBACK');
+  return {
+    id: uuid(feedback.id, 'INVALID_FEEDBACK'),
+    kind: feedback.kind as FeedbackKind,
+    body: text(feedback.body, 'INVALID_FEEDBACK', 2_000),
+    ...(feedback.referenceId ? { referenceId: feedback.referenceId } : {}),
+    createdAt: instant(feedback.createdAt, 'INVALID_FEEDBACK'),
   };
 }
 

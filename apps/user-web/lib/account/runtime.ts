@@ -38,23 +38,41 @@ function text(value: unknown, code: string, max: number): string {
 export function validateProfileInput(input: {
   readonly nickname: string;
   readonly avatarPreset: ProfileView['avatarPreset'];
+  readonly avatarAssetId?: string;
 }) {
   const nickname = text(input.nickname, 'INVALID_PROFILE', 40);
   if (!AVATAR_PRESETS.has(input.avatarPreset)) throw new Error('INVALID_PROFILE');
-  return { nickname, avatarPreset: input.avatarPreset };
+  if (input.avatarAssetId !== undefined && !/^[A-Za-z0-9_-]{8,128}$/.test(input.avatarAssetId))
+    throw new Error('INVALID_PROFILE');
+  return {
+    nickname,
+    avatarPreset: input.avatarPreset,
+    ...(input.avatarAssetId ? { avatarAssetId: input.avatarAssetId } : {}),
+  };
 }
 
 export function parseProfile(value: unknown): ProfileView {
   const profile = record(value, 'INVALID_PROFILE');
-  exact(profile, ['nickname', 'phoneMasked', 'avatarPreset', 'updatedAt'], 'INVALID_PROFILE');
+  exact(
+    profile,
+    ['nickname', 'phoneMasked', 'avatarPreset', 'avatarAssetId', 'updatedAt'],
+    'INVALID_PROFILE',
+  );
   if (!AVATAR_PRESETS.has(profile.avatarPreset as ProfileView['avatarPreset']))
     throw new Error('INVALID_PROFILE');
   if (typeof profile.phoneMasked !== 'string' || !/^1\d{2}\*{4}\d{4}$/.test(profile.phoneMasked))
+    throw new Error('INVALID_PROFILE');
+  if (
+    profile.avatarAssetId !== undefined &&
+    (typeof profile.avatarAssetId !== 'string' ||
+      !/^[A-Za-z0-9_-]{8,128}$/.test(profile.avatarAssetId))
+  )
     throw new Error('INVALID_PROFILE');
   return {
     nickname: text(profile.nickname, 'INVALID_PROFILE', 40),
     phoneMasked: profile.phoneMasked,
     avatarPreset: profile.avatarPreset as ProfileView['avatarPreset'],
+    ...(profile.avatarAssetId ? { avatarAssetId: profile.avatarAssetId } : {}),
     updatedAt: instant(profile.updatedAt, 'INVALID_PROFILE'),
   };
 }

@@ -4,7 +4,15 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { UuidSchema } from '@repo/contracts/common';
 import { cookies } from 'next/headers';
 
-import { resolveOrCreateMockSubjectForVerifiedPhone } from './mock-subject-store';
+import {
+  resolveExistingMockSubjectForVerifiedPhone,
+  resolveOrCreateMockSubjectForVerifiedPhone,
+} from './mock-subject-store';
+import {
+  registerAccountSession,
+  rotateAccountSession,
+  validateAccountSession,
+} from '../account/mock-store';
 
 const APP_SESSION_COOKIE_NAME = '__Host-user-session';
 const COOKIE_VERSION = 'v2';
@@ -253,6 +261,49 @@ async function storedSession(): Promise<StoredSession | undefined> {
   return value ? decryptSession(value, Math.floor(Date.now() / 1_000)) : undefined;
 }
 
+async function validateLiveSession(session: StoredSession): Promise<boolean> {
+  try {
+    const headers = gatewayMetadataHeaders({
+      accept: 'application/json',
+      authorization: `Bearer ${session.accessToken}`,
+    });
+    const response = await fetch(new URL('/v1/sessions', baseUrl('GATEWAY_URL')), {
+      headers,
+      method: 'GET',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return false;
+    }
+    const body = (await response.json()) as unknown;
+    if (!isRecord(body) || !Array.isArray(body.sessions)) return false;
+    return body.sessions.some((raw) => {
+      if (!isRecord(raw)) return false;
+      return raw.id === session.sessionId && raw.current === true;
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function durableSessionIdentity(
+  session: StoredSession,
+): Promise<{ readonly verifiedPhone: string } | undefined> {
+  if (process.env.USER_WEB_SUPPORT_MODE !== 'mock') {
+    return (await validateLiveSession(session))
+      ? { verifiedPhone: session.verifiedPhone }
+      : undefined;
+  }
+  try {
+    const account = await validateAccountSession(session.mockSubjectId, session.sessionId);
+    const mappedSubject = await resolveExistingMockSubjectForVerifiedPhone(account.verifiedPhone);
+    return mappedSubject === session.mockSubjectId ? account : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function establishAuthenticatedServerSession(
   accessToken: string,
   expectedSessionId: string,
@@ -265,6 +316,9 @@ export async function establishAuthenticatedServerSession(
   if (metadata.sessionId !== expectedSessionId) throw new Error('GATEWAY_SESSION_MISMATCH');
   if (!REFRESH_TOKEN.test(refreshToken)) throw new Error('INVALID_REFRESH_TOKEN');
   const mockSubjectId = await resolveOrCreateMockSubjectForVerifiedPhone(verifiedPhoneOwner);
+  if (process.env.USER_WEB_SUPPORT_MODE === 'mock') {
+    await registerAccountSession(mockSubjectId, metadata.sessionId, verifiedPhoneOwner);
+  }
   await writeSession({
     version: 2,
     accessToken,
@@ -290,8 +344,13 @@ export async function readAuthenticatedServerSessionState(): Promise<Authenticat
   const session = await storedSession();
   if (!session) return { kind: 'invalid' };
   if (session.accessExpiresAt <= Math.floor(Date.now() / 1_000)) {
+    if (process.env.USER_WEB_SUPPORT_MODE === 'mock' && !(await durableSessionIdentity(session)))
+      return { kind: 'invalid' };
+    // In live mode the refresh endpoint is the authority for an expired access token;
+    // no protected data is returned before that explicit mutation succeeds.
     return { kind: 'needs-refresh' };
   }
+  if (!(await durableSessionIdentity(session))) return { kind: 'invalid' };
   return { kind: 'active', session: { ownerId: session.mockSubjectId } };
 }
 
@@ -316,6 +375,11 @@ function gatewayMetadataHeaders(input?: HeadersInit): Headers {
 
 async function rotate(session: StoredSession): Promise<StoredSession | undefined> {
   try {
+    const durableBefore =
+      process.env.USER_WEB_SUPPORT_MODE === 'mock'
+        ? await durableSessionIdentity(session)
+        : { verifiedPhone: session.verifiedPhone };
+    if (!durableBefore) return undefined;
     const refreshToken = (await cookies()).get('refresh_token')?.value;
     if (!refreshToken || !REFRESH_TOKEN.test(refreshToken)) return undefined;
     const headers = gatewayMetadataHeaders();
@@ -337,6 +401,22 @@ async function rotate(session: StoredSession): Promise<StoredSession | undefined
     const nowSeconds = Math.floor(Date.now() / 1_000);
     const metadata = parseAccessTokenMetadata(body.accessToken, nowSeconds);
     if (metadata.sessionId !== responseSessionId.data) return undefined;
+    let verifiedPhone = durableBefore.verifiedPhone;
+    if (process.env.USER_WEB_SUPPORT_MODE === 'mock') {
+      // This transaction is the second authorization check: a concurrent revoke/close
+      // between the upstream refresh and this point cannot resurrect the session.
+      verifiedPhone = (
+        await rotateAccountSession(session.mockSubjectId, session.sessionId, metadata.sessionId)
+      ).verifiedPhone;
+    } else {
+      const liveCandidate: StoredSession = {
+        ...session,
+        accessToken: body.accessToken,
+        accessExpiresAt: metadata.expiresAt,
+        sessionId: metadata.sessionId,
+      };
+      if (!(await validateLiveSession(liveCandidate))) return undefined;
+    }
     const rotated: StoredSession = {
       version: 2,
       accessToken: body.accessToken,
@@ -345,7 +425,7 @@ async function rotate(session: StoredSession): Promise<StoredSession | undefined
       issuedAt: nowSeconds,
       mockSubjectId: session.mockSubjectId,
       sessionId: metadata.sessionId,
-      verifiedPhone: session.verifiedPhone,
+      verifiedPhone,
     };
     await writeSession(rotated);
     await writeRefreshToken(refreshTokenFromSetCookie(response.headers.get('set-cookie')));
@@ -358,6 +438,7 @@ async function rotate(session: StoredSession): Promise<StoredSession | undefined
 async function mutableFreshSession(): Promise<StoredSession | undefined> {
   const session = await storedSession();
   if (!session) return undefined;
+  if (!(await durableSessionIdentity(session))) return undefined;
   return session.accessExpiresAt > Math.floor(Date.now() / 1_000) ? session : undefined;
 }
 
@@ -378,10 +459,12 @@ export async function requireMutableAuthenticatedServerSessionIdentity(): Promis
     if (state.kind === 'needs-refresh') throw new SessionRefreshRequiredError();
     throw new AuthenticationRequiredError();
   }
+  const durable = await durableSessionIdentity(session);
+  if (!durable) throw new AuthenticationRequiredError();
   return {
     ownerId: session.mockSubjectId,
     sessionId: session.sessionId,
-    verifiedPhone: session.verifiedPhone,
+    verifiedPhone: durable.verifiedPhone,
   };
 }
 

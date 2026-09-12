@@ -62,9 +62,26 @@ describe('message center', () => {
     expect(screen.getByText('2 条未读')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '将“视频已生成”标为已读' }));
     expect(screen.getByText('1 条未读')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: '全部标为已读' }));
+    await user.click(screen.getByRole('button', { name: '将本页标为已读' }));
     expect(screen.getByText('0 条未读')).toBeVisible();
     expect(markRead).toHaveBeenNthCalledWith(1, [page.items[0]?.id], expect.any(String));
     expect(markRead).toHaveBeenNthCalledWith(2, [page.items[1]?.id], expect.any(String));
+  });
+
+  it('keeps the global unread total while honestly marking only the current page', async () => {
+    const user = userEvent.setup();
+    const markRead = vi.fn().mockResolvedValue(ok({ readAt: '2026-08-31T03:00:00.000Z' }));
+    render(
+      <MessageCenter
+        initial={{ ...page, unreadCount: 9, items: page.items.slice(0, 1) }}
+        onMarkRead={markRead}
+      />,
+    );
+
+    expect(screen.getByText('9 条未读')).toBeVisible();
+    expect(screen.queryByRole('button', { name: '全部标为已读' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '将本页标为已读' }));
+    expect(screen.getByText('8 条未读')).toBeVisible();
+    expect(markRead).toHaveBeenCalledWith([page.items[0]?.id], expect.any(String));
   });
 });

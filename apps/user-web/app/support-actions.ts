@@ -6,8 +6,14 @@ import {
   SessionRefreshRequiredError,
 } from '../lib/auth/server-session';
 import { supportGateway, SupportGatewayError } from '../lib/support/gateway';
-import { parseTicketPage } from '../lib/support/runtime';
-import type { SupportActionResult, TicketView } from '../lib/support/types';
+import { parseFeedback, parseTicketPage } from '../lib/support/runtime';
+import type {
+  FeedbackKind,
+  FeedbackView,
+  SupportActionResult,
+  TicketSatisfactionView,
+  TicketView,
+} from '../lib/support/types';
 import { isUuidV7 } from '../lib/tasks/identifiers';
 
 function failure(error: unknown): SupportActionResult<never> {
@@ -122,6 +128,58 @@ export async function changeTicketStatusAction(
       ok: true,
       data: ticket(
         await supportGateway.changeTicketStatus(ticketId, action, {
+          ownerId: await ownerId(),
+          idempotencyKey,
+        }),
+      ),
+    };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function submitTicketSatisfactionAction(
+  ticketId: string,
+  input: { readonly rating: number; readonly comment?: string },
+  idempotencyKey: string,
+): Promise<SupportActionResult<TicketSatisfactionView>> {
+  try {
+    const result = await supportGateway.submitTicketSatisfaction(ticketId, input, {
+      ownerId: await ownerId(),
+      idempotencyKey,
+    });
+    const parsed = result as Record<string, unknown>;
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      Array.isArray(result) ||
+      Object.keys(parsed).some((key) => !['rating', 'comment', 'createdAt'].includes(key)) ||
+      !Number.isSafeInteger(parsed.rating) ||
+      (parsed.rating as number) < 1 ||
+      (parsed.rating as number) > 5 ||
+      (parsed.comment !== undefined && typeof parsed.comment !== 'string') ||
+      typeof parsed.createdAt !== 'string' ||
+      !Number.isFinite(Date.parse(parsed.createdAt))
+    )
+      throw new Error('INVALID_SATISFACTION_RESULT');
+    return {
+      ok: true,
+      data: parsed as unknown as TicketSatisfactionView,
+    };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function submitFeedbackAction(
+  input: { readonly kind: FeedbackKind; readonly body: string; readonly referenceId?: string },
+  idempotencyKey: string,
+): Promise<SupportActionResult<FeedbackView>> {
+  try {
+    return {
+      ok: true,
+      data: parseFeedback(
+        await supportGateway.submitFeedback(input, {
           ownerId: await ownerId(),
           idempotencyKey,
         }),

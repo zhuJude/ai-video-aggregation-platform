@@ -22,6 +22,7 @@ export interface ProfileView {
   readonly nickname: string;
   readonly phoneMasked: string;
   readonly avatarPreset: 'AMBER' | 'BLUE' | 'GREEN' | 'PLUM';
+  readonly avatarAssetId?: string;
   readonly updatedAt: string;
 }
 
@@ -43,7 +44,11 @@ export interface AccountCommandContext extends AccountGatewayContext {
 export interface AccountGateway {
   getProfile(context: AccountGatewayContext): Promise<unknown>;
   updateProfile(
-    input: { readonly nickname: string; readonly avatarPreset: ProfileView['avatarPreset'] },
+    input: {
+      readonly nickname: string;
+      readonly avatarPreset: ProfileView['avatarPreset'];
+      readonly avatarAssetId?: string;
+    },
     context: AccountCommandContext,
   ): Promise<unknown>;
   listSessions(context: AccountGatewayContext): Promise<unknown>;
@@ -60,6 +65,10 @@ export interface AccountGateway {
       readonly newPhoneCode: string;
       readonly operationId: string;
     },
+    context: AccountCommandContext,
+  ): Promise<unknown>;
+  requestAccountDeletionCode(
+    input: { readonly deviceId: string },
     context: AccountCommandContext,
   ): Promise<unknown>;
   closeAccount(

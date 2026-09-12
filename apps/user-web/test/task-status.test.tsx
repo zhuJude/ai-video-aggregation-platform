@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { TaskStatus } from '../components/tasks/task-status';
 import { TaskDetailView, type TaskDetailCommands } from '../components/tasks/task-detail-view';
@@ -12,6 +12,7 @@ import { StudioWorkspace } from '../components/studio/studio-workspace';
 import StudioPage from '../app/studio/page';
 import TaskDetailPage from '../app/tasks/[id]/page';
 import { cancelTaskAction, createRetryDraftAction } from '../app/tasks/actions';
+import { createMockStoreTestScope } from './mock-store-scope';
 import {
   establishAuthenticatedServerSession,
   readAuthenticatedServerSession,
@@ -44,6 +45,9 @@ process.env.USER_WEB_SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base
 process.env.USER_WEB_COMMERCE_MODE = 'mock';
 process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 17).toString('base64url');
 process.env.USER_WEB_MOCK_IDENTITY_KEY = Buffer.alloc(32, 19).toString('base64url');
+process.env.USER_WEB_SUPPORT_MODE = 'mock';
+process.env.USER_WEB_STUDIO_MODE = 'mock';
+const mockStoreScope = createMockStoreTestScope();
 const accessToken = (ownerId: string, sessionId: string) => {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   return `${encode({ alg: 'ES256', typ: 'JWT' })}.${encode({
@@ -117,6 +121,7 @@ const runningEvent: TaskStatusSnapshot = {
 };
 
 beforeEach(async () => {
+  mockStoreScope.install();
   redirectTo.mockClear();
   fixtureSessionCookies.clear();
   await establishAuthenticatedServerSession(
@@ -125,6 +130,12 @@ beforeEach(async () => {
     TEST_REFRESH_TOKEN,
     PHONE_A,
   );
+});
+
+afterAll(async () => {
+  await mockStoreScope.cleanup();
+  delete process.env.USER_WEB_STUDIO_MODE;
+  delete process.env.USER_WEB_SUPPORT_MODE;
 });
 
 afterEach(() => {

@@ -8,6 +8,7 @@ import { readSupportState, replaySupportCommand, runSupportCommand } from './moc
 import type { MessageView, SupportGateway, TicketAttachmentView, TicketView } from './types';
 
 const PAGE_SIZE = 3;
+const REOPEN_WINDOW_MS = 7 * 24 * 60 * 60_000;
 const TICKET_CATEGORIES = new Set<TicketView['category']>([
   'TASK',
   'PAYMENT',
@@ -89,6 +90,16 @@ function requireBody(value: string, min: number, max: number, code: string): str
     throw new SupportGatewayError(code);
   }
   return body;
+}
+
+function mayReopen(ticket: TicketView, now = Date.now()): boolean {
+  const updatedAt = Date.parse(ticket.updatedAt);
+  return (
+    ticket.status === 'RESOLVED' &&
+    Number.isFinite(updatedAt) &&
+    updatedAt <= now &&
+    now - updatedAt <= REOPEN_WINDOW_MS
+  );
 }
 
 export const supportGateway: SupportGateway = {
@@ -177,7 +188,7 @@ export const supportGateway: SupportGateway = {
           },
         ],
         statusHistory: [{ status: 'OPEN', occurredAt: now, label: '工单已创建' }],
-        canClose: true,
+        canClose: false,
         canReopen: false,
       };
       state.tickets.unshift(ticket);
@@ -197,11 +208,27 @@ export const supportGateway: SupportGateway = {
     return runSupportCommand(ownerId, command, (state) => {
       const index = state.tickets.findIndex((ticket) => ticket.id === ticketId);
       const current = state.tickets[index];
-      if (!current || current.status === 'CLOSED')
+      if (
+        !current ||
+        current.status === 'CLOSED' ||
+        (current.status === 'RESOLVED' && !mayReopen(current))
+      )
         throw new SupportGatewayError('TICKET_NOT_REPLYABLE');
       const now = new Date().toISOString();
+      const reopens = current.status === 'RESOLVED';
       const next: TicketView = {
         ...current,
+        ...(reopens
+          ? {
+              status: 'IN_PROGRESS' as const,
+              canClose: false,
+              canReopen: false,
+              statusHistory: [
+                ...current.statusHistory,
+                { status: 'IN_PROGRESS' as const, occurredAt: now, label: '用户回复并重开工单' },
+              ],
+            }
+          : {}),
         updatedAt: now,
         replies: [
           ...current.replies,
@@ -231,30 +258,87 @@ export const supportGateway: SupportGateway = {
         const current = state.tickets[index];
         if (!current) throw new SupportGatewayError('TICKET_NOT_FOUND');
         if (
-          (action === 'CLOSE' && !current.canClose) ||
-          (action === 'REOPEN' && !current.canReopen)
+          (action === 'REOPEN' && !mayReopen(current)) ||
+          (action === 'CLOSE' && current.status !== 'RESOLVED')
         ) {
           throw new SupportGatewayError('TICKET_ACTION_NOT_ALLOWED');
         }
         const now = new Date().toISOString();
-        const status = action === 'CLOSE' ? 'CLOSED' : 'OPEN';
+        const status = action === 'REOPEN' ? ('IN_PROGRESS' as const) : ('CLOSED' as const);
         const next: TicketView = {
           ...current,
           status,
           updatedAt: now,
-          canClose: action === 'REOPEN',
-          canReopen: action === 'CLOSE',
+          canClose: false,
+          canReopen: false,
           statusHistory: [
             ...current.statusHistory,
             {
               status,
               occurredAt: now,
-              label: action === 'CLOSE' ? '用户已关闭工单' : '用户已重开工单',
+              label: action === 'REOPEN' ? '用户已重开工单' : '用户已关闭工单',
             },
           ],
         };
         state.tickets[index] = next;
         return next;
+      },
+    );
+  },
+
+  async submitTicketSatisfaction(ticketId, input, context) {
+    const ownerId = owner(context.ownerId);
+    if (!isUuidV7(ticketId)) throw new SupportGatewayError('TICKET_NOT_FOUND');
+    if (!Number.isSafeInteger(input.rating) || input.rating < 1 || input.rating > 5)
+      throw new SupportGatewayError('INVALID_SATISFACTION');
+    const comment =
+      input.comment === undefined
+        ? undefined
+        : requireBody(input.comment, 1, 500, 'INVALID_SATISFACTION');
+    const fingerprint = `ticket-satisfaction:${JSON.stringify({ ticketId, rating: input.rating, comment })}`;
+    return runSupportCommand(
+      ownerId,
+      { key: context.idempotencyKey, kind: 'TICKET_SATISFACTION', fingerprint },
+      (state) => {
+        const index = state.tickets.findIndex(({ id }) => id === ticketId);
+        const current = state.tickets[index];
+        if (!current) throw new SupportGatewayError('TICKET_NOT_FOUND');
+        if (!['RESOLVED', 'CLOSED'].includes(current.status) || current.satisfaction)
+          throw new SupportGatewayError('SATISFACTION_NOT_ALLOWED');
+        const satisfaction = {
+          rating: input.rating as 1 | 2 | 3 | 4 | 5,
+          ...(comment ? { comment } : {}),
+          createdAt: new Date().toISOString(),
+        };
+        state.tickets[index] = { ...current, satisfaction };
+        return satisfaction;
+      },
+    );
+  },
+
+  async submitFeedback(input, context) {
+    const ownerId = owner(context.ownerId);
+    if (!['MODEL_RESULT', 'FAILED_TASK', 'PRODUCT_SUGGESTION'].includes(input.kind))
+      throw new SupportGatewayError('INVALID_FEEDBACK');
+    const body = requireBody(input.body, 10, 2_000, 'INVALID_FEEDBACK');
+    if (
+      (input.kind === 'PRODUCT_SUGGESTION' && input.referenceId !== undefined) ||
+      (input.kind !== 'PRODUCT_SUGGESTION' && !isUuidV7(input.referenceId))
+    )
+      throw new SupportGatewayError('INVALID_FEEDBACK_REFERENCE');
+    const normalized = {
+      kind: input.kind,
+      body,
+      ...(input.referenceId ? { referenceId: input.referenceId } : {}),
+    };
+    const fingerprint = `feedback:${JSON.stringify(normalized)}`;
+    return runSupportCommand(
+      ownerId,
+      { key: context.idempotencyKey, kind: 'FEEDBACK_CREATE', fingerprint },
+      (state) => {
+        const feedback = { id: createUuidV7(), ...normalized, createdAt: new Date().toISOString() };
+        state.feedback.unshift(feedback);
+        return feedback;
       },
     );
   },

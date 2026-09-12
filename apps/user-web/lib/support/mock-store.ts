@@ -4,14 +4,20 @@ import { createHash } from 'node:crypto';
 import { UuidSchema } from '@repo/contracts/common';
 
 import { transactMockStoreJson } from '../commerce/mock-object-store';
-import { isUuidV7 } from '../tasks/identifiers';
-import { parseMessagePage, parseTicketPage } from './runtime';
-import type { MessageView, TicketView } from './types';
+import { createUuidV7, isUuidV7 } from '../tasks/identifiers';
+import { parseFeedback, parseMessagePage, parseTicketPage } from './runtime';
+import type { FeedbackView, MessageView, TicketView } from './types';
 
 const COMMAND_TTL_MS = 24 * 60 * 60_000;
 const MAX_COMMANDS = 5_000;
 
-type CommandKind = 'MESSAGE_READ' | 'TICKET_CREATE' | 'TICKET_REPLY' | 'TICKET_STATUS';
+export type CommandKind =
+  | 'MESSAGE_READ'
+  | 'TICKET_CREATE'
+  | 'TICKET_REPLY'
+  | 'TICKET_STATUS'
+  | 'TICKET_SATISFACTION'
+  | 'FEEDBACK_CREATE';
 
 interface StoredCommand {
   readonly key: string;
@@ -22,10 +28,11 @@ interface StoredCommand {
 }
 
 export interface SupportState {
-  readonly version: 1;
+  readonly version: 2;
   readonly ownerId: string;
   readonly messages: readonly MessageView[];
   readonly tickets: readonly TicketView[];
+  readonly feedback: readonly FeedbackView[];
   readonly internalNotes: Readonly<Record<string, readonly string[]>>;
   readonly commands: readonly StoredCommand[];
 }
@@ -33,6 +40,7 @@ export interface SupportState {
 export interface MutableSupportState {
   messages: MessageView[];
   tickets: TicketView[];
+  feedback: FeedbackView[];
 }
 
 export class SupportStoreError extends Error {
@@ -51,7 +59,7 @@ function requireMockSupport(): void {
 function fileName(ownerId: string): string {
   requireMockSupport();
   if (!UuidSchema.safeParse(ownerId).success) throw new SupportStoreError('INVALID');
-  return `.support-${createHash('sha256').update(`support:v1:${ownerId}`).digest('hex')}.json`;
+  return `.support-${createHash('sha256').update(`support:v2:${ownerId}`).digest('hex')}.json`;
 }
 
 function parseState(value: unknown, ownerId: string): SupportState {
@@ -60,8 +68,8 @@ function parseState(value: unknown, ownerId: string): SupportState {
   const state = value as Record<string, unknown>;
   if (
     Object.keys(state).sort().join(',') !==
-      'commands,internalNotes,messages,ownerId,tickets,version' ||
-    state.version !== 1 ||
+      'commands,feedback,internalNotes,messages,ownerId,tickets,version' ||
+    state.version !== 2 ||
     state.ownerId !== ownerId ||
     !Array.isArray(state.commands) ||
     !state.internalNotes ||
@@ -72,6 +80,8 @@ function parseState(value: unknown, ownerId: string): SupportState {
   }
   const messages = parseMessagePage({ items: state.messages, unreadCount: 0, pageInfo: {} }).items;
   const tickets = parseTicketPage({ items: state.tickets, pageInfo: {} }).items;
+  if (!Array.isArray(state.feedback)) throw new SupportStoreError('INVALID');
+  const feedback = state.feedback.map(parseFeedback);
   const internalNotes = Object.fromEntries(
     Object.entries(state.internalNotes as Record<string, unknown>).map(([ticketId, notes]) => {
       if (
@@ -93,9 +103,14 @@ function parseState(value: unknown, ownerId: string): SupportState {
       !isUuidV7(command.key) ||
       typeof command.fingerprint !== 'string' ||
       command.fingerprint.length > 8_192 ||
-      !['MESSAGE_READ', 'TICKET_CREATE', 'TICKET_REPLY', 'TICKET_STATUS'].includes(
-        command.kind as string,
-      ) ||
+      ![
+        'MESSAGE_READ',
+        'TICKET_CREATE',
+        'TICKET_REPLY',
+        'TICKET_STATUS',
+        'TICKET_SATISFACTION',
+        'FEEDBACK_CREATE',
+      ].includes(command.kind as string) ||
       typeof command.expiresAt !== 'string' ||
       !Number.isFinite(Date.parse(command.expiresAt))
     ) {
@@ -111,18 +126,22 @@ function parseState(value: unknown, ownerId: string): SupportState {
   });
   if (new Set(commands.map(({ key }) => key)).size !== commands.length)
     throw new SupportStoreError('INVALID');
-  return { version: 1, ownerId, messages, tickets, internalNotes, commands };
+  return { version: 2, ownerId, messages, tickets, feedback, internalNotes, commands };
 }
 
 export function supportSeed(ownerId: string): SupportState {
   const now = '2026-08-31T10:30:00.000Z';
+  const messageIds = [createUuidV7(), createUuidV7(), createUuidV7()];
+  const ticketId = createUuidV7();
+  const userReplyId = createUuidV7();
+  const supportReplyId = createUuidV7();
   return parseState(
     {
-      version: 1,
+      version: 2,
       ownerId,
       messages: [
         {
-          id: '0198f4d4-21c2-7b7d-8a03-08a0da2a7201',
+          id: messageIds[0],
           kind: 'TASK',
           title: '视频已生成',
           summary: '你的海岸公路作品已生成，可前往任务详情查看。',
@@ -130,7 +149,7 @@ export function supportSeed(ownerId: string): SupportState {
           deepLink: '/tasks/task-2',
         },
         {
-          id: '0198f4d4-21c2-7b7d-8a03-08a0da2a7202',
+          id: messageIds[1],
           kind: 'PAYMENT',
           title: '充值已到账',
           summary: '32,000 点已进入可用余额。',
@@ -139,7 +158,7 @@ export function supportSeed(ownerId: string): SupportState {
           deepLink: '/wallet',
         },
         {
-          id: '0198f4d4-21c2-7b7d-8a03-08a0da2a7203',
+          id: messageIds[2],
           kind: 'SYSTEM',
           title: '安全提醒',
           summary: '请勿向任何人提供短信验证码。',
@@ -149,7 +168,7 @@ export function supportSeed(ownerId: string): SupportState {
       ],
       tickets: [
         {
-          id: '0198f4d4-21c2-7b7d-8a03-08a0da2a7301',
+          id: ticketId,
           subject: '任务结果无法播放',
           category: 'TASK',
           status: 'IN_PROGRESS',
@@ -157,14 +176,14 @@ export function supportSeed(ownerId: string): SupportState {
           updatedAt: '2026-08-31T02:00:00.000Z',
           replies: [
             {
-              id: '0198f4d4-21c2-7b7d-8a03-08a0da2a7302',
+              id: userReplyId,
               author: 'USER',
               body: '任务显示成功，但结果页面无法播放。',
               createdAt: '2026-08-30T02:00:00.000Z',
               attachments: [],
             },
             {
-              id: '0198f4d4-21c2-7b7d-8a03-08a0da2a7304',
+              id: supportReplyId,
               author: 'SUPPORT',
               body: '我们正在核对转存状态，有结果后会在这里回复。',
               createdAt: '2026-08-31T02:00:00.000Z',
@@ -175,12 +194,13 @@ export function supportSeed(ownerId: string): SupportState {
             { status: 'OPEN', occurredAt: '2026-08-30T02:00:00.000Z', label: '工单已创建' },
             { status: 'IN_PROGRESS', occurredAt: '2026-08-31T02:00:00.000Z', label: '客服处理中' },
           ],
-          canClose: true,
+          canClose: false,
           canReopen: false,
         },
       ],
+      feedback: [],
       internalNotes: {
-        '0198f4d4-21c2-7b7d-8a03-08a0da2a7301': ['转存节点排查中，仅客服可见。'],
+        [ticketId]: ['转存节点排查中，仅客服可见。'],
       },
       commands: [],
     },
@@ -222,6 +242,7 @@ export async function runSupportCommand<T>(
     const mutable: MutableSupportState = {
       messages: [...structuredClone(state.messages)],
       tickets: [...structuredClone(state.tickets)],
+      feedback: [...structuredClone(state.feedback)],
     };
     const result = mutate(mutable);
     const next = parseState(
@@ -229,6 +250,7 @@ export async function runSupportCommand<T>(
         ...state,
         messages: mutable.messages,
         tickets: mutable.tickets,
+        feedback: mutable.feedback,
         commands: [
           ...commands,
           {

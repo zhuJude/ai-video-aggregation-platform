@@ -1,31 +1,68 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { closeAccountAction } from '../../app/account-actions';
+import { closeAccountAction, requestAccountDeletionCodeAction } from '../../app/account-actions';
 import { runAccountActionWithRefresh } from '../../lib/account/client-command';
 import { createUuidV7 } from '../../lib/tasks/identifiers';
-import type { AccountActionResult } from '../../lib/account/types';
+import type { AccountActionResult, PhoneCodeRequestResult } from '../../lib/account/types';
 import { AccessibleDialog } from '../commerce/accessible-dialog';
 
 const PHRASE = '注销账号';
 
 export function AccountDeletion({
   onDelete,
+  onRequestCode,
   cooldownSeconds,
 }: {
   readonly onDelete?: (
     code: string,
     key: string,
   ) => Promise<AccountActionResult<{ readonly closed: true }>>;
+  readonly onRequestCode?: (key: string) => Promise<AccountActionResult<PhoneCodeRequestResult>>;
   readonly cooldownSeconds: number;
 }) {
   const [phrase, setPhrase] = useState('');
   const [code, setCode] = useState('');
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [requested, setRequested] = useState(cooldownSeconds > 0);
+  const [cooldown, setCooldown] = useState(cooldownSeconds);
+  const [status, setStatus] = useState<string>();
   const [error, setError] = useState<string>();
-  const eligible = phrase === PHRASE && /^\d{6}$/.test(code) && cooldownSeconds <= 0;
+  const eligible = requested && phrase === PHRASE && /^\d{6}$/.test(code);
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setCooldown((value) => Math.max(0, value - 1));
+    }, 1_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [cooldown]);
+
+  const requestCode = async () => {
+    if (busy || cooldown > 0) return;
+    setBusy(true);
+    setError(undefined);
+    const key = createUuidV7();
+    const result = onRequestCode
+      ? await onRequestCode(key)
+      : await runAccountActionWithRefresh(key, requestAccountDeletionCodeAction);
+    setBusy(false);
+    if (result.ok) {
+      setRequested(true);
+      setCooldown(result.data.cooldownSeconds);
+      setStatus(result.data.message);
+    } else {
+      setError(
+        result.outcome === 'UNCERTAIN'
+          ? '发送结果待确认，请等待短信后再操作。'
+          : '暂时无法发送验证码，请稍后重试。',
+      );
+    }
+  };
 
   const close = async () => {
     if (!eligible || busy) return;
@@ -53,6 +90,9 @@ export function AccountDeletion({
         注销后登录立即失效；点数余额将按服务条款处理，作品、素材和进行中的任务可能无法继续访问，依法需保留的订单与发票记录除外。
       </p>
       <div className="settings-form">
+        <button type="button" disabled={busy || cooldown > 0} onClick={() => void requestCode()}>
+          {cooldown > 0 ? `${String(cooldown)} 秒后重新获取` : '获取注销验证码'}
+        </button>
         <label htmlFor="delete-phrase">输入确认短语</label>
         <input
           id="delete-phrase"
@@ -60,7 +100,10 @@ export function AccountDeletion({
           onChange={(event) => {
             setPhrase(event.target.value);
           }}
-          aria-describedby="delete-phrase-help"
+          aria-describedby={
+            error ? 'delete-phrase-help delete-account-error' : 'delete-phrase-help'
+          }
+          aria-invalid={error ? true : undefined}
         />
         <small id="delete-phrase-help">请输入“{PHRASE}”。</small>
         <label htmlFor="delete-code">短信验证码</label>
@@ -72,6 +115,8 @@ export function AccountDeletion({
           onChange={(event) => {
             setCode(event.target.value);
           }}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? 'delete-account-error' : undefined}
         />
         <button
           type="button"
@@ -84,7 +129,12 @@ export function AccountDeletion({
           继续注销
         </button>
       </div>
-      {error ? <p role="alert">{error}</p> : null}
+      {status ? <p role="status">{status}</p> : null}
+      {error ? (
+        <p id="delete-account-error" role="alert">
+          {error}
+        </p>
+      ) : null}
       {open ? (
         <AccessibleDialog
           labelledBy="delete-confirm-title"
