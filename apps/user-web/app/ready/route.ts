@@ -42,7 +42,7 @@ function productionModesReady(): boolean {
 
 async function gatewayReachable(base: URL): Promise<boolean> {
   try {
-    const response = await fetch(new URL('/health', base), {
+    const response = await fetch(new URL('/health/ready', base), {
       cache: 'no-store',
       headers: { accept: 'application/json' },
       signal: AbortSignal.timeout(2_000),
@@ -52,14 +52,14 @@ async function gatewayReachable(base: URL): Promise<boolean> {
       return false;
     }
     const body = (await response.json()) as unknown;
-    return (
-      typeof body === 'object' &&
-      body !== null &&
-      !Array.isArray(body) &&
-      Object.keys(body).length === 1 &&
-      'status' in body &&
-      body.status === 'ok'
-    );
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return false;
+    const source = body as Record<string, unknown>;
+    if (Object.keys(source).some((key) => key !== 'ok' && key !== 'checks') || source.ok !== true)
+      return false;
+    if (typeof source.checks !== 'object' || source.checks === null || Array.isArray(source.checks))
+      return false;
+    const checks = Object.values(source.checks as Record<string, unknown>);
+    return checks.length > 0 && checks.every((value) => value === true);
   } catch {
     return false;
   }

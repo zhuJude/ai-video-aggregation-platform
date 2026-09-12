@@ -39,8 +39,12 @@ function accessToken(sid = sessionId): string {
 const server = createServer((request, response) => {
   void (async () => {
     try {
-      if (request.method === 'GET' && request.url === '/health') {
+      if (request.method === 'GET' && request.url === '/health/live') {
         json(response, 200, { status: 'ok' });
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/health/ready') {
+        json(response, 200, { ok: true, checks: { bootstrap: true } });
         return;
       }
       if (request.method === 'POST' && request.url === '/v1/auth/sms/request') {

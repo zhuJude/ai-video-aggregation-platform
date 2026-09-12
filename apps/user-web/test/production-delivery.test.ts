@@ -33,8 +33,10 @@ describe('production delivery boundary', () => {
 
     expect(dockerfile).toContain('FROM node:24.15.0-alpine');
     expect(dockerfile.match(/^FROM /gm)).toHaveLength(3);
-    expect(dockerfile).toContain('pnpm install --lockfile=false --filter @repo/user-web...');
-    expect(dockerfile).toContain('pnpm --config.lockfile=false --filter @repo/user-web build');
+    expect(dockerfile).toContain(
+      'pnpm install --frozen-lockfile --lockfile-dir apps/user-web --filter @repo/user-web...',
+    );
+    expect(dockerfile).not.toMatch(/lockfile=false|no-lockfile/);
     expect(dockerfile).toContain('USER nextjs');
     expect(dockerfile).toContain('HEALTHCHECK');
     expect(dockerfile).toContain('/health');
@@ -45,6 +47,11 @@ describe('production delivery boundary', () => {
     expect(dockerIgnore).toContain('**/.next');
     expect(dockerIgnore).toContain('apps/user-web/output');
     expect(dockerIgnore).toContain('**/.env*');
+
+    const dockerLock = await readFile(resolve(appRoot, 'pnpm-lock.yaml'), 'utf8');
+    expect(dockerLock).toContain("lockfileVersion: '9.0'");
+    expect(dockerLock).toContain('next:');
+    expect(dockerLock).toContain('specifier: 16.3.3');
 
     const packageDocument = JSON.parse(
       await readFile(resolve(appRoot, 'package.json'), 'utf8'),
@@ -86,19 +93,26 @@ describe('production delivery boundary', () => {
           spki: publicKey.export({ format: 'der', type: 'spki' }).toString('base64url'),
         },
       ]);
-      const gatewayHealth = vi
-        .fn()
-        .mockResolvedValue(
-          Response.json({ status: 'ok' }, { headers: { 'cache-control': 'no-store' } }),
-        );
+      const gatewayHealth = vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            ok: true,
+            checks: { redis: true, serviceDns: true, signingKeys: true, futureCheck: true },
+          },
+          { headers: { 'cache-control': 'no-store' } },
+        ),
+      );
       vi.stubGlobal('fetch', gatewayHealth);
       const readyResponse = await ready();
       expect(readyResponse.status).toBe(200);
       expect(await readyResponse.json()).toEqual({ status: 'ready' });
       expect(gatewayHealth).toHaveBeenCalledWith(
-        new URL('https://gateway.internal.example/health'),
+        new URL('https://gateway.internal.example/health/ready'),
         expect.objectContaining({ cache: 'no-store' }),
       );
+
+      gatewayHealth.mockResolvedValueOnce(Response.json({ ok: false, checks: { redis: false } }));
+      expect((await ready()).status).toBe(503);
 
       gatewayHealth.mockRejectedValueOnce(new Error('connection refused'));
       expect((await ready()).status).toBe(503);
@@ -134,5 +148,12 @@ describe('production delivery boundary', () => {
       const source = await readFile(resolve(appRoot, page), 'utf8');
       expect(source, page).toContain("export const dynamic = 'force-dynamic'");
     }
+  });
+
+  it('keeps the browser acceptance Gateway readiness fixture on the WS09 contract', async () => {
+    const source = await readFile(resolve(appRoot, 'e2e/mock-gateway.ts'), 'utf8');
+    expect(source).toContain("request.url === '/health/ready'");
+    expect(source).toContain('ok: true, checks:');
+    expect(source).not.toContain("request.url === '/health'");
   });
 });

@@ -34,7 +34,9 @@ WS15 交付面向个人创作者的生产级 Web 端：用户可以发现视频�
 - USER_WEB_COMMERCE_MODE=mock：上传、短时签名预览/下载和商业账本。
 - USER_WEB_SUPPORT_MODE=mock：测试身份、账户、消息和工单。
 
-Public mode 只有字节精确的小写值 `mock` 才会启用 fixture；未设置、大小写不同或带空白都进入真实模式并在配置或响应异常时 fail closed，不会回退演示数据。真实模式仅由 server-only adapter 调用 `GET /v1/public/home`、`GET /v1/public/models`、`GET /v1/public/models/{id}`、`GET /v1/public/pricing` 和 `GET /v1/public/help/{slug...}`。所有页面强制 request-time 渲染；响应必须是 JSON、带合法 `x-api-version` 且与精确对象结构匹配。点数范围、充值点数和金额分字段只接受无符号十进制字符串，展示和筛选用 BigInt，避免超过 JavaScript 安全整数后失真；数字 JSON 字段会被拒绝。
+Public mode 只有字节精确的小写值 `mock` 才会启用 fixture；未设置、大小写不同或带空白都进入真实模式并在配置或响应异常时 fail closed，不会回退演示数据。真实模式仅由 server-only adapter 调用已存在的外部契约：`GET /v1/models`、`GET /v1/help`、`GET /v1/recharge-packages` 和首页槽位 `GET /v1/banners/HOME_HERO`。模型详情由模型列表按 id 查找，帮助详情由帮助列表按内容版本 id 查找；没有调用不存在的 detail 或 `/v1/public/*` 路由。所有页面强制 request-time 渲染；响应必须是 JSON 并与各服务的实际对象结构匹配，不要求上游未提供的 `x-api-version`。
+
+WS11 模型目录未发布点数区间、速度、质量文案、详情说明或计费规则，真实界面将这些字段显示为“以提交前报价/工作台能力 Schema 为准”，不会用本地营销 fixture 补值。WS14 充值包的 amountMinor、points、bonusPoints 只接受无符号十进制字符串，总到账点数用 BigInt 相加，避免超过 JavaScript 安全整数后失真；数字 JSON 字段会被拒绝。WS14 帮助返回值没有 entry key，因此真实帮助 URL 暂以已发布 content version id 为 slug。首页 banner 只渲染其 title/summary，不生成后端未提供的模型关联链接。
 
 Mock 不从请求接受 owner，而从服务端会话派生。持久更改经原子事务完成；同一幂等 key 只创建一个任务。成功链为 RESERVE → QUEUED → SUBMITTING → RUNNING → SUCCEEDED → SETTLED，且只有一笔 SETTLE；失败链为 RESERVE → RUNNING → FAILED → REFUNDED，且只有一笔 RELEASE。重复事件不产生重复财务效果，可用点数、冻结点数与账本守恒。允许取消时在同一事务内唯一释放冻结；重试草稿保留 owner 和原能力 Schema。
 
@@ -52,9 +54,9 @@ SSE 日志按 owner/task 分区。Last-Event-ID 只允许重放当前任务已�
 
 本地/验收 Mock 还需将相应 mode 明确设为 mock，并为 USER_WEB_COMMERCE_MOCK_SIGNING_KEY、USER_WEB_COMMERCE_IDENTITY_KEY 和 USER_WEB_MOCK_IDENTITY_KEY 提供相互独立的 32 字节 canonical base64url 密钥。禁止在生产使用 E2E 固定密钥或自签名证书。
 
-next.config.ts 生成 standalone 输出并设置 CSP、HSTS、COOP、nosniff、Referrer Policy、Permissions Policy 和拒绝 framing。Dockerfile 使用三阶段 Node Alpine 镜像，运行阶段为非 root 用户 nextjs。GET /health 只回报进程存活；GET /ready 在 2 秒超时内读取 Gateway `GET /health` 并要求精确 JSON `{ "status": "ok" }`，同时校验 canonical 会话密钥和 1–5 个可解析的 Ed25519 SPKI 验证公钥。生产环境只要 PUBLIC、STUDIO、COMMERCE 或 SUPPORT 任一 mode 在去除首尾空白并忽略大小写后等于 `mock`，readiness 就返回 503；响应始终只有 ready/unavailable，不泄露具体配置或上游错误。
+next.config.ts 生成 standalone 输出并设置 CSP、HSTS、COOP、nosniff、Referrer Policy、Permissions Policy 和拒绝 framing。Dockerfile 使用三阶段 Node Alpine 镜像，运行阶段为非 root 用户 nextjs。GET /health 只回报进程存活；GET /ready 在 2 秒超时内读取 Gateway `GET /health/ready`，要求 HTTP 2xx、`ok: true` 且非空 checks 全部为 true，同时校验 canonical 会话密钥和 1–5 个可解析的 Ed25519 SPKI 验证公钥。checks 名称可扩展，不把当前 Redis/DNS/签名密钥列表写死。生产环境只要 PUBLIC、STUDIO、COMMERCE 或 SUPPORT 任一 mode 在去除首尾空白并忽略大小写后等于 `mock`，readiness 就返回 503；响应始终只有 ready/unavailable，不泄露具体配置或上游错误。
 
-镜像以仓库根目录为 build context，使用 apps/user-web/Dockerfile.dockerignore 排除 Git、环境文件、依赖、构建缓存、测试报告和浏览器输出；Next 的 outputFileTracingRoot 明确指向仓库根，standalone 目录保留工作区依赖布局。容器内安装与构建禁用 lockfile 写入，生产启动文件为 apps/user-web/server.js。参考验证命令：
+镜像以仓库根目录为 build context，使用 apps/user-web/Dockerfile.dockerignore 排除 Git、环境文件、依赖、构建缓存、测试报告和浏览器输出；Next 的 outputFileTracingRoot 明确指向仓库根，standalone 目录保留工作区依赖布局。`apps/user-web/pnpm-lock.yaml` 是 WS15 独占范围内的完整 workspace 依赖快照；Docker 只复制该专用锁，并用 `--lockfile-dir apps/user-web --frozen-lockfile` 安装，依赖不匹配时立即失败。生产启动文件为 apps/user-web/server.js。参考验证命令：
 
     docker build -f apps/user-web/Dockerfile -t ws15-user-web:test .
     docker run --rm -p 3000:3000 -e GATEWAY_URL=https://gateway.internal.example -e USER_WEB_SESSION_ENCRYPTION_KEY=<43-char-base64url> -e USER_WEB_IDENTITY_VERIFY_KEYS_JSON=<json-keyring> ws15-user-web:test
@@ -63,7 +65,13 @@ next.config.ts 生成 standalone 输出并设置 CSP、HSTS、COOP、nosniff、R
 
 生产容器不得设置任何 USER_WEB_*_MODE=mock，也不得装载 E2E 证书或固定测试密钥。本机验收时 Docker CLI 可用，但 Docker Desktop Linux engine 未运行，npipe 端点不存在，因此本轮无法声称镜像实际 build/run 已通过；Dockerfile 结构、非 root、探针、忽略清单和 tracing root 由单元测试验证。
 
-本工作流的保护范围禁止修改 pnpm-lock.yaml，因此新增的精确版本 E2E devDependencies 尚未进入 user-web lock importer；这项 lock importer 合并由 WS20 集成阶段完成。在此之前 Docker 安装显式使用 lockfile=false，不得将容器中的机械 lock 变更回写仓库。
+根 `pnpm-lock.yaml` 仍受保护且没有变更。专用锁通过 `corepack pnpm install --lockfile-only --lockfile-dir apps/user-web --no-frozen-lockfile` 生成；提交前用 `corepack pnpm install --filter @repo/user-web... --lockfile-only --lockfile-dir apps/user-web --frozen-lockfile` 验证可冻结安装。重新生成只允许更新 apps/user-web/pnpm-lock.yaml，不得将机械变化写回根锁。
+
+## 跨工作流契约待办
+
+- 当前 WS09 Gateway 已实现 `/v1/models` 代理，但路由仍要求 user token；匿名营销页要稳定读取模型目录，集成阶段需明确该只读路由的公开认证策略，不能由 Web 伪造用户身份或把 token 暴露给浏览器。
+- 当前 WS09 route table 尚未代理 WS14 已实现的 `/v1/help`、`/v1/recharge-packages` 与 `/v1/banners/{slot}`。WS09/WS20 集成需把这三条只读路由映射到 operations-service；代理缺失期间对应真实页面会 fail closed。
+- WS11 暂无单模型详情与公开价格/营销扩展字段；WS14 帮助响应暂无 entry key。若产品需要语义化帮助 slug、目录价格筛选或模型营销详情，应先扩展服务契约和 Gateway，再由 Web 严格解析，不能在客户端推断。
 
 ## 页面状态与恢复矩阵
 
@@ -111,9 +119,9 @@ Axe 在桌面/移动的首页、登录、Studio、Task、Wallet 和 Tickets 上�
 | ----------------------------------------------------------------- | --------------------------------------- |
 | node ../../node_modules/eslint/bin/eslint.js .                    | 通过，0 问题                            |
 | node ../../node_modules/typescript/bin/tsc --noEmit               | 通过                                    |
-| node ../../node_modules/vitest/vitest.mjs run --environment jsdom | 25 files / 330 tests 通过               |
+| node ../../node_modules/vitest/vitest.mjs run --environment jsdom | 25 files / 332 tests 通过               |
 | node node_modules/next/dist/bin/next build                        | 通过；15/15 静态页，公开 Gateway 页动态 |
-| PLAYWRIGHT_CHANNEL=chrome playwright test                         | 3 通过 / 1 跳过：核心流 1，axe 2，57.8s |
+| PLAYWRIGHT_CHANNEL=chrome playwright test                         | 3 通过 / 1 跳过：核心流 1，axe 2，58.0s |
 
 ## Analytics 事件目录（待接入）
 
