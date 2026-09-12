@@ -25,6 +25,14 @@ const MAX_TASKS = 1_000;
 const MOCK_RESULT_MP4_BASE64 =
   'AAAAJGZ0eXBpc29tAAACAGlzb21pc282aXNvMmF2YzFtcDQxAAACym1vb3YAAAB4bXZoZAEAAAAAAAAA5ss4hgAAAADmyziGAAAD6AAAAAAAAAKaAAEAAAEAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAIidHJhawAAAGh0a2hkAQAAAwAAAADmyziGAAAAAObLOIYAAAABAAAAAAAAAAAAAAKaAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAABAAAAAQAAAAAABsm1kaWEAAAAsbWRoZAEAAAAAAAAA5ss4hgAAAADmyziGAAB1MAAAAAAAAAKaVcQAAAAAAC1oZGxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAAAVmlkZW9IYW5kbGVyAAAAAVFtaW5mAAAAFHZtaGQAAAABAAAAAAAAAAAAAAAlZGluZgAAAB1kcmVmAAAAAAAAAAEAAAANdXJsIAAAAAEAAAABEHN0YmwAAAAQc3RzYwAAAAAAAAAAAAAAEHN0dHMAAAAAAAAAAAAAABRzdHN6AAAAAAAAAAAAAAAAAAAAEHN0Y28AAAAAAAAAAAAAAMRzdHNkAAAAAAAAAAEAAAC0YXZjMQAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAABAAEAASAAAAEgAAAAAAAAAAQtBVkMxIENvZGluZwAAAAAAAAAAAAAAAAAAAAAAAAAAABj//wAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAAAAAAAAAAAAACdhdmNDAULACv/hABBnQsAKjGhCSagwMDA8IhGoAQAEaM48gAAAABNjb2xybmNseAAGAAYABgAAAAAobXZleAAAACB0cmV4AAAAAAAAAAEAAAABAAAAAAAAAAAAAAAAAAAAgG1vb2YAAAAQbWZoZAAAAAAAAAABAAAAaHRyYWYAAAAUdGZoZAACACAAAAABAQEAAAAAABR0ZmR0AQAAAAAAAAAAAAAAAAAAOHRydW4BAAMFAAAABAAAAIgCAAAAAAAOPwAAAE0AAB7kAAAAbwAAHQwAAABrAAAD5wAAABYAAAFFbWRhdAAAAElluAAEE///4IooABjxwABALjgACANJuTk//+IYJYoAAgU+EBKUgQCQhf/4eEYQomFbSev//AOEYQCQhQgJSk/4B/CNq663fXXgAAAAa2HgAH5BPN//8EUUAAQD/7E6xPifN//wgucDgEAUEIOAiAZ4HmK5wOkdyb/Hx0C7BwBAEU4BxaeB0h3PA8yuRfYz+b/+HBUykWqHmK54dIdzzf4BgGgVQXAQmHSHc+HmK553z+LkU2Yjz+fwAAAAZ2HgAL5BfgfAcYnsX2zf/xDBdA4ABAABQEIPhACYxwgCc5uB4iXOB0Zbk3/4+C6DgAEQAEU8LuCUn4HRlueB4iXEeTN/+AcFUK2glJw8hXPDpjueb/AMPBVF0WrDpjufDyFc6PJnW4AAAAASYeAA/kCe+rfVqP8DD4GHR5J4AAAATG1mcmEAAAA0dGZyYQEAAAAAAAABAAAAPwAAAAEAAAAAAAAAAAAAAAAAAALuAAAAAQAAAAEAAAABAAAAEG1mcm8BAAAAAAAATA==';
 
+function quoteCapacity(): number {
+  if (process.env.NODE_ENV !== 'test') return MAX_QUOTES;
+  const configured = Number(process.env.USER_WEB_COMMERCE_MOCK_QUOTE_CAPACITY);
+  return Number.isSafeInteger(configured) && configured >= 1 && configured <= MAX_QUOTES
+    ? configured
+    : MAX_QUOTES;
+}
+
 interface StoredQuote {
   readonly quote: StudioQuote;
   readonly request: StudioQuoteRequest;
@@ -148,8 +156,7 @@ function parseCommercial(value: unknown): CommercialState {
     new Set(quotes.map(({ quote }) => quote.id)).size !== quotes.length ||
     new Set(tasks.map(({ detail }) => detail.id)).size !== tasks.length ||
     new Set(submissions.map(({ idempotencyKey }) => idempotencyKey)).size !== submissions.length ||
-    new Set(cancellations.map(({ idempotencyKey }) => idempotencyKey)).size !==
-      cancellations.length
+    new Set(cancellations.map(({ idempotencyKey }) => idempotencyKey)).size !== cancellations.length
   ) {
     throw new MockCommercialError('INVALID_COMMERCIAL_STATE');
   }
@@ -260,7 +267,7 @@ export async function saveMockCommercialQuote(
       const activeQuotes = state.quotes.filter(
         ({ quote: storedQuote }) => Date.parse(storedQuote.expiresAt) > Date.now(),
       );
-      if (activeQuotes.length >= MAX_QUOTES) throw new MockCommercialError('QUOTE_CAPACITY');
+      if (activeQuotes.length >= quoteCapacity()) throw new MockCommercialError('QUOTE_CAPACITY');
       writeCommercial(finance, {
         ...state,
         quotes: [

@@ -1,8 +1,7 @@
-import { StudioWorkspace } from '../../components/studio/studio-workspace';
+import { StudioWorkspaceEntry } from '../../components/studio/studio-workspace-entry';
 import { readAuthenticatedServerSessionState } from '../../lib/auth/server-session';
 import { readRetryDraft } from '../../lib/studio/retry-drafts';
 import { isUuidV7 } from '../../lib/tasks/identifiers';
-import { clientStudioGateway } from '../../lib/studio/client-gateway';
 import { redirect } from 'next/navigation';
 
 interface StudioPageProps {
@@ -23,10 +22,6 @@ export default async function StudioPage({ searchParams }: StudioPageProps) {
   const session = sessionState.session;
   const retryDraft = draftId ? readRetryDraft(draftId, { ownerId: session.ownerId }) : undefined;
   return (
-    <StudioWorkspace
-      gateway={clientStudioGateway}
-      retryDraft={retryDraft}
-      retryDraftRequested={typeof draft === 'string'}
-    />
+    <StudioWorkspaceEntry retryDraft={retryDraft} retryDraftRequested={typeof draft === 'string'} />
   );
 }

@@ -4,6 +4,7 @@ import type { ApiError } from '@repo/contracts/common';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderToString } from 'react-dom/server';
 
 import { PhoneLoginForm } from '../components/auth/phone-login-form';
 import { cancelTaskAction } from '../app/tasks/actions';
@@ -232,6 +233,13 @@ afterAll(async () => {
 });
 
 describe('PhoneLoginForm', () => {
+  it('keeps interactive controls disabled until client hydration attaches their handlers', () => {
+    const serverMarkup = renderToString(<PhoneLoginForm />);
+
+    expect(serverMarkup).toContain('disabled=""');
+    expect(serverMarkup.match(/disabled=""/g)).toHaveLength(4);
+  });
+
   it('validates the phone number and moves focus to it', async () => {
     const user = userEvent.setup();
 

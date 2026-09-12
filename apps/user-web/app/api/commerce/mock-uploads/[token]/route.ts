@@ -21,6 +21,25 @@ const PRIVATE_HEADERS = {
   vary: 'Cookie',
 } as const;
 
+function trustedRequestOrigin(request: Request): string {
+  const configured = process.env.USER_WEB_PUBLIC_ORIGIN?.trim();
+  if (!configured) return new URL(request.url).origin;
+  try {
+    const parsed = new URL(configured);
+    if (
+      parsed.origin !== configured ||
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new Error('INVALID_PUBLIC_ORIGIN');
+    }
+    return parsed.origin;
+  } catch {
+    throw new Error('INVALID_PUBLIC_ORIGIN');
+  }
+}
+
 function uncertainResponse(): Response {
   return Response.json(
     { outcome: 'UNCERTAIN', code: 'UPLOAD_UNCERTAIN' },
@@ -85,10 +104,12 @@ export async function PUT(
   request: Request,
   context: { readonly params: Promise<{ readonly token: string }> },
 ): Promise<Response> {
-  const requestUrl = new URL(request.url);
   const origin = request.headers.get('origin');
   const fetchSite = request.headers.get('sec-fetch-site');
-  if (origin !== requestUrl.origin || (fetchSite !== null && fetchSite !== 'same-origin')) {
+  if (
+    origin !== trustedRequestOrigin(request) ||
+    (fetchSite !== null && fetchSite !== 'same-origin')
+  ) {
     return new Response(null, { headers: PRIVATE_HEADERS, status: 403 });
   }
   try {

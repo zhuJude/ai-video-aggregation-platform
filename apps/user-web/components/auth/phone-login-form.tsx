@@ -37,6 +37,7 @@ function isAbortError(error: unknown): boolean {
 }
 
 export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
+  const [hydrated, setHydrated] = useState(false);
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
@@ -52,6 +53,7 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
 
   useEffect(() => {
     mountedRef.current = true;
+    setHydrated(true);
     return () => {
       mountedRef.current = false;
       requestGenerationRef.current += 1;
@@ -252,7 +254,7 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
           value={phone}
           aria-describedby={error?.field === 'phone' ? `phone-help ${ERROR_ID}` : 'phone-help'}
           aria-invalid={error?.field === 'phone'}
-          disabled={isBusy}
+          disabled={!hydrated || isBusy}
           onChange={(event) => {
             handlePhoneChange(event.target.value.replace(/\D/g, ''));
           }}
@@ -277,7 +279,7 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
             value={code}
             aria-describedby={error?.field === 'code' ? ERROR_ID : undefined}
             aria-invalid={error?.field === 'code'}
-            disabled={pendingAction === 'verify'}
+            disabled={!hydrated || pendingAction === 'verify'}
             onChange={(event) => {
               handleCodeChange(event.target.value.replace(/\D/g, ''));
             }}
@@ -286,7 +288,7 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
         <button
           className="secondary-button sms-request-button"
           type="button"
-          disabled={isBusy || cooldownSeconds > 0}
+          disabled={!hydrated || isBusy || cooldownSeconds > 0}
           aria-busy={pendingAction === 'request'}
           onClick={() => {
             void requestSmsCode();
@@ -316,7 +318,7 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
       <button
         className="login-submit"
         type="submit"
-        disabled={isBusy}
+        disabled={!hydrated || isBusy}
         aria-busy={pendingAction === 'verify'}
       >
         {pendingAction === 'verify' ? '正在登录……' : '登录'}

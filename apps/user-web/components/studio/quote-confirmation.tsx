@@ -9,6 +9,7 @@ import type {
   StudioTaskAccepted,
 } from '../../lib/studio/types';
 import { parseTaskAccepted } from '../../lib/studio/runtime';
+import { createUuidV7 } from '../../lib/tasks/identifiers';
 
 interface QuoteConfirmationProps {
   readonly quote: StudioQuote;
@@ -21,7 +22,7 @@ interface QuoteConfirmationProps {
 }
 
 function browserUuid(): string {
-  return crypto.randomUUID();
+  return createUuidV7();
 }
 
 function currentTime(): number {

@@ -24,6 +24,7 @@ afterEach(() => {
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_STUDIO_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
+  delete process.env.USER_WEB_COMMERCE_MOCK_QUOTE_CAPACITY;
   delete process.env.USER_WEB_COMMERCE_MOCK_TEST_NAMESPACE;
 });
 
@@ -211,18 +212,10 @@ describe('mock commercial journey', () => {
       await taskGateway.getTask(otherAccepted.taskId, { ownerId: OWNER_ID }),
     );
     await expect(
-      createMockTaskEventResponse(
-        OWNER_ID,
-        accepted.taskId,
-        otherTask.statusSnapshot.eventId,
-      ),
+      createMockTaskEventResponse(OWNER_ID, accepted.taskId, otherTask.statusSnapshot.eventId),
     ).rejects.toThrow('INVALID_TASK_CURSOR');
     await expect(
-      createMockTaskEventResponse(
-        OWNER_ID,
-        accepted.taskId,
-        `99:${createUuidV7()}`,
-      ),
+      createMockTaskEventResponse(OWNER_ID, accepted.taskId, `99:${createUuidV7()}`),
     ).rejects.toThrow('INVALID_TASK_CURSOR');
     await expect(
       createMockTaskEventResponse(OWNER_ID, accepted.taskId, 'forged-cursor'),
@@ -268,6 +261,7 @@ describe('mock commercial journey', () => {
   });
 
   it('evicts expired quotes before enforcing the bounded quote capacity', async () => {
+    process.env.USER_WEB_COMMERCE_MOCK_QUOTE_CAPACITY = '3';
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2030-08-31T08:00:00.000Z'));
     const gateway = await gatewayFor(OWNER_ID);
@@ -286,7 +280,7 @@ describe('mock commercial journey', () => {
       capabilityVersion: capability.capabilityVersion,
       parameters: { prompt: '有足够长度的测试画面', duration: 5, aspectRatio: '16:9' },
     };
-    for (let index = 0; index < 100; index += 1) await gateway.quote(request);
+    for (let index = 0; index < 3; index += 1) await gateway.quote(request);
     vi.advanceTimersByTime(11 * 60_000);
     await expect(gateway.quote(request)).resolves.toMatchObject({
       capabilityVersion: capability.capabilityVersion,
@@ -315,7 +309,7 @@ describe('mock commercial journey', () => {
     const bytes = await opened.handle.readFile();
     await opened.handle.close();
     const boxTypes: string[] = [];
-    for (let offset = 0; offset + 8 <= bytes.length; ) {
+    for (let offset = 0; offset + 8 <= bytes.length;) {
       const size = bytes.readUInt32BE(offset);
       if (size < 8 || offset + size > bytes.length) break;
       boxTypes.push(bytes.toString('ascii', offset + 4, offset + 8));

@@ -1,5 +1,3 @@
-import Ajv2020, { type ErrorObject, type ValidateFunction } from 'ajv/dist/2020';
-
 import type {
   JsonSchemaValue,
   StudioCapabilityDocument,
@@ -44,14 +42,7 @@ const SUPPORTED_SCHEMA_KEYWORDS = new Set([
 
 const SUPPORTED_FIELD_TYPES = new Set(['string', 'integer', 'boolean']);
 const SUPPORTED_WIDGETS = new Set(['string', 'textarea', 'integer', 'boolean', 'enum', 'asset-id']);
-const ajv = new Ajv2020({
-  addUsedSchema: false,
-  allErrors: true,
-  strict: false,
-  validateFormats: true,
-});
-ajv.addFormat('asset-id', /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
-const validatorCache = new WeakMap<StudioJsonSchema, ValidateFunction>();
+const ASSET_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 export interface CapabilityValidationError {
   readonly field?: string;
@@ -612,39 +603,163 @@ function normalizeSchema(schema: StudioJsonSchema): StudioJsonSchema {
   return { ...schema, additionalProperties: false };
 }
 
-function validatorFor(schema: StudioJsonSchema): ValidateFunction {
-  const cached = validatorCache.get(schema);
-  if (cached) return cached;
-  const compiled = ajv.compile(normalizeSchema(schema));
-  validatorCache.set(schema, compiled);
-  return compiled;
+function addValidationError(
+  errors: CapabilityValidationError[],
+  keyword: string,
+  field?: string,
+): void {
+  const error = { keyword, message: '参数不符合模型配置。' };
+  errors.push(field ? { ...error, field } : error);
 }
 
-function fieldFromError(error: ErrorObject): string | undefined {
-  if (
-    (error.keyword === 'required' || error.keyword === 'dependentRequired') &&
-    'missingProperty' in error.params
-  ) {
-    return String(error.params.missingProperty);
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => sameJsonValue(value, right[index]))
+    );
   }
-  if (error.keyword === 'additionalProperties' && 'additionalProperty' in error.params) {
-    return String(error.params.additionalProperty);
+  if (isRecord(left) && isRecord(right)) {
+    const keys = Object.keys(left);
+    return (
+      keys.length === Object.keys(right).length &&
+      keys.every((key) => key in right && sameJsonValue(left[key], right[key]))
+    );
   }
-  const lastSegment = error.instancePath.split('/').filter(Boolean).at(-1);
-  return lastSegment?.replaceAll('~1', '/').replaceAll('~0', '~');
+  return false;
 }
 
-function normalizeErrors(
-  errors: readonly ErrorObject[] | null | undefined,
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function schemaErrors(
+  schema: StudioJsonSchema,
+  value: unknown,
+  field?: string,
 ): CapabilityValidationError[] {
-  return (errors ?? []).map((error) => {
-    const field = fieldFromError(error);
-    const normalized = {
-      keyword: error.keyword,
-      message: error.message ?? '参数不符合模型配置。',
-    };
-    return field ? { ...normalized, field } : normalized;
-  });
+  const errors: CapabilityValidationError[] = [];
+  const typeMatches =
+    schema.type === undefined ||
+    (schema.type === 'object' && isRecord(value)) ||
+    (schema.type === 'array' && Array.isArray(value)) ||
+    (schema.type === 'null' && value === null) ||
+    (schema.type === 'string' && typeof value === 'string') ||
+    (schema.type === 'boolean' && typeof value === 'boolean') ||
+    (schema.type === 'number' && typeof value === 'number' && Number.isFinite(value)) ||
+    (schema.type === 'integer' && typeof value === 'number' && Number.isInteger(value));
+  if (!typeMatches) {
+    addValidationError(errors, 'type', field);
+    return errors;
+  }
+
+  if (schema.const !== undefined && !sameJsonValue(value, schema.const)) {
+    addValidationError(errors, 'const', field);
+  }
+  if (schema.enum && !schema.enum.some((candidate) => sameJsonValue(value, candidate))) {
+    addValidationError(errors, 'enum', field);
+  }
+
+  if (typeof value === 'number') {
+    if (schema.minimum !== undefined && value < schema.minimum)
+      addValidationError(errors, 'minimum', field);
+    if (schema.maximum !== undefined && value > schema.maximum)
+      addValidationError(errors, 'maximum', field);
+    if (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum)
+      addValidationError(errors, 'exclusiveMinimum', field);
+    if (schema.exclusiveMaximum !== undefined && value >= schema.exclusiveMaximum)
+      addValidationError(errors, 'exclusiveMaximum', field);
+    if (schema.multipleOf !== undefined) {
+      const quotient = value / schema.multipleOf;
+      if (!Number.isFinite(quotient) || Math.abs(quotient - Math.round(quotient)) > 1e-10) {
+        addValidationError(errors, 'multipleOf', field);
+      }
+    }
+  }
+
+  if (typeof value === 'string') {
+    if (schema.minLength !== undefined && Array.from(value).length < schema.minLength)
+      addValidationError(errors, 'minLength', field);
+    if (schema.maxLength !== undefined && Array.from(value).length > schema.maxLength)
+      addValidationError(errors, 'maxLength', field);
+    if (schema.pattern !== undefined) {
+      try {
+        if (!new RegExp(schema.pattern, 'u').test(value))
+          addValidationError(errors, 'pattern', field);
+      } catch {
+        addValidationError(errors, 'compile', field);
+      }
+    }
+    if (schema.format === 'asset-id' && !ASSET_ID.test(value)) {
+      addValidationError(errors, 'format', field);
+    }
+  }
+
+  if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems)
+      addValidationError(errors, 'minItems', field);
+    if (schema.maxItems !== undefined && value.length > schema.maxItems)
+      addValidationError(errors, 'maxItems', field);
+    if (
+      schema.uniqueItems &&
+      value.some((candidate, index) =>
+        value.slice(0, index).some((previous) => sameJsonValue(previous, candidate)),
+      )
+    ) {
+      addValidationError(errors, 'uniqueItems', field);
+    }
+    const items = schema.items;
+    if (items) {
+      value.forEach((item, index) => {
+        const itemSchema = isSchemaArray(items) ? items[index] : items;
+        if (itemSchema) errors.push(...schemaErrors(itemSchema, item, field));
+      });
+    }
+  }
+
+  if (isRecord(value)) {
+    const properties = schema.properties ?? {};
+    for (const required of schema.required ?? []) {
+      if (!(required in value)) addValidationError(errors, 'required', required);
+    }
+    for (const [name, propertyValue] of Object.entries(value)) {
+      const propertySchema = properties[name];
+      if (propertySchema) errors.push(...schemaErrors(propertySchema, propertyValue, name));
+      else if (schema.additionalProperties === false)
+        addValidationError(errors, 'additionalProperties', name);
+      else if (isRecord(schema.additionalProperties))
+        errors.push(...schemaErrors(schema.additionalProperties, propertyValue, name));
+    }
+    for (const [trigger, dependents] of Object.entries(schema.dependentRequired ?? {})) {
+      if (!(trigger in value)) continue;
+      for (const dependent of dependents) {
+        if (!(dependent in value)) addValidationError(errors, 'dependentRequired', dependent);
+      }
+    }
+  }
+
+  for (const branch of schema.allOf ?? []) errors.push(...schemaErrors(branch, value, field));
+  if (
+    schema.anyOf &&
+    !schema.anyOf.some((branch) => schemaErrors(branch, value, field).length === 0)
+  ) {
+    addValidationError(errors, 'anyOf', field);
+  }
+  if (
+    schema.oneOf &&
+    schema.oneOf.filter((branch) => schemaErrors(branch, value, field).length === 0).length !== 1
+  ) {
+    addValidationError(errors, 'oneOf', field);
+  }
+  if (schema.not && schemaErrors(schema.not, value, field).length === 0) {
+    addValidationError(errors, 'not', field);
+  }
+  if (schema.if) {
+    const branch = schemaErrors(schema.if, value, field).length === 0 ? schema.then : schema.else;
+    if (branch) errors.push(...schemaErrors(branch, value, field));
+  }
+  return errors;
 }
 
 export function validateForm(
@@ -652,9 +767,8 @@ export function validateForm(
   values: Readonly<Record<string, unknown>>,
 ): CapabilityValidationResult {
   try {
-    const validate = validatorFor(schema);
-    const valid = validate(values);
-    return { valid, errors: normalizeErrors(validate.errors) };
+    const errors = schemaErrors(normalizeSchema(schema), values);
+    return { valid: errors.length === 0, errors };
   } catch (error) {
     return {
       valid: false,

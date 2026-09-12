@@ -86,7 +86,7 @@ function storeRoot(): string {
   const testNamespace = process.env.USER_WEB_COMMERCE_MOCK_TEST_NAMESPACE;
   if (
     testNamespace &&
-    (process.env.NODE_ENV !== 'test' ||
+    ((process.env.NODE_ENV !== 'test' && process.env.USER_WEB_E2E_MODE !== '1') ||
       !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(testNamespace))
   ) {
     throw new MockObjectStoreError('INVALID');
