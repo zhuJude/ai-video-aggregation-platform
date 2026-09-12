@@ -55,6 +55,15 @@ const accessToken = (suffix: string, sessionId = SESSION_ID, subject = OWNER_ID)
 const REFRESH_A = 'A'.repeat(43);
 const REFRESH_B = 'B'.repeat(43);
 
+async function fixtureTask() {
+  process.env.USER_WEB_STUDIO_MODE = 'mock';
+  try {
+    return await taskGateway.getTask('task-1', { ownerId: MOCK_SUBJECT_ID });
+  } finally {
+    delete process.env.USER_WEB_STUDIO_MODE;
+  }
+}
+
 beforeEach(async () => {
   mockStoreScope.install();
   cookies.clear();
@@ -192,7 +201,7 @@ describe('authenticated task BFF', () => {
         },
       },
     });
-    const task = await taskGateway.getTask('task-1', { ownerId: MOCK_SUBJECT_ID });
+    const task = await fixtureTask();
     const oldCookie = cookies.get('__Host-user-session');
     let refreshed = false;
     let gatewayRefreshes = 0;
@@ -277,7 +286,7 @@ describe('authenticated task BFF', () => {
   });
 
   it('returns only a minimal validated status envelope from polling', async () => {
-    const task = await taskGateway.getTask('task-1', { ownerId: MOCK_SUBJECT_ID });
+    const task = await fixtureTask();
     const upstreamFetch = vi.fn<typeof fetch>().mockResolvedValue(Response.json(task));
     vi.stubGlobal('fetch', upstreamFetch);
 

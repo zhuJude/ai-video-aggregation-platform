@@ -7,7 +7,6 @@ import {
   prepareCapabilityParameters,
   type PreparedCapabilityParameters,
 } from '../../lib/studio/capability';
-import { studioGateway as defaultGateway } from '../../lib/studio/gateway';
 import {
   assertCatalogConsistency,
   parseCapability,
@@ -32,7 +31,7 @@ import { QuoteConfirmation } from './quote-confirmation';
 import { SmartMode } from './smart-mode';
 
 interface StudioWorkspaceProps {
-  readonly gateway?: StudioGateway;
+  readonly gateway: StudioGateway;
   readonly retryDraft?: RetryDraft | undefined;
   readonly retryDraftRequested?: boolean | undefined;
 }
@@ -76,7 +75,7 @@ function retryDraftMatchesCapability(
 }
 
 export function StudioWorkspace({
-  gateway = defaultGateway,
+  gateway,
   retryDraft,
   retryDraftRequested = false,
 }: StudioWorkspaceProps) {

@@ -20,6 +20,10 @@ import type {
 
 const MAX_QUOTES = 100;
 const MAX_TASKS = 1_000;
+// Auditable 64x64 H.264 color-card clip generated locally with Chromium MediaRecorder.
+// Keeping the complete ISO-BMFF payload inline avoids public/demo media leaking into storage tests.
+const MOCK_RESULT_MP4_BASE64 =
+  'AAAAJGZ0eXBpc29tAAACAGlzb21pc282aXNvMmF2YzFtcDQxAAACym1vb3YAAAB4bXZoZAEAAAAAAAAA5ss4hgAAAADmyziGAAAD6AAAAAAAAAKaAAEAAAEAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAIidHJhawAAAGh0a2hkAQAAAwAAAADmyziGAAAAAObLOIYAAAABAAAAAAAAAAAAAAKaAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAABAAAAAQAAAAAABsm1kaWEAAAAsbWRoZAEAAAAAAAAA5ss4hgAAAADmyziGAAB1MAAAAAAAAAKaVcQAAAAAAC1oZGxyAAAAAAAAAAB2aWRlAAAAAAAAAAAAAAAAVmlkZW9IYW5kbGVyAAAAAVFtaW5mAAAAFHZtaGQAAAABAAAAAAAAAAAAAAAlZGluZgAAAB1kcmVmAAAAAAAAAAEAAAANdXJsIAAAAAEAAAABEHN0YmwAAAAQc3RzYwAAAAAAAAAAAAAAEHN0dHMAAAAAAAAAAAAAABRzdHN6AAAAAAAAAAAAAAAAAAAAEHN0Y28AAAAAAAAAAAAAAMRzdHNkAAAAAAAAAAEAAAC0YXZjMQAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAABAAEAASAAAAEgAAAAAAAAAAQtBVkMxIENvZGluZwAAAAAAAAAAAAAAAAAAAAAAAAAAABj//wAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAAAAAAAAAAAAACdhdmNDAULACv/hABBnQsAKjGhCSagwMDA8IhGoAQAEaM48gAAAABNjb2xybmNseAAGAAYABgAAAAAobXZleAAAACB0cmV4AAAAAAAAAAEAAAABAAAAAAAAAAAAAAAAAAAAgG1vb2YAAAAQbWZoZAAAAAAAAAABAAAAaHRyYWYAAAAUdGZoZAACACAAAAABAQEAAAAAABR0ZmR0AQAAAAAAAAAAAAAAAAAAOHRydW4BAAMFAAAABAAAAIgCAAAAAAAOPwAAAE0AAB7kAAAAbwAAHQwAAABrAAAD5wAAABYAAAFFbWRhdAAAAElluAAEE///4IooABjxwABALjgACANJuTk//+IYJYoAAgU+EBKUgQCQhf/4eEYQomFbSev//AOEYQCQhQgJSk/4B/CNq663fXXgAAAAa2HgAH5BPN//8EUUAAQD/7E6xPifN//wgucDgEAUEIOAiAZ4HmK5wOkdyb/Hx0C7BwBAEU4BxaeB0h3PA8yuRfYz+b/+HBUykWqHmK54dIdzzf4BgGgVQXAQmHSHc+HmK553z+LkU2Yjz+fwAAAAZ2HgAL5BfgfAcYnsX2zf/xDBdA4ABAABQEIPhACYxwgCc5uB4iXOB0Zbk3/4+C6DgAEQAEU8LuCUn4HRlueB4iXEeTN/+AcFUK2glJw8hXPDpjueb/AMPBVF0WrDpjufDyFc6PJnW4AAAAASYeAA/kCe+rfVqP8DD4GHR5J4AAAATG1mcmEAAAA0dGZyYQEAAAAAAAABAAAAPwAAAAEAAAAAAAAAAAAAAAAAAALuAAAAAQAAAAEAAAABAAAAEG1mcm8BAAAAAAAATA==';
 
 interface StoredQuote {
   readonly quote: StudioQuote;
@@ -38,11 +42,19 @@ interface Submission {
   readonly taskId: string;
 }
 
+interface Cancellation {
+  readonly idempotencyKey: string;
+  readonly fingerprint: string;
+  readonly taskId: string;
+  readonly snapshot: TaskDetail['statusSnapshot'];
+}
+
 interface CommercialState {
-  readonly version: 1;
+  readonly version: 2;
   readonly quotes: readonly StoredQuote[];
   readonly tasks: readonly StoredTask[];
   readonly submissions: readonly Submission[];
+  readonly cancellations: readonly Cancellation[];
 }
 
 export class MockCommercialError extends Error {
@@ -55,7 +67,7 @@ function requireMock(ownerId: string): void {
 }
 
 function blankState(): CommercialState {
-  return { version: 1, quotes: [], tasks: [], submissions: [] };
+  return { version: 2, quotes: [], tasks: [], submissions: [], cancellations: [] };
 }
 
 function record(value: unknown, code: string): Record<string, unknown> {
@@ -75,12 +87,17 @@ function exact(value: Record<string, unknown>, keys: readonly string[], code: st
 function parseCommercial(value: unknown): CommercialState {
   if (value === undefined) return blankState();
   const state = record(value, 'INVALID_COMMERCIAL_STATE');
-  exact(state, ['version', 'quotes', 'tasks', 'submissions'], 'INVALID_COMMERCIAL_STATE');
+  const stateKeys =
+    state.version === 1
+      ? ['version', 'quotes', 'tasks', 'submissions']
+      : ['version', 'quotes', 'tasks', 'submissions', 'cancellations'];
+  exact(state, stateKeys, 'INVALID_COMMERCIAL_STATE');
   if (
-    state.version !== 1 ||
+    (state.version !== 1 && state.version !== 2) ||
     !Array.isArray(state.quotes) ||
     !Array.isArray(state.tasks) ||
-    !Array.isArray(state.submissions)
+    !Array.isArray(state.submissions) ||
+    (state.version === 2 && !Array.isArray(state.cancellations))
   ) {
     throw new MockCommercialError('INVALID_COMMERCIAL_STATE');
   }
@@ -109,14 +126,34 @@ function parseCommercial(value: unknown): CommercialState {
     }
     return item as unknown as Submission;
   });
+  const cancellationValues: readonly unknown[] =
+    state.version === 2 && Array.isArray(state.cancellations) ? state.cancellations : [];
+  const cancellations: readonly Cancellation[] = cancellationValues.map((value) => {
+    const item = record(value, 'INVALID_COMMERCIAL_CANCELLATION');
+    exact(
+      item,
+      ['idempotencyKey', 'fingerprint', 'taskId', 'snapshot'],
+      'INVALID_COMMERCIAL_CANCELLATION',
+    );
+    if (
+      !isUuidV7(item.idempotencyKey) ||
+      typeof item.fingerprint !== 'string' ||
+      !isUuidV7(item.taskId)
+    ) {
+      throw new MockCommercialError('INVALID_COMMERCIAL_CANCELLATION');
+    }
+    return item as unknown as Cancellation;
+  });
   if (
     new Set(quotes.map(({ quote }) => quote.id)).size !== quotes.length ||
     new Set(tasks.map(({ detail }) => detail.id)).size !== tasks.length ||
-    new Set(submissions.map(({ idempotencyKey }) => idempotencyKey)).size !== submissions.length
+    new Set(submissions.map(({ idempotencyKey }) => idempotencyKey)).size !== submissions.length ||
+    new Set(cancellations.map(({ idempotencyKey }) => idempotencyKey)).size !==
+      cancellations.length
   ) {
     throw new MockCommercialError('INVALID_COMMERCIAL_STATE');
   }
-  return { version: 1, quotes, tasks, submissions };
+  return { version: 2, quotes, tasks, submissions, cancellations };
 }
 
 function writeCommercial(finance: MutableMockFinanceState, state: CommercialState): void {
@@ -220,11 +257,14 @@ export async function saveMockCommercialQuote(
     () => createMockFinanceSeed(ownerId),
     (finance) => {
       const state = parseCommercial(finance.commercial);
-      if (state.quotes.length >= MAX_QUOTES) throw new MockCommercialError('QUOTE_CAPACITY');
+      const activeQuotes = state.quotes.filter(
+        ({ quote: storedQuote }) => Date.parse(storedQuote.expiresAt) > Date.now(),
+      );
+      if (activeQuotes.length >= MAX_QUOTES) throw new MockCommercialError('QUOTE_CAPACITY');
       writeCommercial(finance, {
         ...state,
         quotes: [
-          ...state.quotes,
+          ...activeQuotes,
           { request: structuredClone(request), quote: structuredClone(quote) },
         ],
       });
@@ -359,7 +399,76 @@ export async function listMockCommercialTasks(ownerId: string): Promise<readonly
   );
 }
 
-export async function readAndAdvanceMockCommercialTask(
+function advanceStoredTask(
+  finance: MutableMockFinanceState,
+  state: CommercialState,
+  index: number,
+  current: StoredTask,
+): StoredTask {
+  const status = nextStatus(current);
+  if (!status) return current;
+  const now = new Date().toISOString();
+  const revision = current.detail.statusSnapshot.revision + 1;
+  const snapshot = {
+    eventId: `${String(revision)}:${createUuidV7()}`,
+    revision,
+    status,
+    terminal: status === 'SETTLED' || status === 'REFUNDED',
+    cancelAllowed: status === 'SUBMITTING' || status === 'RUNNING',
+    updatedAt: now,
+    ...(status === 'FAILED'
+      ? {
+          publicReason: {
+            code: 'MOCK_GENERATION_FAILED',
+            message: '模拟生成未完成，冻结点数正在退回。',
+          },
+        }
+      : {}),
+  } as const;
+  const timeline = [...current.detail.timeline, { ...snapshot, label: statusLabel(status) }];
+  const points = current.detail.quotedPoints;
+  const financial =
+    status === 'SETTLED'
+      ? {
+          availablePoints: finance.balance.available,
+          frozenPoints: '0',
+          settledPoints: points,
+          refundedPoints: '0',
+        }
+      : status === 'REFUNDED'
+        ? {
+            availablePoints: (BigInt(finance.balance.available) + BigInt(points)).toString(),
+            frozenPoints: '0',
+            settledPoints: '0',
+            refundedPoints: points,
+          }
+        : current.detail.financial;
+  updateMoney(finance, current.detail, status, now);
+  const next: StoredTask = {
+    ...current,
+    detail: { ...current.detail, statusSnapshot: snapshot, timeline, financial },
+  };
+  const tasks = [...state.tasks];
+  tasks[index] = next;
+  writeCommercial(finance, { ...state, tasks });
+  return next;
+}
+
+async function ensureResultObject(ownerId: string, stored: StoredTask): Promise<void> {
+  if (stored.detail.statusSnapshot.status !== 'SETTLED') return;
+  await ensureMockSeedObjects(ownerId, [
+    {
+      assetId: stored.resultAssetId,
+      kind: 'RESULT',
+      name: `${stored.detail.taskNumber}-result.mp4`,
+      mimeType: 'video/mp4',
+      createdAt: stored.detail.statusSnapshot.updatedAt,
+      bytes: new Uint8Array(Buffer.from(MOCK_RESULT_MP4_BASE64, 'base64')),
+    },
+  ]);
+}
+
+export async function readMockCommercialTask(
   ownerId: string,
   taskId: string,
 ): Promise<TaskDetail | undefined> {
@@ -369,73 +478,130 @@ export async function readAndAdvanceMockCommercialTask(
     () => createMockFinanceSeed(ownerId),
     (finance) => {
       const state = parseCommercial(finance.commercial);
+      return state.tasks.find(({ detail }) => detail.id === taskId);
+    },
+  );
+  if (!stored) return undefined;
+  await ensureResultObject(ownerId, stored);
+  return publicTask(stored);
+}
+
+export async function readOrAdvanceMockCommercialTaskEvent(
+  ownerId: string,
+  taskId: string,
+  lastEventId?: string,
+): Promise<TaskDetail['statusSnapshot'] | undefined> {
+  requireMock(ownerId);
+  const result = await runMockFinanceTransaction(
+    ownerId,
+    () => createMockFinanceSeed(ownerId),
+    (finance) => {
+      const state = parseCommercial(finance.commercial);
       const index = state.tasks.findIndex(({ detail }) => detail.id === taskId);
       if (index < 0) return undefined;
       const current = state.tasks[index];
       if (!current) return undefined;
-      const status = nextStatus(current);
-      if (!status) return current;
+      if (lastEventId) {
+        const cursorIndex = current.detail.timeline.findIndex(
+          ({ eventId }) => eventId === lastEventId,
+        );
+        if (cursorIndex < 0) throw new MockCommercialError('INVALID_TASK_CURSOR');
+        const nextExisting = current.detail.timeline[cursorIndex + 1];
+        if (nextExisting) {
+          const { label: _label, ...snapshot } = nextExisting;
+          void _label;
+          return { stored: current, snapshot };
+        }
+      }
+      const advanced = advanceStoredTask(finance, state, index, current);
+      return { stored: advanced, snapshot: advanced.detail.statusSnapshot };
+    },
+  );
+  if (!result) return undefined;
+  await ensureResultObject(ownerId, result.stored);
+  return structuredClone(result.snapshot);
+}
+
+export async function cancelMockCommercialTask(
+  ownerId: string,
+  taskId: string,
+  idempotencyKey: string,
+): Promise<TaskDetail['statusSnapshot']> {
+  requireMock(ownerId);
+  if (!isUuidV7(idempotencyKey)) throw new MockCommercialError('INVALID_IDEMPOTENCY_KEY');
+  const fingerprint = createHash('sha256').update(`cancel:${taskId}`).digest('hex');
+  return runMockFinanceTransaction(
+    ownerId,
+    () => createMockFinanceSeed(ownerId),
+    (finance) => {
+      const state = parseCommercial(finance.commercial);
+      const replay = state.cancellations.find((entry) => entry.idempotencyKey === idempotencyKey);
+      if (replay) {
+        if (replay.fingerprint !== fingerprint || replay.taskId !== taskId) {
+          throw new MockCommercialError('IDEMPOTENCY_CONFLICT');
+        }
+        return structuredClone(replay.snapshot);
+      }
+      const index = state.tasks.findIndex(({ detail }) => detail.id === taskId);
+      const current = index >= 0 ? state.tasks[index] : undefined;
+      if (!current) throw new MockCommercialError('TASK_NOT_FOUND');
+      if (!current.detail.statusSnapshot.cancelAllowed) {
+        throw new MockCommercialError('CANCEL_NOT_ALLOWED');
+      }
       const now = new Date().toISOString();
-      const revision = current.detail.statusSnapshot.revision + 1;
-      const snapshot = {
-        eventId: `${String(revision)}:${createUuidV7()}`,
-        revision,
-        status,
-        terminal: status === 'SETTLED' || status === 'REFUNDED',
-        cancelAllowed: status === 'SUBMITTING' || status === 'RUNNING',
+      const canceledRevision = current.detail.statusSnapshot.revision + 1;
+      const canceled = {
+        eventId: `${String(canceledRevision)}:${createUuidV7()}`,
+        revision: canceledRevision,
+        status: 'CANCELED',
+        terminal: false,
+        cancelAllowed: false,
         updatedAt: now,
-        ...(status === 'FAILED'
-          ? {
-              publicReason: {
-                code: 'MOCK_GENERATION_FAILED',
-                message: '模拟生成未完成，冻结点数正在退回。',
-              },
-            }
-          : {}),
+        publicReason: { code: 'USER_CANCELED', message: '取消请求已接受，冻结点数已退回。' },
       } as const;
-      const timeline = [...current.detail.timeline, { ...snapshot, label: statusLabel(status) }];
-      const points = current.detail.quotedPoints;
-      const financial =
-        status === 'SETTLED'
-          ? {
-              availablePoints: finance.balance.available,
-              frozenPoints: '0',
-              settledPoints: points,
-              refundedPoints: '0',
-            }
-          : status === 'REFUNDED'
-            ? {
-                availablePoints: (BigInt(finance.balance.available) + BigInt(points)).toString(),
-                frozenPoints: '0',
-                settledPoints: '0',
-                refundedPoints: points,
-              }
-            : current.detail.financial;
-      updateMoney(finance, current.detail, status, now);
+      const refunded = {
+        ...canceled,
+        eventId: `${String(canceledRevision + 1)}:${createUuidV7()}`,
+        revision: canceledRevision + 1,
+        status: 'REFUNDED',
+        terminal: true,
+      } as const;
+      const points = BigInt(current.detail.quotedPoints);
+      finance.balance = {
+        ...finance.balance,
+        available: (BigInt(finance.balance.available) + points).toString(),
+        frozen: (BigInt(finance.balance.frozen) - points).toString(),
+      };
+      finance.ledger.unshift(transaction('RELEASE', current.detail, now));
       const next: StoredTask = {
         ...current,
-        detail: { ...current.detail, statusSnapshot: snapshot, timeline, financial },
+        detail: {
+          ...current.detail,
+          statusSnapshot: refunded,
+          financial: {
+            availablePoints: finance.balance.available,
+            frozenPoints: '0',
+            settledPoints: '0',
+            refundedPoints: points.toString(),
+          },
+          timeline: [
+            ...current.detail.timeline,
+            { ...canceled, label: statusLabel('CANCELED') },
+            { ...refunded, label: statusLabel('REFUNDED') },
+          ],
+        },
       };
       const tasks = [...state.tasks];
       tasks[index] = next;
-      writeCommercial(finance, { ...state, tasks });
-      return next;
+      writeCommercial(finance, {
+        ...state,
+        tasks,
+        cancellations: [
+          ...state.cancellations,
+          { idempotencyKey, fingerprint, taskId, snapshot: refunded },
+        ],
+      });
+      return structuredClone(refunded);
     },
   );
-  if (!stored) return undefined;
-  if (stored.detail.statusSnapshot.status === 'SETTLED') {
-    await ensureMockSeedObjects(ownerId, [
-      {
-        assetId: stored.resultAssetId,
-        kind: 'RESULT',
-        name: `${stored.detail.taskNumber}-result.mp4`,
-        mimeType: 'video/mp4',
-        createdAt: stored.detail.statusSnapshot.updatedAt,
-        bytes: new Uint8Array([
-          0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0,
-        ]),
-      },
-    ]);
-  }
-  return publicTask(stored);
 }

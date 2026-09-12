@@ -19,6 +19,7 @@ import {
 } from '../lib/auth/server-session';
 import { openTaskEventStream } from '../lib/task-event-stream';
 import { readRetryDraft, saveRetryDraft } from '../lib/studio/retry-drafts';
+import { studioGateway } from '../lib/studio/gateway';
 import { taskGateway } from '../lib/tasks/gateway';
 import { isTaskEventCursor } from '../lib/tasks/identifiers';
 import {
@@ -1176,6 +1177,7 @@ it.each([
   async (_kind, mismatch) => {
     render(
       <StudioWorkspace
+        gateway={studioGateway}
         retryDraft={{
           id: 'draft-incompatible',
           generationMode: 'IMAGE_TO_VIDEO',

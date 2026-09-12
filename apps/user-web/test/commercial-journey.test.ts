@@ -1,10 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { commerceGateway } from '../lib/commerce/gateway';
+import { findMockObject, openMockObjectContent } from '../lib/commerce/mock-object-store';
 import { parseWalletPage } from '../lib/commerce/runtime';
 import { createUuidV7 } from '../lib/tasks/identifiers';
 import { taskGateway } from '../lib/tasks/gateway';
 import { parseTaskDetail, parseTaskPage } from '../lib/tasks/runtime';
+import { readRetryDraft } from '../lib/studio/retry-drafts';
 import { createMockStoreTestScope } from './mock-store-scope';
 
 const OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7401';
@@ -72,6 +74,12 @@ describe('mock commercial journey', () => {
     delete process.env.USER_WEB_STUDIO_MODE;
     const gateway = await gatewayFor(OWNER_ID);
     await expect(gateway.listProviders()).rejects.toThrow('STUDIO_GATEWAY_UNAVAILABLE');
+    await expect(taskGateway.listTasks({}, { ownerId: OWNER_ID })).rejects.toThrow(
+      'TASK_GATEWAY_UNAVAILABLE',
+    );
+    await expect(taskGateway.getTask('task-1', { ownerId: OWNER_ID })).rejects.toThrow(
+      'TASK_GATEWAY_UNAVAILABLE',
+    );
   });
 
   it('creates exactly one reserved task for an idempotent submission and persists it', async () => {
@@ -114,12 +122,16 @@ describe('mock commercial journey', () => {
   it('settles a successful task once despite duplicate reads and conserves wallet points', async () => {
     const setup = await createTask();
     const accepted = await setup.gateway.createTask(setup.request, { idempotencyKey: setup.key });
+    const { createMockTaskEventResponse } = await import('../lib/tasks/mock-transport');
     const statuses: string[] = ['QUEUED'];
+    let cursor: string | undefined;
     for (let index = 0; index < 5; index += 1) {
-      statuses.push(
-        parseTaskDetail(await taskGateway.getTask(accepted.taskId, { ownerId: OWNER_ID }))
-          .statusSnapshot.status,
-      );
+      const response = await createMockTaskEventResponse(OWNER_ID, accepted.taskId, cursor);
+      const payload = await response.text();
+      const data = payload.match(/data: (.+)\n\n/)?.[1];
+      const snapshot = JSON.parse(data ?? '{}') as { eventId: string; status: string };
+      statuses.push(snapshot.status);
+      cursor = snapshot.eventId;
     }
     expect(statuses).toEqual([
       'QUEUED',
@@ -147,12 +159,16 @@ describe('mock commercial journey', () => {
     const before = parseWalletPage(await commerceGateway.getWallet({}, { ownerId: OWNER_ID }));
     const setup = await createTask({ fail: true });
     const accepted = await setup.gateway.createTask(setup.request, { idempotencyKey: setup.key });
+    const { createMockTaskEventResponse } = await import('../lib/tasks/mock-transport');
     const statuses: string[] = ['QUEUED'];
+    let cursor: string | undefined;
     for (let index = 0; index < 5; index += 1) {
-      statuses.push(
-        parseTaskDetail(await taskGateway.getTask(accepted.taskId, { ownerId: OWNER_ID }))
-          .statusSnapshot.status,
-      );
+      const response = await createMockTaskEventResponse(OWNER_ID, accepted.taskId, cursor);
+      const payload = await response.text();
+      const data = payload.match(/data: (.+)\n\n/)?.[1];
+      const snapshot = JSON.parse(data ?? '{}') as { eventId: string; status: string };
+      statuses.push(snapshot.status);
+      cursor = snapshot.eventId;
     }
     expect(statuses).toEqual(['QUEUED', 'SUBMITTING', 'RUNNING', 'FAILED', 'REFUNDED', 'REFUNDED']);
     const after = parseWalletPage(await commerceGateway.getWallet({}, { ownerId: OWNER_ID }));
@@ -175,8 +191,137 @@ describe('mock commercial journey', () => {
     expect(payload).toMatch(/^id: 2:[0-9a-f-]+\nevent: task\.status\ndata: /);
     expect(payload).toContain('"status":"SUBMITTING"');
     expect(payload).not.toContain('parametersSnapshot');
+
+    const currentAfterStream = parseTaskDetail(
+      await taskGateway.getTask(accepted.taskId, { ownerId: OWNER_ID }),
+    );
+    expect(currentAfterStream.statusSnapshot.status).toBe('SUBMITTING');
+    const replay = await createMockTaskEventResponse(
+      OWNER_ID,
+      accepted.taskId,
+      currentAfterStream.timeline[0]?.eventId,
+    );
+    expect(await replay.text()).toBe(payload);
+
+    const other = await createTask();
+    const otherAccepted = await other.gateway.createTask(other.request, {
+      idempotencyKey: other.key,
+    });
+    const otherTask = parseTaskDetail(
+      await taskGateway.getTask(otherAccepted.taskId, { ownerId: OWNER_ID }),
+    );
+    await expect(
+      createMockTaskEventResponse(
+        OWNER_ID,
+        accepted.taskId,
+        otherTask.statusSnapshot.eventId,
+      ),
+    ).rejects.toThrow('INVALID_TASK_CURSOR');
+    await expect(
+      createMockTaskEventResponse(
+        OWNER_ID,
+        accepted.taskId,
+        `99:${createUuidV7()}`,
+      ),
+    ).rejects.toThrow('INVALID_TASK_CURSOR');
     await expect(
       createMockTaskEventResponse(OWNER_ID, accepted.taskId, 'forged-cursor'),
     ).rejects.toThrow('INVALID_TASK_CURSOR');
+  });
+
+  it('cancels a dynamic task atomically, releases once, and creates an owner-scoped retry draft', async () => {
+    const before = parseWalletPage(await commerceGateway.getWallet({}, { ownerId: OWNER_ID }));
+    const setup = await createTask();
+    const accepted = await setup.gateway.createTask(setup.request, { idempotencyKey: setup.key });
+    const cancelKey = createUuidV7();
+
+    const canceled = await taskGateway.cancelTask(accepted.taskId, {
+      idempotencyKey: cancelKey,
+      ownerId: OWNER_ID,
+    });
+    await expect(
+      taskGateway.cancelTask(accepted.taskId, {
+        idempotencyKey: cancelKey,
+        ownerId: OWNER_ID,
+      }),
+    ).resolves.toEqual(canceled);
+
+    const after = parseWalletPage(await commerceGateway.getWallet({}, { ownerId: OWNER_ID }));
+    expect(after.balance.available).toBe(before.balance.available);
+    expect(after.balance.frozen).toBe(before.balance.frozen);
+    expect(
+      after.transactions.filter(
+        ({ type, reference }) => type === 'RELEASE' && reference?.id === accepted.taskId,
+      ),
+    ).toHaveLength(1);
+
+    const draftResult = (await taskGateway.createRetryDraft(accepted.taskId, {
+      ownerId: OWNER_ID,
+    })) as { draftId: string };
+    const draft = readRetryDraft(draftResult.draftId, { ownerId: OWNER_ID });
+    expect(draft).toMatchObject({
+      generationMode: 'TEXT_TO_VIDEO',
+      capabilityVersion: setup.quote.capabilityVersion,
+      parameters: setup.quote.parameters,
+    });
+    expect(readRetryDraft(draftResult.draftId, { ownerId: OTHER_OWNER_ID })).toBeUndefined();
+  });
+
+  it('evicts expired quotes before enforcing the bounded quote capacity', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-08-31T08:00:00.000Z'));
+    const gateway = await gatewayFor(OWNER_ID);
+    const capability = await gateway.getSmartCapability('TEXT_TO_VIDEO');
+    const request = {
+      routing: {
+        kind: 'SMART' as const,
+        preferences: {
+          generationMode: 'TEXT_TO_VIDEO' as const,
+          quality: 'BALANCED' as const,
+          speed: 'BALANCED' as const,
+          budgetPoints: 500,
+          goal: '',
+        },
+      },
+      capabilityVersion: capability.capabilityVersion,
+      parameters: { prompt: '有足够长度的测试画面', duration: 5, aspectRatio: '16:9' },
+    };
+    for (let index = 0; index < 100; index += 1) await gateway.quote(request);
+    vi.advanceTimersByTime(11 * 60_000);
+    await expect(gateway.quote(request)).resolves.toMatchObject({
+      capabilityVersion: capability.capabilityVersion,
+    });
+    vi.useRealTimers();
+  });
+
+  it('stores a complete MP4 result with media metadata boxes instead of a signature stub', async () => {
+    const setup = await createTask();
+    const accepted = await setup.gateway.createTask(setup.request, { idempotencyKey: setup.key });
+    const { createMockTaskEventResponse } = await import('../lib/tasks/mock-transport');
+    let cursor: string | undefined;
+    for (let index = 0; index < 4; index += 1) {
+      const response = await createMockTaskEventResponse(OWNER_ID, accepted.taskId, cursor);
+      const payload = await response.text();
+      cursor = payload.match(/^id: (.+)$/m)?.[1];
+    }
+    const detail = parseTaskDetail(
+      await taskGateway.getTask(accepted.taskId, { ownerId: OWNER_ID }),
+    );
+    expect(detail.result).toBeDefined();
+    const metadata = await findMockObject(detail.result?.assetId ?? '', OWNER_ID);
+    expect(metadata?.mimeType).toBe('video/mp4');
+    if (!metadata) throw new Error('RESULT_METADATA_MISSING');
+    const opened = await openMockObjectContent(metadata);
+    const bytes = await opened.handle.readFile();
+    await opened.handle.close();
+    const boxTypes: string[] = [];
+    for (let offset = 0; offset + 8 <= bytes.length; ) {
+      const size = bytes.readUInt32BE(offset);
+      if (size < 8 || offset + size > bytes.length) break;
+      boxTypes.push(bytes.toString('ascii', offset + 4, offset + 8));
+      offset += size;
+    }
+    expect(bytes.length).toBeGreaterThan(500);
+    expect(boxTypes).toEqual(expect.arrayContaining(['ftyp', 'moov', 'mdat']));
   });
 });

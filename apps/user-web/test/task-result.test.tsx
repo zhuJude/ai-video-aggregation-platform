@@ -90,8 +90,11 @@ it('publishes a successful task result only through short-lived owner-scoped sig
     { idempotencyKey: createUuidV7() },
   );
 
+  const { createMockTaskEventResponse } = await import('../lib/tasks/mock-transport');
+  let cursor: string | undefined;
   for (let index = 0; index < 4; index += 1) {
-    await taskGateway.getTask(accepted.taskId, { ownerId: OWNER_ID });
+    const event = await createMockTaskEventResponse(OWNER_ID, accepted.taskId, cursor);
+    cursor = (await event.text()).match(/^id: (.+)$/m)?.[1];
   }
   const detail = parseTaskDetail(await taskGateway.getTask(accepted.taskId, { ownerId: OWNER_ID }));
   expect(detail.result).toBeDefined();

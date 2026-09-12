@@ -1,7 +1,8 @@
 import { saveRetryDraft } from '../studio/retry-drafts';
 import {
+  cancelMockCommercialTask,
   listMockCommercialTasks,
-  readAndAdvanceMockCommercialTask,
+  readMockCommercialTask,
 } from '../studio/mock-commercial-store';
 import { createUuidV7, isUuidV7 } from './identifiers';
 import type {
@@ -247,9 +248,10 @@ function toSummary(task: TaskDetail): TaskPage['items'][number] {
 }
 
 async function commercialTasks(ownerId: string): Promise<readonly TaskDetail[]> {
-  return process.env.USER_WEB_STUDIO_MODE === 'mock'
-    ? listMockCommercialTasks(ownerId)
-    : Promise.resolve([]);
+  if (process.env.USER_WEB_STUDIO_MODE !== 'mock') {
+    throw new TaskGatewayCommandError('TASK_GATEWAY_UNAVAILABLE');
+  }
+  return listMockCommercialTasks(ownerId);
 }
 
 export const taskGateway: TaskGateway = {
@@ -274,10 +276,11 @@ export const taskGateway: TaskGateway = {
   },
 
   async getTask(taskId, context): Promise<unknown> {
-    if (process.env.USER_WEB_STUDIO_MODE === 'mock') {
-      const generated = await readAndAdvanceMockCommercialTask(context.ownerId, taskId);
-      if (generated) return generated;
+    if (process.env.USER_WEB_STUDIO_MODE !== 'mock') {
+      throw new TaskGatewayCommandError('TASK_GATEWAY_UNAVAILABLE');
     }
+    const generated = await readMockCommercialTask(context.ownerId, taskId);
+    if (generated) return generated;
     const task = fixtures.find(
       (candidate) => candidate.id === taskId && candidate.ownerId === context.ownerId,
     );
@@ -288,11 +291,18 @@ export const taskGateway: TaskGateway = {
   },
 
   async cancelTask(taskId, options): Promise<unknown> {
+    if (process.env.USER_WEB_STUDIO_MODE !== 'mock') {
+      throw new TaskGatewayCommandError('TASK_GATEWAY_UNAVAILABLE');
+    }
     if (!isUuidV7(options.idempotencyKey)) {
       throw new TaskGatewayCommandError('INVALID_IDEMPOTENCY_KEY');
     }
     const now = Date.now();
     sweepCanceledCache(now);
+    const generated = await readMockCommercialTask(options.ownerId, taskId);
+    if (generated) {
+      return cancelMockCommercialTask(options.ownerId, taskId, options.idempotencyKey);
+    }
     const task = fixtures.find(
       (candidate) => candidate.id === taskId && candidate.ownerId === options.ownerId,
     );
@@ -338,9 +348,14 @@ export const taskGateway: TaskGateway = {
   },
 
   async createRetryDraft(taskId, options): Promise<unknown> {
-    const task = fixtures.find(
-      (candidate) => candidate.id === taskId && candidate.ownerId === options.ownerId,
-    );
+    if (process.env.USER_WEB_STUDIO_MODE !== 'mock') {
+      throw new TaskGatewayCommandError('TASK_GATEWAY_UNAVAILABLE');
+    }
+    const task =
+      (await readMockCommercialTask(options.ownerId, taskId)) ??
+      fixtures.find(
+        (candidate) => candidate.id === taskId && candidate.ownerId === options.ownerId,
+      );
     if (!task) throw new Error('TASK_NOT_FOUND');
     const draft: RetryDraft = {
       id: createUuidV7(),
