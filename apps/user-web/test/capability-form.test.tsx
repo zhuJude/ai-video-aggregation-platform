@@ -1481,6 +1481,10 @@ it('rejects malformed task acceptance and resets submission state for a replacem
   );
   fireEvent.click(screen.getByRole('button', { name: '确认并创建任务' }));
   expect(await screen.findByText(/任务已创建，编号 task-accepted/)).toBeVisible();
+  expect(screen.getByRole('link', { name: '查看任务进度' })).toHaveAttribute(
+    'href',
+    '/tasks/task-accepted',
+  );
   view.rerender(
     <QuoteConfirmation
       gateway={{ createTask }}

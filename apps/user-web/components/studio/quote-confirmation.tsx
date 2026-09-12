@@ -193,9 +193,10 @@ export function QuoteConfirmation({
         </p>
       ) : null}
       {accepted ? (
-        <p className="form-feedback" role="status">
-          任务已创建，编号 {accepted.taskId}
-        </p>
+        <div className="form-feedback" role="status">
+          <p>任务已创建，编号 {accepted.taskId}</p>
+          <a href={`/tasks/${encodeURIComponent(accepted.taskId)}`}>查看任务进度</a>
+        </div>
       ) : null}
 
       <div className="quote-actions">
