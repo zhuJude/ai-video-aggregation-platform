@@ -68,6 +68,12 @@ async function createTask(options: { readonly fail?: boolean; readonly key?: str
 }
 
 describe('mock commercial journey', () => {
+  it('fails closed when the Studio mock is not explicitly enabled', async () => {
+    delete process.env.USER_WEB_STUDIO_MODE;
+    const gateway = await gatewayFor(OWNER_ID);
+    await expect(gateway.listProviders()).rejects.toThrow('STUDIO_GATEWAY_UNAVAILABLE');
+  });
+
   it('creates exactly one reserved task for an idempotent submission and persists it', async () => {
     const before = parseWalletPage(await commerceGateway.getWallet({}, { ownerId: OWNER_ID }));
     const setup = await createTask();
@@ -97,6 +103,12 @@ describe('mock commercial journey', () => {
     await expect(taskGateway.getTask(first.taskId, { ownerId: OTHER_OWNER_ID })).rejects.toThrow(
       'TASK_NOT_FOUND',
     );
+    await expect(
+      setup.gateway.createTask(
+        { ...setup.request, quotedPoints: (BigInt(setup.request.quotedPoints) + 1n).toString() },
+        { idempotencyKey: setup.key },
+      ),
+    ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
   });
 
   it('settles a successful task once despite duplicate reads and conserves wallet points', async () => {
