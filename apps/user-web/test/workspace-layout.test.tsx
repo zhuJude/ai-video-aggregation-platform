@@ -4,13 +4,20 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import WorkspaceError from '../app/(workspace)/error';
 import WorkspaceLayout from '../app/(workspace)/layout';
 import RootLayout from '../app/layout';
 
+const readShellUser = vi.hoisted(() => vi.fn());
+vi.mock('../lib/workspace-shell', () => ({ readWorkspaceShellUser: readShellUser }));
+
 afterEach(cleanup);
+beforeEach(() => {
+  readShellUser.mockReset();
+  readShellUser.mockResolvedValue(null);
+});
 
 describe('route layouts', () => {
   it('keeps workspace navigation out of the public root layout', () => {
@@ -24,16 +31,28 @@ describe('route layouts', () => {
     expect(markup).not.toContain('开始生成');
   });
 
-  it('renders workspace navigation inside the workspace route group', () => {
+  it('renders workspace navigation inside the workspace route group', async () => {
     const markup = renderToStaticMarkup(
-      <WorkspaceLayout>
-        <main>工作区内容</main>
-      </WorkspaceLayout>,
+      await WorkspaceLayout({ children: <main>工作区内容</main> }),
     );
 
     expect(markup).toContain('工作区内容');
     expect(markup).toContain('开始生成');
     expect(markup).toContain('任务中心');
+  });
+
+  it('hydrates the shell with the authenticated owner profile and wallet summary', async () => {
+    readShellUser.mockResolvedValue({
+      nickname: '小林',
+      points: '9007199254740993',
+      frozenPoints: '80',
+    });
+
+    const markup = renderToStaticMarkup(await WorkspaceLayout({ children: <p>已登录</p> }));
+
+    expect(markup).toContain('小林');
+    expect(markup).toContain('9,007,199,254,740,993');
+    expect(markup).not.toContain('登录后查看点数');
   });
 
   it('lets a user retry a failed workspace route without exposing internals', () => {

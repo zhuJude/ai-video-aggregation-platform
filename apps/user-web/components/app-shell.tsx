@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 
 export interface AppShellUser {
   nickname: string;
-  points: string;
+  points?: string;
   frozenPoints?: string;
 }
 
@@ -83,11 +83,15 @@ export function AppShell({ children, user = null }: AppShellProps) {
                 <dl className="points-summary">
                   <div>
                     <dt>可用点数</dt>
-                    <dd>{formatPoints(user.points)}</dd>
+                    <dd>{user.points === undefined ? '暂不可用' : formatPoints(user.points)}</dd>
                   </div>
                   <div>
                     <dt>冻结点数</dt>
-                    <dd>{formatPoints(user.frozenPoints ?? '0')}</dd>
+                    <dd>
+                      {user.frozenPoints === undefined
+                        ? '暂不可用'
+                        : formatPoints(user.frozenPoints)}
+                    </dd>
                   </div>
                 </dl>
               </section>

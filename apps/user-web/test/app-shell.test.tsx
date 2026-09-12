@@ -45,6 +45,14 @@ describe('AppShell', () => {
     expect(screen.queryByText('usr_secret_123')).not.toBeInTheDocument();
   });
 
+  it('keeps an authenticated user visible when the wallet is temporarily unavailable', () => {
+    render(<AppShell user={{ nickname: '小林' }}>{null}</AppShell>);
+
+    expect(screen.getByText('小林')).toBeVisible();
+    expect(screen.queryByRole('link', { name: '登录后查看点数' })).not.toBeInTheDocument();
+    expect(screen.getAllByText('暂不可用')).toHaveLength(2);
+  });
+
   it('provides explicit empty and loading states', () => {
     const { rerender } = render(<AppShell>{null}</AppShell>);
 
