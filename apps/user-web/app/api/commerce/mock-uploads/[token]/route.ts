@@ -8,6 +8,7 @@ import {
   createMockUploadReceipt,
   UploadBoundaryError,
   verifyMockUploadGrant,
+  verifyMockUploadRecoveryGrant,
 } from '../../../../../lib/commerce/mock-upload-boundary';
 import {
   MockObjectStoreError,
@@ -49,7 +50,7 @@ export async function GET(
   try {
     const session = await requireMutableAuthenticatedServerSession();
     const ownerId = commerceOwnerIdFromPhone(session.ownerId);
-    const grant = verifyMockUploadGrant((await context.params).token);
+    const grant = verifyMockUploadRecoveryGrant((await context.params).token);
     if (grant.ownerId !== ownerId) {
       return new Response(null, { headers: PRIVATE_HEADERS, status: 404 });
     }

@@ -12,7 +12,9 @@ import type {
   VerifiedUploadReceipt,
 } from './types';
 
-const TOKEN_TTL_MS = 5 * 60_000;
+const ACCESS_TOKEN_TTL_MS = 5 * 60_000;
+const UPLOAD_START_TTL_MS = 5 * 60_000;
+const UPLOAD_RECOVERY_TTL_MS = 24 * 60 * 60_000;
 const UPLOAD_KINDS = [
   { extensions: ['.jpg', '.jpeg'], mimeType: 'image/jpeg', magic: 'JPEG' },
   { extensions: ['.png'], mimeType: 'image/png', magic: 'PNG' },
@@ -256,7 +258,8 @@ export function createMockUploadGrant(
   validateDescriptor(input);
   if (!UuidSchema.safeParse(uploadId).success || !UuidSchema.safeParse(ownerId).success)
     throw new UploadBoundaryError('INVALID');
-  const expiresAtMs = now + TOKEN_TTL_MS;
+  const startExpiresAtMs = now + UPLOAD_START_TTL_MS;
+  const recoveryExpiresAtMs = now + UPLOAD_RECOVERY_TTL_MS;
   const assetId = uploadId;
   const token = encode({
     version: 1,
@@ -269,7 +272,8 @@ export function createMockUploadGrant(
     name: input.name,
     mimeType: input.type,
     sizeBytes: String(input.size),
-    expiresAtMs,
+    startExpiresAtMs,
+    recoveryExpiresAtMs,
   });
   return {
     id: assetId,
@@ -278,13 +282,14 @@ export function createMockUploadGrant(
       'content-type': input.type,
       'x-upload-content-length': String(input.size),
     },
-    expiresAt: new Date(expiresAtMs).toISOString(),
+    expiresAt: new Date(startExpiresAtMs).toISOString(),
   };
 }
 
-export function verifyMockUploadGrant(
+function verifyMockUploadGrantForWindow(
   token: string,
-  now: number = Date.now(),
+  now: number,
+  window: 'START' | 'RECOVERY',
 ): VerifiedUploadGrant {
   const payload = decode(token);
   if (
@@ -299,7 +304,8 @@ export function verifyMockUploadGrant(
       'name',
       'mimeType',
       'sizeBytes',
-      'expiresAtMs',
+      'startExpiresAtMs',
+      'recoveryExpiresAtMs',
     ]) ||
     payload.version !== 1 ||
     payload.type !== 'UPLOAD_GRANT' ||
@@ -315,11 +321,17 @@ export function verifyMockUploadGrant(
     typeof payload.mimeType !== 'string' ||
     !uploadKind(payload.name, payload.mimeType) ||
     !PointsStringSchema.safeParse(payload.sizeBytes).success ||
-    !Number.isSafeInteger(payload.expiresAtMs)
+    !Number.isSafeInteger(payload.startExpiresAtMs) ||
+    !Number.isSafeInteger(payload.recoveryExpiresAtMs) ||
+    (payload.recoveryExpiresAtMs as number) <= (payload.startExpiresAtMs as number)
   ) {
     throw new UploadBoundaryError('INVALID');
   }
-  if ((payload.expiresAtMs as number) <= now) throw new UploadBoundaryError('EXPIRED');
+  const expiresAt =
+    window === 'START'
+      ? (payload.startExpiresAtMs as number)
+      : (payload.recoveryExpiresAtMs as number);
+  if (expiresAt <= now) throw new UploadBoundaryError('EXPIRED');
   if (
     payload.assetId !== payload.grantId ||
     payload.assetId !== payload.idempotencyKey ||
@@ -336,7 +348,23 @@ export function verifyMockUploadGrant(
     name: payload.name,
     mimeType: payload.mimeType,
     sizeBytes: payload.sizeBytes as string,
+    startExpiresAtMs: payload.startExpiresAtMs as number,
+    recoveryExpiresAtMs: payload.recoveryExpiresAtMs as number,
   };
+}
+
+export function verifyMockUploadGrant(
+  token: string,
+  now: number = Date.now(),
+): VerifiedUploadGrant {
+  return verifyMockUploadGrantForWindow(token, now, 'START');
+}
+
+export function verifyMockUploadRecoveryGrant(
+  token: string,
+  now: number = Date.now(),
+): VerifiedUploadGrant {
+  return verifyMockUploadGrantForWindow(token, now, 'RECOVERY');
 }
 
 export function createMockUploadReceipt(
@@ -345,6 +373,7 @@ export function createMockUploadReceipt(
   now: number = Date.now(),
 ): string {
   if (!SHA256.test(sha256)) throw new UploadBoundaryError('INVALID');
+  if (grant.recoveryExpiresAtMs <= now) throw new UploadBoundaryError('EXPIRED');
   return encode({
     version: 1,
     type: 'UPLOAD_RECEIPT',
@@ -357,7 +386,7 @@ export function createMockUploadReceipt(
     mimeType: grant.mimeType,
     sizeBytes: grant.sizeBytes,
     sha256,
-    expiresAtMs: now + TOKEN_TTL_MS,
+    expiresAtMs: grant.recoveryExpiresAtMs,
   });
 }
 
@@ -433,7 +462,7 @@ export function createMockAssetAccess(
   ) {
     throw new UploadBoundaryError('INVALID');
   }
-  const expiresAtMs = now + TOKEN_TTL_MS;
+  const expiresAtMs = now + ACCESS_TOKEN_TTL_MS;
   const token = encode({
     version: 1,
     type: 'ASSET_ACCESS',

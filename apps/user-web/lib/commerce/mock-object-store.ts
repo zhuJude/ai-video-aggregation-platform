@@ -203,6 +203,7 @@ interface StoreLockOwner {
   readonly pid: number;
   readonly token: string;
   readonly createdAt: string;
+  readonly state: 'ACTIVE' | 'RELEASING';
 }
 
 function lockOwnerPath(directory: string): string {
@@ -219,7 +220,7 @@ function parseLockOwner(value: unknown): StoreLockOwner | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const owner = value as Record<string, unknown>;
   if (
-    Object.keys(owner).sort().join(',') !== 'createdAt,pid,token,version' ||
+    Object.keys(owner).sort().join(',') !== 'createdAt,pid,state,token,version' ||
     owner.version !== 1 ||
     typeof owner.pid !== 'number' ||
     !Number.isSafeInteger(owner.pid) ||
@@ -228,7 +229,8 @@ function parseLockOwner(value: unknown): StoreLockOwner | undefined {
     typeof owner.token !== 'string' ||
     !UuidSchema.safeParse(owner.token).success ||
     typeof owner.createdAt !== 'string' ||
-    !Number.isFinite(Date.parse(owner.createdAt))
+    !Number.isFinite(Date.parse(owner.createdAt)) ||
+    (owner.state !== 'ACTIVE' && owner.state !== 'RELEASING')
   ) {
     return undefined;
   }
@@ -253,6 +255,13 @@ function processLiveness(pid: number): 'ALIVE' | 'DEAD' | 'UNKNOWN' {
   }
 }
 
+function isRecoverableLockOwner(
+  owner: StoreLockOwner,
+  liveness: (pid: number) => 'ALIVE' | 'DEAD' | 'UNKNOWN',
+): boolean {
+  return owner.state === 'RELEASING' || liveness(owner.pid) === 'DEAD';
+}
+
 async function tryAcquireStoreLockWith(
   lockPath: string,
   renameDirectory: (source: string, target: string) => Promise<void> = renameDirectoryWithRetry,
@@ -268,6 +277,7 @@ async function tryAcquireStoreLockWith(
     pid: process.pid,
     token: createUuidV7(),
     createdAt: new Date().toISOString(),
+    state: 'ACTIVE',
   };
   const candidatePath = storeAuxiliaryPath(`.store-lock-candidate-${owner.token}`);
   await mkdir(candidatePath);
@@ -301,6 +311,7 @@ async function createRecoveryCandidate(): Promise<{
     pid: process.pid,
     token: createUuidV7(),
     createdAt: new Date().toISOString(),
+    state: 'ACTIVE',
   };
   const path = storeAuxiliaryPath(`.store-lock-recovery-candidate-${owner.token}`);
   await mkdir(path);
@@ -324,7 +335,7 @@ async function recoverDeadRecoveryFence(
   liveness: (pid: number) => 'ALIVE' | 'DEAD' | 'UNKNOWN',
 ): Promise<boolean> {
   const owner = await readLockOwner(recoveryPath);
-  if (!owner || liveness(owner.pid) !== 'DEAD') return false;
+  if (!owner || !isRecoverableLockOwner(owner, liveness)) return false;
   const quarantinePath = storeAuxiliaryPath(`.store-lock-recovery-quarantine-${owner.token}`);
   try {
     await renameDirectoryWithRetry(recoveryPath, quarantinePath);
@@ -343,8 +354,8 @@ async function recoverDeadStoreLock(
   lockPath: string,
   liveness: (pid: number) => 'ALIVE' | 'DEAD' | 'UNKNOWN' = processLiveness,
 ): Promise<boolean> {
-  const deadOwner = await readLockOwner(lockPath);
-  if (!deadOwner || liveness(deadOwner.pid) !== 'DEAD') return false;
+  const recoverableOwner = await readLockOwner(lockPath);
+  if (!recoverableOwner || !isRecoverableLockOwner(recoverableOwner, liveness)) return false;
   const recoveryPath = storeAuxiliaryPath('.store-lock-recovery');
   const candidate = await createRecoveryCandidate();
   let ownsRecovery = false;
@@ -358,16 +369,22 @@ async function recoverDeadStoreLock(
     const current = await readLockOwner(lockPath);
     if (
       !current ||
-      current.pid !== deadOwner.pid ||
-      current.token !== deadOwner.token ||
-      liveness(current.pid) !== 'DEAD'
+      current.pid !== recoverableOwner.pid ||
+      current.token !== recoverableOwner.token ||
+      current.state !== recoverableOwner.state ||
+      !isRecoverableLockOwner(current, liveness)
     ) {
       return false;
     }
-    const quarantinePath = storeAuxiliaryPath(`.store-lock-quarantine-${deadOwner.token}`);
+    const quarantinePath = storeAuxiliaryPath(`.store-lock-quarantine-${recoverableOwner.token}`);
     await renameDirectoryWithRetry(lockPath, quarantinePath);
     const isolated = await readLockOwner(quarantinePath);
-    if (!isolated || isolated.pid !== deadOwner.pid || isolated.token !== deadOwner.token) {
+    if (
+      !isolated ||
+      isolated.pid !== recoverableOwner.pid ||
+      isolated.token !== recoverableOwner.token ||
+      isolated.state !== recoverableOwner.state
+    ) {
       throw new MockObjectStoreError('LOCK_UNAVAILABLE');
     }
     await rm(quarantinePath, { force: true, recursive: true });
@@ -375,14 +392,7 @@ async function recoverDeadStoreLock(
   } finally {
     await rm(candidate.path, { force: true, recursive: true }).catch(() => undefined);
     if (ownsRecovery) {
-      const current = await readLockOwner(recoveryPath);
-      if (current?.pid === candidate.owner.pid && current.token === candidate.owner.token) {
-        const releasePath = storeAuxiliaryPath(
-          `.store-lock-recovery-release-${candidate.owner.token}`,
-        );
-        await renameDirectoryWithRetry(recoveryPath, releasePath);
-        await rm(releasePath, { force: true, recursive: true });
-      }
+      await releaseOwnedLockDirectory(recoveryPath, candidate.owner, renameDirectoryWithRetry);
     }
   }
 }
@@ -405,11 +415,80 @@ async function releaseStoreLockWith(
   owner: StoreLockOwner,
   renameDirectory: (source: string, target: string) => Promise<void> = renameDirectoryWithRetry,
 ): Promise<void> {
+  await releaseOwnedLockDirectory(lockPath, owner, renameDirectory);
+}
+
+function lockOwnerTemporaryPath(directory: string, token: string): string {
+  if (!UuidSchema.safeParse(token).success) throw new MockObjectStoreError('INVALID');
+  const target = resolve(directory, `.owner-${token}.tmp`);
+  if (dirname(target) !== directory || basename(target) !== `.owner-${token}.tmp`) {
+    throw new MockObjectStoreError('INVALID');
+  }
+  return target;
+}
+
+async function markLockReleasing(
+  lockPath: string,
+  owner: StoreLockOwner,
+  renameFile: (source: string, target: string) => Promise<void>,
+): Promise<StoreLockOwner> {
+  const releasing = { ...owner, state: 'RELEASING' as const };
+  const target = lockOwnerPath(lockPath);
+  const temporary = lockOwnerTemporaryPath(lockPath, owner.token);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const current = await readLockOwner(lockPath);
+    if (!current || current.pid !== owner.pid || current.token !== owner.token) {
+      throw new MockObjectStoreError('LOCK_UNAVAILABLE');
+    }
+    if (current.state === 'RELEASING') return current;
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      handle = await open(temporary, 'wx');
+      await handle.writeFile(JSON.stringify(releasing), 'utf8');
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+      await renameFile(temporary, target);
+      const published = await readLockOwner(lockPath);
+      if (
+        published?.pid === owner.pid &&
+        published.token === owner.token &&
+        published.state === 'RELEASING'
+      ) {
+        return published;
+      }
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      if (
+        error instanceof MockObjectStoreError ||
+        (!hasErrorCode(error, 'EPERM') &&
+          !hasErrorCode(error, 'EBUSY') &&
+          !hasErrorCode(error, 'EEXIST'))
+      ) {
+        throw error;
+      }
+    } finally {
+      await removeIfPresent(temporary).catch(() => undefined);
+    }
+    await delay(10);
+  }
+  throw new MockObjectStoreError('LOCK_UNAVAILABLE');
+}
+
+async function releaseOwnedLockDirectory(
+  lockPath: string,
+  owner: StoreLockOwner,
+  renameDirectory: (source: string, target: string) => Promise<void>,
+): Promise<void> {
   const current = await readLockOwner(lockPath);
   if (!current || current.pid !== owner.pid || current.token !== owner.token) {
     throw new MockObjectStoreError('LOCK_UNAVAILABLE');
   }
-  const releasePath = storeAuxiliaryPath(`.store-lock-release-${owner.token}`);
+  await markLockReleasing(lockPath, current, renameDirectory);
+  const releasePrefix = lockPath.endsWith('.store-lock-recovery')
+    ? '.store-lock-recovery-release'
+    : '.store-lock-release';
+  const releasePath = storeAuxiliaryPath(`${releasePrefix}-${owner.token}`);
   await renameDirectory(lockPath, releasePath);
   await rm(releasePath, { force: true, recursive: true });
 }
@@ -423,7 +502,7 @@ export interface StoreLockPolicy {
 async function withStoreLock<T>(
   operation: () => Promise<T>,
   policy: StoreLockPolicy = {},
-  onReleaseFailure?: () => Promise<void>,
+  onActiveReleaseFailure?: () => Promise<void>,
 ): Promise<T> {
   await ensureStoreRoot();
   const lockPath = storeAuxiliaryPath('.store-lock');
@@ -449,7 +528,14 @@ async function withStoreLock<T>(
   try {
     await releaseStoreLockWith(lockPath, owner, renameDirectory);
   } catch (error) {
-    await onReleaseFailure?.().catch(() => undefined);
+    const retained = await readLockOwner(lockPath).catch(() => undefined);
+    if (
+      retained?.pid === owner.pid &&
+      retained.token === owner.token &&
+      retained.state === 'ACTIVE'
+    ) {
+      await onActiveReleaseFailure?.().catch(() => undefined);
+    }
     if (error instanceof MockObjectStoreError) throw error;
     throw new MockObjectStoreError('LOCK_UNAVAILABLE');
   }
@@ -867,7 +953,10 @@ async function cleanupUnlocked(now = Date.now()): Promise<MockObjectMetadata[]> 
     const fileStat = await stat(target).catch(() => undefined);
     if (!fileStat?.isDirectory() || now - fileStat.mtimeMs <= AUXILIARY_TTL_MS) continue;
     const auxiliaryOwner = await readLockOwner(target);
-    if (auxiliaryOwner?.token === token && processLiveness(auxiliaryOwner.pid) === 'DEAD') {
+    if (
+      auxiliaryOwner?.token === token &&
+      isRecoverableLockOwner(auxiliaryOwner, processLiveness)
+    ) {
       await rm(target, { force: true, recursive: true });
     }
   }
@@ -886,7 +975,10 @@ function publicAsset(metadata: MockObjectMetadata): AssetListItem {
   };
 }
 
-function matchesGrant(metadata: MockObjectMetadata, grant: VerifiedUploadGrant): boolean {
+function matchesGrant(
+  metadata: MockObjectMetadata,
+  grant: Omit<VerifiedUploadGrant, 'startExpiresAtMs' | 'recoveryExpiresAtMs'>,
+): boolean {
   return (
     metadata.ownerId === grant.ownerId &&
     metadata.assetId === grant.assetId &&
@@ -945,7 +1037,6 @@ export async function storeMockUpload(
   const contentPath = objectPath(grant.storageKey, '.bin');
   const temporary = resolve(dirname(contentPath), `${grant.storageKey}.${randomUUID()}.partial`);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
-  const releaseState = { failed: false };
   const hash = createHash('sha256');
   const signature = new Uint8Array(64 * 1_024);
   let signatureLength = 0;
@@ -972,7 +1063,6 @@ export async function storeMockUpload(
       },
       lockPolicy,
       async () => {
-        releaseState.failed = true;
         await handle?.close().catch(() => undefined);
         await removeIfPresent(temporary).catch(() => undefined);
         const current = await readMetadata(grant.storageKey).catch(() => undefined);
@@ -1015,55 +1105,55 @@ export async function storeMockUpload(
     await handle.sync();
     await handle.close();
     const sha256 = hash.digest('hex');
-    return await withStoreLock(
-      async () => {
-        const current = await readMetadata(grant.storageKey);
-        if (!current || !matchesGrant(current, grant)) throw new MockObjectStoreError('NOT_FOUND');
-        if ((current.state === 'STORED' || current.state === 'AVAILABLE') && current.sha256) {
-          const existingContent = await lstat(contentPath).catch(() => undefined);
-          if (
-            !existingContent?.isSymbolicLink() &&
-            existingContent?.isFile() &&
-            BigInt(existingContent.size) === BigInt(current.sizeBytes) &&
-            current.sha256 === sha256
-          ) {
-            await removeIfPresent(temporary);
-            return current.sha256;
-          }
-          throw new MockObjectStoreError('INVALID');
+    return await withStoreLock(async () => {
+      const current = await readMetadata(grant.storageKey);
+      if (!current || !matchesGrant(current, grant)) throw new MockObjectStoreError('NOT_FOUND');
+      if ((current.state === 'STORED' || current.state === 'AVAILABLE') && current.sha256) {
+        const existingContent = await lstat(contentPath).catch(() => undefined);
+        if (
+          !existingContent?.isSymbolicLink() &&
+          existingContent?.isFile() &&
+          BigInt(existingContent.size) === BigInt(current.sizeBytes) &&
+          current.sha256 === sha256
+        ) {
+          await removeIfPresent(temporary);
+          return current.sha256;
         }
-        await rename(temporary, contentPath);
-        publishState.content = true;
-        await writeMetadata({
-          ...current,
-          sha256,
-          expiresAt: new Date(Date.now() + OBJECT_TTL_MS).toISOString(),
-          state: 'STORED',
-        });
-        return sha256;
-      },
-      lockPolicy,
-      () => {
-        releaseState.failed = true;
-        return Promise.resolve();
-      },
-    );
+        throw new MockObjectStoreError('INVALID');
+      }
+      await rename(temporary, contentPath);
+      publishState.content = true;
+      await writeMetadata({
+        ...current,
+        sha256,
+        expiresAt: new Date(Date.now() + OBJECT_TTL_MS).toISOString(),
+        state: 'STORED',
+      });
+      return sha256;
+    }, lockPolicy);
   } catch (error) {
     await reader.cancel().catch(() => undefined);
     await handle?.close().catch(() => undefined);
     await removeIfPresent(temporary).catch(() => undefined);
-    if (!releaseState.failed)
-      await withStoreLock(async () => {
-        const current = await readMetadata(grant.storageKey).catch(() => undefined);
-        if (publishState.content) await removeIfPresent(contentPath);
-        if (current?.state !== 'UPLOADING' || !matchesGrant(current, grant)) return;
-        const prefix = `${grant.storageKey}.`;
-        const hasSiblingAttempt = (await readdir(storeRoot())).some(
-          (file) =>
-            file !== basename(temporary) && file.startsWith(prefix) && file.endsWith('.partial'),
-        );
-        if (!hasSiblingAttempt) await removeIfPresent(objectPath(grant.storageKey, '.json'));
-      }).catch(() => undefined);
+    await withStoreLock(async () => {
+      const current = await readMetadata(grant.storageKey).catch(() => undefined);
+      if (
+        current &&
+        matchesGrant(current, grant) &&
+        (current.state === 'STORED' || current.state === 'AVAILABLE') &&
+        current.sha256
+      ) {
+        return;
+      }
+      if (publishState.content) await removeIfPresent(contentPath);
+      if (current?.state !== 'UPLOADING' || !matchesGrant(current, grant)) return;
+      const prefix = `${grant.storageKey}.`;
+      const hasSiblingAttempt = (await readdir(storeRoot())).some(
+        (file) =>
+          file !== basename(temporary) && file.startsWith(prefix) && file.endsWith('.partial'),
+      );
+      if (!hasSiblingAttempt) await removeIfPresent(objectPath(grant.storageKey, '.json'));
+    }).catch(() => undefined);
     throw error;
   }
 }

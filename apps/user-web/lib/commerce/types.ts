@@ -57,9 +57,14 @@ export interface VerifiedUploadGrant {
   readonly name: string;
   readonly mimeType: string;
   readonly sizeBytes: string;
+  readonly startExpiresAtMs: number;
+  readonly recoveryExpiresAtMs: number;
 }
 
-export interface VerifiedUploadReceipt extends VerifiedUploadGrant {
+export interface VerifiedUploadReceipt extends Omit<
+  VerifiedUploadGrant,
+  'startExpiresAtMs' | 'recoveryExpiresAtMs'
+> {
   readonly sha256: string;
 }
 
