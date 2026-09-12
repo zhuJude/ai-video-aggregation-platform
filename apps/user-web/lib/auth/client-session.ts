@@ -12,7 +12,9 @@ async function postRefresh(): Promise<boolean> {
     method: 'POST',
     signal: AbortSignal.timeout(10_000),
   });
-  return response.status === 204;
+  const succeeded = response.status === 204;
+  await response.body?.cancel().catch(() => undefined);
+  return succeeded;
 }
 
 async function refreshAfterStatusCheck(): Promise<boolean> {
@@ -21,8 +23,10 @@ async function refreshAfterStatusCheck(): Promise<boolean> {
     method: 'GET',
     signal: AbortSignal.timeout(10_000),
   });
-  if (status.status === 204) return true;
-  if (status.status !== 401) return false;
+  const statusCode = status.status;
+  await status.body?.cancel().catch(() => undefined);
+  if (statusCode === 204) return true;
+  if (statusCode !== 401) return false;
   return postRefresh();
 }
 

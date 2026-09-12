@@ -322,6 +322,31 @@ describe('authenticated task BFF', () => {
     expect(deletedCookies).toEqual([]);
   });
 
+  it('marks every session-status and refresh response private and non-cacheable', async () => {
+    const active = await readRefreshSessionStatus(
+      new Request('https://app.example/auth/refresh', {
+        headers: { 'sec-fetch-site': 'same-origin' },
+      }),
+    );
+    const forbidden = await readRefreshSessionStatus(
+      new Request('https://app.example/auth/refresh', {
+        headers: { 'sec-fetch-site': 'cross-site' },
+      }),
+    );
+    const rejectedPost = await refreshSession(
+      new Request('https://app.example/auth/refresh', {
+        headers: { origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' },
+        method: 'POST',
+      }),
+    );
+
+    for (const response of [active, forbidden, rejectedPost]) {
+      expect(response.headers.get('cache-control')).toBe('no-store, private');
+      expect(response.headers.get('pragma')).toBe('no-cache');
+      expect(response.headers.get('vary')).toBe('Cookie');
+    }
+  });
+
   it('reports same-origin session status without exposing data or mutating cookies', async () => {
     const writesBefore = cookieWrites.length;
     const active = await readRefreshSessionStatus(
@@ -442,9 +467,14 @@ describe('authenticated task BFF', () => {
   it('clears both cookies at their exact paths when route refresh fails', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 901_000);
+    const cancelUpstream = vi.fn();
     vi.stubGlobal(
       'fetch',
-      vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 401 })),
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(new ReadableStream<Uint8Array>({ cancel: cancelUpstream }), {
+          status: 401,
+        }),
+      ),
     );
     const response = await refreshSession(
       new Request('https://app.example/auth/refresh', {
@@ -453,6 +483,8 @@ describe('authenticated task BFF', () => {
       }),
     );
     expect(response.status).toBe(401);
+    expect(response.headers.get('cache-control')).toBe('no-store, private');
+    expect(cancelUpstream).toHaveBeenCalledTimes(1);
     expect(deletedCookies).toContain('__Host-user-session');
     expect(cookieWrites).toContainEqual({
       name: 'refresh_token',
@@ -489,6 +521,38 @@ describe('authenticated task BFF', () => {
     vi.resetModules();
     const isolatedClient = await import('../lib/auth/client-session');
     await expect(isolatedClient.coordinateSessionRefresh()).resolves.toBe(false);
+  });
+
+  it('cancels a replaced status response body before posting refresh', async () => {
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request<T>(_name: string, callback: () => Promise<T>): Promise<T> {
+          return callback();
+        },
+      },
+    });
+    const status = Response.json({ code: 'SESSION_REFRESH_REQUIRED' }, { status: 401 });
+    if (!status.body) throw new Error('MISSING_STATUS_BODY');
+    const body = status.body;
+    Object.defineProperty(status, 'body', { value: body });
+    const cancelStatus = vi.spyOn(body, 'cancel');
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(status)
+        .mockResolvedValueOnce(
+          new Response(null, {
+            status: 204,
+          }),
+        ),
+    );
+    vi.resetModules();
+    const client = await import('../lib/auth/client-session');
+
+    await expect(client.coordinateSessionRefresh()).resolves.toBe(true);
+    expect(cancelStatus).toHaveBeenCalledTimes(1);
   });
 
   it('deduplicates two expired RSC trampoline refreshes across isolated tabs', async () => {

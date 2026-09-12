@@ -313,7 +313,10 @@ async function rotate(session: StoredSession): Promise<StoredSession | undefined
       method: 'POST',
       signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return undefined;
+    }
     const body = (await response.json()) as unknown;
     if (!isRecord(body) || typeof body.accessToken !== 'string') return undefined;
     const responseSessionId = UuidSchema.safeParse(body.sessionId);
