@@ -26,7 +26,7 @@ import type {
   TicketDirectory,
   TicketStatus,
 } from '../../lib/governance-operations';
-import { canTransitionTicket } from '../../lib/governance-operations';
+import { canTransitionTicket } from '../../lib/governance-policy';
 import { ADMIN_PERMISSIONS, hasPermission } from '../../lib/permissions';
 import { createUuidV7 } from '../../lib/uuid-v7';
 
@@ -232,7 +232,7 @@ export function IamConsole({ actorPermissions, directory, onAdminUpdate, onUpdat
         <div className={styles.row}><Title3>{admin.displayNameMasked}</Title3><Badge>{admin.status}</Badge></div>
         <Text>数据范围：{admin.dataScope} · MFA：{admin.mfa.enabled ? '已启用' : '未启用'}</Text>
         <Text className={styles.metadata}>角色 {admin.roleIds.length} 个 · v{admin.version} · 最近 MFA：{admin.mfa.lastVerifiedAt ?? '无'}</Text>
-        {admin.preview && hasPermission({ permissions: actorPermissions }, 'iam:admin-write') ? <form action={onAdminUpdate} className={styles.stack}>
+        {admin.preview && !admin.preview.removesLastSuperAdmin && hasPermission({ permissions: actorPermissions }, 'iam:admin-write') ? <form action={onAdminUpdate} className={styles.stack}>
           <HiddenCommand id={admin.id} idKey="adminId" token={admin.preview.preflightToken} version={admin.version} />
           <input name="operation" type="hidden" value={admin.preview.operation} /><input name="dataScope" type="hidden" value={admin.preview.proposedDataScope} />
           <input name="status" type="hidden" value={admin.preview.proposedStatus} />

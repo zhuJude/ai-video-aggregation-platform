@@ -16,8 +16,11 @@ import { verifyExactPhoneSearchDescriptor } from './exact-phone-descriptor';
 export type WalletAdjustmentDirection = 'CREDIT' | 'DEBIT';
 
 export interface WalletAdjustmentRequestPort {
+  approveAdjustment?(input: Readonly<{ audit: Readonly<{ idempotencyKey: string }>; expectedVersion: number; preflightToken: string; reason: string; requestContext?: OutboundRequestContext; requestId: string; trustedSessionToken: string; userId: string }>): Promise<WalletAdjustmentApprovalReceipt>;
+  getAdjustmentRequest?(input: Readonly<{ requestContext?: OutboundRequestContext; requestId: string; trustedSessionToken: string; userId: string }>): Promise<WalletAdjustmentApprovalRequest>;
   getEligibleApprovers(input: Readonly<{ dataScope: 'ALL' | 'ASSIGNED' | 'OWN'; requestContext?: OutboundRequestContext; trustedSessionToken: string; userId: string }>): Promise<readonly Readonly<{ displayName: string; id: string }>[]>;
   previewAdjustment?(input: Readonly<{ approverId: string; audit: Readonly<{ idempotencyKey: string }>; direction: WalletAdjustmentDirection; points: bigint; reason: string; requestContext?: OutboundRequestContext; trustedSessionToken: string; userId: string }>): Promise<WalletAdjustmentPreview>;
+  previewApproval?(input: Readonly<{ audit: Readonly<{ idempotencyKey: string }>; expectedVersion: number; reason: string; requestContext?: OutboundRequestContext; requestId: string; trustedSessionToken: string; userId: string }>): Promise<WalletAdjustmentApprovalPreview>;
   submitAdjustmentRequest(input: Readonly<{
     approverId: string;
     audit: Readonly<{ idempotencyKey: string }>;
@@ -32,6 +35,9 @@ export interface WalletAdjustmentRequestPort {
 }
 
 export type WalletAdjustmentPreview = Readonly<{ after: string; before: string; direction: WalletAdjustmentDirection; expiresAt: string; impact: string; points: string; policy: string; previewToken: string }>;
+export type WalletAdjustmentApprovalRequest = Readonly<{ approverId: string; direction: WalletAdjustmentDirection; id: string; points: string; requestedById: string; status: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' | 'EXPIRED'; userId: string; version: number }>;
+export type WalletAdjustmentApprovalPreview = Readonly<{ expiresAt: string; impact: string; preflightToken: string; resultStatus: 'APPROVED'; resultVersion: number }>;
+export type WalletAdjustmentApprovalReceipt = Readonly<{ auditRecordId: string; requestId: string; status: 'APPROVED'; userId: string; version: number }>;
 
 export interface UserExportPort {
   requestCsvExport(input: Readonly<{
@@ -65,6 +71,76 @@ type UserCsvExportActionDependencies = Readonly<{
 
 const PREVIEW_TOKEN = /^[A-Za-z0-9_-]{16,512}$/;
 const MAX_DESCRIPTOR_MS = 15 * 60_000;
+
+function requiredVersion(formData: FormData): number {
+  const value = requiredRawString(formData, 'expectedVersion', 16);
+  if (!/^[1-9]\d{0,9}$/u.test(value)) throw new Error('审批版本无效');
+  return Number(value);
+}
+
+function assertAuthoritativeApprovalRequest(request: WalletAdjustmentApprovalRequest, input: Readonly<{ actorId: string; expectedVersion: number; requestId: string; userId: string }>): void {
+  const direction: unknown = request.direction;
+  if (!isUuidV7(request.id) || !isSameUuidV7(request.id, input.requestId) || !isUuidV7(request.userId) || !isSameUuidV7(request.userId, input.userId) || !isUuidV7(request.requestedById) || !isUuidV7(request.approverId) || !isPointsString(request.points) || request.points === '0' || (direction !== 'CREDIT' && direction !== 'DEBIT') || !Number.isSafeInteger(request.version) || request.version < 1) throw new Error('点数调整申请响应无效');
+  if (isSameUuidV7(request.requestedById, input.actorId)) throw new Error('禁止申请人自审');
+  if (!isSameUuidV7(request.approverId, input.actorId)) throw new Error('非指定复核人');
+  if (request.status !== 'PENDING_APPROVAL') throw new Error('申请已不再待审批');
+  if (request.version !== input.expectedVersion) throw new Error('审批版本已变化');
+}
+
+function assertAuthoritativeApprovalPreview(preview: WalletAdjustmentApprovalPreview, expectedVersion: number): void {
+  const expiresAt = Date.parse(preview.expiresAt);
+  const now = Date.now();
+  const resultStatus: unknown = preview.resultStatus;
+  if (!PREVIEW_TOKEN.test(preview.preflightToken) || !isUtcIso8601Z(preview.expiresAt) || expiresAt <= now || expiresAt > now + MAX_DESCRIPTOR_MS || !isPhoneFreeBoundedText(preview.impact, 256) || resultStatus !== 'APPROVED' || preview.resultVersion !== expectedVersion + 1) throw new Error('审批预检响应无效');
+}
+
+export function createWalletAdjustmentApprovalPreviewAction({ adjustmentPort, createCorrelationId: makeCorrelationId = createUuidV7, createTraceId: makeTraceId = createTraceId, guardContext, scopePort }: WalletAdjustmentActionDependencies) {
+  return async function walletAdjustmentApprovalPreviewAction(formData: FormData): Promise<WalletAdjustmentApprovalPreview> {
+    const authorization = await requireAdminAuthorization('wallet:adjust', guardContext);
+    const userId = requiredRawString(formData, 'userId', 128);
+    const requestId = requiredRawString(formData, 'requestId', 128);
+    if (!isUuidV7(userId) || !isUuidV7(requestId)) throw new Error('审批对象无效');
+    const expectedVersion = requiredVersion(formData);
+    const reason = requiredTrimmedText(formData, 'reason', 200);
+    const previewIntentId = requiredIntent(formData, 'previewIntentId', '审批预览审计上下文无效');
+    if (!adjustmentPort.getAdjustmentRequest || !adjustmentPort.previewApproval) throw new Error('点数审批服务不可用');
+    const requestContext = createOutboundRequestContext(makeTraceId, makeCorrelationId);
+    assertAdminDataScope(authorization.claims, await scopePort.getUserScope({ requestContext, trustedSessionToken: authorization.trustedSessionToken, userId }));
+    const authoritative = await adjustmentPort.getAdjustmentRequest({ requestContext, requestId, trustedSessionToken: authorization.trustedSessionToken, userId });
+    assertAuthoritativeApprovalRequest(authoritative, { actorId: authorization.claims.subjectId, expectedVersion, requestId, userId });
+    const preview = await adjustmentPort.previewApproval({ audit: { idempotencyKey: previewIntentId }, expectedVersion, reason, requestContext, requestId, trustedSessionToken: authorization.trustedSessionToken, userId });
+    assertAuthoritativeApprovalPreview(preview, expectedVersion);
+    return preview;
+  };
+}
+
+export function createWalletAdjustmentApprovalAction({ adjustmentPort, createCorrelationId: makeCorrelationId = createUuidV7, createTraceId: makeTraceId = createTraceId, guardContext, scopePort }: WalletAdjustmentActionDependencies) {
+  return async function walletAdjustmentApprovalAction(formData: FormData): Promise<WalletAdjustmentApprovalReceipt & Readonly<{ ok: true }>> {
+    const authorization = await requireAdminAuthorization('wallet:adjust', guardContext);
+    const userId = requiredRawString(formData, 'userId', 128);
+    const requestId = requiredRawString(formData, 'requestId', 128);
+    if (!isUuidV7(userId) || !isUuidV7(requestId)) throw new Error('审批对象无效');
+    const expectedVersion = requiredVersion(formData);
+    const reason = requiredTrimmedText(formData, 'reason', 200);
+    if (formData.get('highRiskConfirmed') !== 'true') throw new Error('请确认点数调整审批');
+    const displayedPreflightToken = requiredRawString(formData, 'preflightToken', 512);
+    if (!PREVIEW_TOKEN.test(displayedPreflightToken) || containsSensitivePhoneLikeValue(displayedPreflightToken)) throw new Error('审批预检凭证无效');
+    const previewIntentId = requiredIntent(formData, 'previewIntentId', '审批预览审计上下文无效');
+    const intentId = requiredIntent(formData, 'intentId', '审批审计上下文无效');
+    if (!adjustmentPort.getAdjustmentRequest || !adjustmentPort.previewApproval || !adjustmentPort.approveAdjustment) throw new Error('点数审批服务不可用');
+    const requestContext = createOutboundRequestContext(makeTraceId, makeCorrelationId);
+    assertAdminDataScope(authorization.claims, await scopePort.getUserScope({ requestContext, trustedSessionToken: authorization.trustedSessionToken, userId }));
+    const authoritative = await adjustmentPort.getAdjustmentRequest({ requestContext, requestId, trustedSessionToken: authorization.trustedSessionToken, userId });
+    assertAuthoritativeApprovalRequest(authoritative, { actorId: authorization.claims.subjectId, expectedVersion, requestId, userId });
+    const authoritativePreview = await adjustmentPort.previewApproval({ audit: { idempotencyKey: previewIntentId }, expectedVersion, reason, requestContext, requestId, trustedSessionToken: authorization.trustedSessionToken, userId });
+    assertAuthoritativeApprovalPreview(authoritativePreview, expectedVersion);
+    if (authoritativePreview.preflightToken !== displayedPreflightToken) throw new Error('审批预检已变化');
+    const result = await adjustmentPort.approveAdjustment({ audit: { idempotencyKey: intentId }, expectedVersion, preflightToken: authoritativePreview.preflightToken, reason, requestContext, requestId, trustedSessionToken: authorization.trustedSessionToken, userId });
+    const resultStatus: unknown = result.status;
+    if (!isUuidV7(result.auditRecordId) || !isSameUuidV7(result.requestId, requestId) || !isSameUuidV7(result.userId, userId) || resultStatus !== 'APPROVED' || result.version !== expectedVersion + 1) throw new Error('点数审批回执无效');
+    return { ...result, ok: true };
+  };
+}
 
 async function requireEligibleApprover(port: WalletAdjustmentRequestPort, authorization: Awaited<ReturnType<typeof requireAdminAuthorization>>, requestContext: OutboundRequestContext, userId: string, approverId: string): Promise<void> {
   if (!isUuidV7(approverId) || isSameUuidV7(approverId, authorization.claims.subjectId)) throw new Error('复核人无效');

@@ -16,7 +16,7 @@ import {
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import type { UserDetailTab, UserDetailView, UserIdentityStatus } from '../lib/user-detail-view-loader';
-import type { WalletAdjustmentPreview } from '../lib/user-operation-actions';
+import type { WalletAdjustmentApprovalPreview, WalletAdjustmentApprovalReceipt, WalletAdjustmentPreview } from '../lib/user-operation-actions';
 import { createUuidV7, isUuidV7 } from '../lib/uuid-v7';
 import { AdjustmentDialog } from './adjustment-dialog';
 
@@ -24,8 +24,21 @@ export type UserDetailProps = Readonly<{
   view: UserDetailView;
   onAdjustmentPreview?: (formData: FormData) => Promise<WalletAdjustmentPreview>;
   onAdjustmentRequest?: (formData: FormData) => Promise<Readonly<{ auditRecordId: string; ok: true; requestId: string; status: 'PENDING_APPROVAL' }>>;
+  onApprovalPreview?: (formData: FormData) => Promise<WalletAdjustmentApprovalPreview>;
+  onApproveAdjustment?: (formData: FormData) => Promise<WalletAdjustmentApprovalReceipt & Readonly<{ ok: true }>>;
   onStatusChange?: (formData: FormData) => Promise<Readonly<{ auditRecordId: string; ok: true; requestId: string }>>;
 }>;
+
+function WalletApproval({ entry, onApprovalPreview, onApprove, userId }: Readonly<{ entry: Extract<UserDetailTab, { id: 'wallet' }>['adjustmentHistory'][number]; onApprovalPreview: (formData: FormData) => Promise<WalletAdjustmentApprovalPreview>; onApprove: (formData: FormData) => Promise<WalletAdjustmentApprovalReceipt & Readonly<{ ok: true }>>; userId: string }>) {
+  const router = useRouter();
+  const [reason, setReason] = useState(''); const [confirmed, setConfirmed] = useState(false); const [preview, setPreview] = useState<WalletAdjustmentApprovalPreview>(); const [message, setMessage] = useState(''); const [pending, setPending] = useState(false); const [previewIntentId, setPreviewIntentId] = useState(() => createUuidV7()); const [intentId, setIntentId] = useState(() => createUuidV7());
+  const version = entry.version;
+  function baseForm() { const form = new FormData(); form.set('userId', userId); form.set('requestId', entry.id); form.set('expectedVersion', String(version)); form.set('reason', reason.trim()); return form; }
+  async function doPreview() { if (!reason.trim() || !version || pending) { setMessage('请填写审批原因'); return; } setPending(true); const form = baseForm(); form.set('previewIntentId', previewIntentId); try { const result = await onApprovalPreview(form); setPreview(result); setConfirmed(false); setMessage('权威审批预检已完成'); } catch { setMessage('审批预检被拒绝或已过期'); } finally { setPending(false); } }
+  async function approve() { if (!preview || !confirmed || pending) { setMessage('请完成预检并确认审批'); return; } setPending(true); const form = baseForm(); form.set('preflightToken', preview.preflightToken); form.set('previewIntentId', previewIntentId); form.set('intentId', intentId); form.set('highRiskConfirmed', 'true'); try { const result = await onApprove(form); setMessage(`点数调整已批准：审计 ${result.auditRecordId}`); router.refresh(); } catch { setMessage('点数调整审批被拒绝'); } finally { setPending(false); } }
+  function invalidate() { setPreview(undefined); setConfirmed(false); setPreviewIntentId(createUuidV7()); setIntentId(createUuidV7()); }
+  return <form aria-label={`审批点数调整 ${entry.id}`} onSubmit={(event) => { event.preventDefault(); }}><Title2 as="h3">待审批点数调整</Title2><Text>请求 {entry.id}；{entry.direction} {entry.points} 点；版本 {entry.version}</Text><Field label="审批原因"><Input aria-label="审批原因" disabled={pending} maxLength={200} value={reason} onChange={(_event, data) => { setReason(data.value); invalidate(); }} /></Field><Button disabled={pending} onClick={() => { void doPreview(); }}>获取审批预检</Button>{preview ? <Text>影响：{preview.impact}；结果：{preview.resultStatus}；到期：{preview.expiresAt}</Text> : null}<Checkbox checked={confirmed} disabled={!preview || pending} label="我已核对点数调整并确认批准" onChange={(_event, data) => { setConfirmed(Boolean(data.checked)); }} /><Button appearance="primary" disabled={pending || !preview} onClick={() => { void approve(); }}>批准点数调整</Button>{message ? <Text role="status">{message}</Text> : null}</form>;
+}
 
 const useStyles = makeStyles({
   root: { display: 'grid', gap: '16px' },
@@ -59,6 +72,8 @@ function TabContent({ tab }: Readonly<{ tab: UserDetailTab }>) {
 export function UserDetail({
   onAdjustmentPreview,
   onAdjustmentRequest,
+  onApprovalPreview,
+  onApproveAdjustment,
   onStatusChange,
   view,
 }: UserDetailProps) {
@@ -131,6 +146,7 @@ export function UserDetail({
         ))}
       </TabList>
       {activeTab ? <div aria-labelledby={`user-detail-tab-${activeTab.id}`} className={styles.content} id={`user-detail-panel-${activeTab.id}`} role="tabpanel"><TabContent tab={activeTab} /></div> : <Text role="status">暂无获授权的详情分区</Text>}
+      {activeTab?.id === 'wallet' && view.canApproveWalletAdjustments && onApprovalPreview && onApproveAdjustment ? activeTab.adjustmentHistory.filter((entry) => entry.status === 'PENDING_APPROVAL' && entry.approverId === view.currentActorId).map((entry) => <WalletApproval entry={entry} key={entry.id} onApprovalPreview={onApprovalPreview} onApprove={onApproveAdjustment} userId={view.user.id} />) : null}
       {adjustmentOpen && onAdjustmentPreview && onAdjustmentRequest ? <AdjustmentDialog {...(view.currentActorId ? { currentActorId: view.currentActorId } : {})} {...(view.eligibleApprovers ? { eligibleApprovers: view.eligibleApprovers } : {})} open userId={view.user.id} onOpenChange={(nextOpen) => { if (!nextOpen) closeAdjustmentDialog(); }} onPreview={onAdjustmentPreview} onRequest={onAdjustmentRequest} /> : null}
     </section>
   );

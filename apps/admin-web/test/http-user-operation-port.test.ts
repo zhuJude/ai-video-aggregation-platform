@@ -414,6 +414,27 @@ describe('HTTP user operation ports', () => {
     await expect(adjustmentPort.previewAdjustment?.({ approverId: '0198f7a4-c6d3-7b39-8a4e-73af0c1d2e3f', audit: { idempotencyKey: '0198f7a4-c6d5-7b39-8a4e-73af0c1d2e3f' }, direction: 'CREDIT', points: 123n, reason: '合规补偿', trustedSessionToken: 'trusted-session', userId: '0198f7a4-c6d1-7b39-8a4e-73af0c1d2e3f' })).rejects.toThrow('Invalid wallet adjustment preview');
   });
 
+  it('rejects unknown fields in an approval preview instead of exposing them to the client', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      impact: '余额 100 → 110',
+      internalSecret: 'must-not-cross-the-adapter',
+      preflightToken: 'approval-token-abcdefghijklmnopqrstuvwxyz',
+      resultStatus: 'APPROVED',
+      resultVersion: 2,
+    })));
+    const { adjustmentPort } = createHttpUserOperationPorts(environment);
+
+    await expect(adjustmentPort.previewApproval?.({
+      audit: { idempotencyKey: '0198f7a4-c6d5-7b39-8a4e-73af0c1d2e3f' },
+      expectedVersion: 1,
+      reason: '独立复核活动补偿',
+      requestId: '0198f7a4-c6d6-7b39-8a4e-73af0c1d2e3f',
+      trustedSessionToken: 'trusted-session',
+      userId: '0198f7a4-c6d1-7b39-8a4e-73af0c1d2e3f',
+    })).rejects.toThrow('Invalid approval preview');
+  });
+
   it('sends the stable preview UUIDv7 as idempotency key with an independent trace and exact huge points', async () => {
     let request: RequestInit | undefined;
     const hugePoints = 900719925474099312345678901234567890n;

@@ -1,0 +1,8 @@
+**/node_modules
+**/.next
+**/output
+**/test-results
+.git
+.gitignore
+apps/admin-web/e2e
+apps/admin-web/test

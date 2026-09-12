@@ -1,7 +1,7 @@
 import { Text, Title2 } from '@fluentui/react-components';
 
 import { UserDetail } from '../../../../components/user-detail';
-import { previewWalletAdjustmentAction, requestUserStatusChangeAction, requestWalletAdjustmentAction } from '../actions';
+import { approveWalletAdjustmentAction, previewWalletAdjustmentAction, previewWalletAdjustmentApprovalAction, requestUserStatusChangeAction, requestWalletAdjustmentAction } from '../actions';
 import { createHttpUserOperationPorts } from '../../../../lib/http-user-operation-port';
 import {
   loadUserDetailView,
@@ -32,7 +32,7 @@ export async function renderUserDetailRoute(
   dependencies: Readonly<{ context?: ServerGuardContext; port: UserDetailPort }>,
 ) {
   const result = await loadUserDetailView(userId, dependencies);
-  return result.ok ? <UserDetail view={result.view} onAdjustmentPreview={previewWalletAdjustmentAction} onAdjustmentRequest={requestWalletAdjustmentAction} onStatusChange={requestUserStatusChangeAction} /> : <DetailError code={result.code} />;
+  return result.ok ? <UserDetail view={result.view} onAdjustmentPreview={previewWalletAdjustmentAction} onAdjustmentRequest={requestWalletAdjustmentAction} onApprovalPreview={previewWalletAdjustmentApprovalAction} onApproveAdjustment={approveWalletAdjustmentAction} onStatusChange={requestUserStatusChangeAction} /> : <DetailError code={result.code} />;
 }
 
 export default async function UserDetailPage({ params }: UserDetailPageProps) {

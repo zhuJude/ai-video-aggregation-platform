@@ -10,6 +10,9 @@ import {
 } from './server-guard';
 import { isTraceId } from './trace-id';
 import { isUuidV7 } from './uuid-v7';
+import { canTransitionTicket } from './governance-policy';
+
+export { canTransitionTicket } from './governance-policy';
 
 export const CONTENT_OPERATIONS = ['SAVE_DRAFT', 'VALIDATE', 'PUBLISH', 'ROLLBACK', 'RETIRE', 'REORDER'] as const;
 export const TICKET_STATUSES = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'] as const;
@@ -621,23 +624,6 @@ export function parseTicketDirectory(value: unknown): TicketDirectory {
   const sourceUpdatedAt = utc(payload?.sourceUpdatedAt);
   if (!payload || !items || items.some((item) => !item) || nextCursor === null && payload.nextCursor !== null || !sourceUpdatedAt) throw new Error('工单响应无效');
   return Object.freeze({ items: Object.freeze(items as TicketItem[]), nextCursor, sourceUpdatedAt });
-}
-
-export function canTransitionTicket(
-  from: TicketStatus,
-  to: TicketStatus,
-  resolvedAt: string | null,
-  hasAdminPublicReply: boolean,
-  now = Date.now(),
-): boolean {
-  if (from === 'OPEN') return to === 'IN_PROGRESS';
-  if (from === 'IN_PROGRESS') return to === 'RESOLVED' && hasAdminPublicReply;
-  if (from === 'RESOLVED' && to === 'IN_PROGRESS' && resolvedAt) {
-    const resolved = Date.parse(resolvedAt);
-    return Number.isFinite(resolved) && now >= resolved && now - resolved <= 7 * 24 * 60 * 60 * 1000;
-  }
-  if (from === 'RESOLVED') return to === 'CLOSED';
-  return false;
 }
 
 function parsePermissionList(value: unknown): readonly string[] | null {

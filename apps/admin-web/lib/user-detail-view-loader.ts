@@ -34,7 +34,7 @@ type Account = Readonly<{
 type Session = Readonly<{ devices: readonly Readonly<{ id: string; lastSeenAt: string; platform: string; status: string }>[]; lastActiveAt: string; loginRecords: readonly Readonly<{ deviceLabel: string; id: string; occurredAt: string; status: string }>[]; status: string }>;
 type Row<Status extends string> = Readonly<{ createdAt: string; id: string; status: Status }>;
 type WalletHistory<Direction extends 'CREDIT' | 'DEBIT'> = Readonly<{ direction: Direction; id: string; occurredAt: string; points: string; status: string }>;
-type WalletAdjustmentHistory = WalletHistory<'CREDIT' | 'DEBIT'>;
+export type WalletAdjustmentHistory = WalletHistory<'CREDIT' | 'DEBIT'> & Readonly<{ approverId?: string; requestedById?: string; version?: number }>;
 
 export type UserDetailTab =
   | Readonly<{ account: Account; id: 'account'; session: Session; status: UserDetailTabStatus }>
@@ -47,6 +47,7 @@ export type UserDetailTab =
 export type UserDetailView = Readonly<{
   allowedStatusTransitions?: readonly Exclude<UserIdentityStatus, 'CLOSED'>[];
   canChangeStatus?: boolean;
+  canApproveWalletAdjustments?: boolean;
   canRequestWalletAdjustment: boolean;
   currentActorId?: string;
   deniedTabs: readonly UserDetailTabId[];
@@ -130,6 +131,8 @@ export async function loadUserDetailView(
     const deniedTabs = USER_DETAIL_TAB_IDS.filter((id) => !tabs.some((tab) => tab.id === id));
     const walletVisible = tabs.some((tab) => tab.id === 'wallet');
     const canRequestWalletAdjustment = walletVisible && view.canRequestWalletAdjustment && hasPermission(authorization.claims, 'wallet:adjust');
+    const wallet = tabs.find((tab): tab is Extract<UserDetailTab, { id: 'wallet' }> => tab.id === 'wallet');
+    const canApproveWalletAdjustments = Boolean(wallet && hasPermission(authorization.claims, 'wallet:adjust') && wallet.adjustmentHistory.some((entry) => entry.status === 'PENDING_APPROVAL' && entry.approverId && isSameUuidV7(entry.approverId, authorization.claims.subjectId) && entry.requestedById && !isSameUuidV7(entry.requestedById, authorization.claims.subjectId)));
     return {
       ok: true,
       view: {
@@ -140,6 +143,7 @@ export async function loadUserDetailView(
           hasPermission(authorization.claims, 'users:status') &&
           Boolean(requiredTransition && view.allowedStatusTransitions?.includes(requiredTransition)),
         canRequestWalletAdjustment,
+        canApproveWalletAdjustments,
         currentActorId: authorization.claims.subjectId,
     eligibleApprovers: canRequestWalletAdjustment ? view.eligibleApprovers?.filter((approver) => !isSameUuidV7(approver.id, authorization.claims.subjectId)) ?? [] : [],
       },

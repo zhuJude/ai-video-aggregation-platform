@@ -974,10 +974,10 @@ export function createProviderMetadataAction({
       scope: authorization.claims.dataScope,
       trustedSessionToken: authorization.trustedSessionToken,
     });
-    const expectedProviderId =
-      providerId ??
-      (exactRecord(result, ['auditRecordId', 'providerId', 'requestId', 'status', 'version'])
-        ?.providerId as string);
+    const normalizedReceipt =
+      exactRecord(result, ['auditRecordId', 'providerId', 'requestId', 'status', 'version']) ??
+      exactRecord(result, ['auditRecordId', 'ok', 'providerId', 'requestId', 'status', 'version']);
+    const expectedProviderId = providerId ?? (normalizedReceipt?.providerId as string);
     if (!isUuidV7(expectedProviderId)) throw new Error('供应商操作回执无效');
     return parseProviderActionReceipt(result, expectedProviderId, {
       kind,

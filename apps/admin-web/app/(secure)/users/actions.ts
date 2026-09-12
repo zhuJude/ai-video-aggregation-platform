@@ -5,6 +5,8 @@ import {
   createUserCsvExportAction,
   createWalletAdjustmentPreviewAction,
   createWalletAdjustmentRequestAction,
+  createWalletAdjustmentApprovalAction,
+  createWalletAdjustmentApprovalPreviewAction,
 } from '../../../lib/user-operation-actions';
 import { createUserStatusAction } from '../../../lib/protected-user-action';
 import { createExactPhoneLookupAction } from '../../../lib/user-view-loaders';
@@ -27,6 +29,16 @@ export async function requestWalletAdjustmentAction(
 export async function previewWalletAdjustmentAction(formData: FormData) {
   const ports = createHttpUserOperationPorts();
   return createWalletAdjustmentPreviewAction({ adjustmentPort: ports.adjustmentPort, scopePort: ports.scopePort })(formData);
+}
+
+export async function previewWalletAdjustmentApprovalAction(formData: FormData) {
+  const ports = createHttpUserOperationPorts();
+  return createWalletAdjustmentApprovalPreviewAction({ adjustmentPort: ports.adjustmentPort, scopePort: ports.scopePort })(formData);
+}
+
+export async function approveWalletAdjustmentAction(formData: FormData) {
+  const ports = createHttpUserOperationPorts();
+  return createWalletAdjustmentApprovalAction({ adjustmentPort: ports.adjustmentPort, scopePort: ports.scopePort })(formData);
 }
 
 export async function requestUsersCsvExportAction(

@@ -4,6 +4,8 @@ import type {
 } from './protected-user-action';
 import type {
   UserExportPort,
+  WalletAdjustmentApprovalPreview,
+  WalletAdjustmentApprovalRequest,
   WalletAdjustmentPreview,
   WalletAdjustmentRequestPort,
 } from './user-operation-actions';
@@ -168,7 +170,7 @@ function parseUserDetail(payload: unknown): UserDetailView | null {
       const balance = boundedText(tab.balance, 64);
       const frozenBalance = boundedText(tab.frozenBalance, 64);
       const history = (value: unknown, expectedDirection: 'CREDIT' | 'DEBIT') => boundedList(value, (entry) => { const entryId = boundedText(entry.id, 128); const points = boundedText(entry.points, 64); const entryStatus = phoneFreeText(entry.status, 64); const occurredAt = boundedText(entry.occurredAt, 64); return isUuidV7(entryId) && isPointsString(points) && entryStatus && isUtcIso8601Z(occurredAt) && entry.direction === expectedDirection ? { direction: expectedDirection, id: entryId, occurredAt, points, status: entryStatus } : null; });
-      const adjustmentHistory = boundedList(tab.adjustmentHistory, (entry) => { const entryId = boundedText(entry.id, 128); const points = boundedText(entry.points, 64); const entryStatus = phoneFreeText(entry.status, 64); const occurredAt = boundedText(entry.occurredAt, 64); const direction = entry.direction; return isUuidV7(entryId) && isPointsString(points) && entryStatus && isUtcIso8601Z(occurredAt) && (direction === 'CREDIT' || direction === 'DEBIT') ? { direction, id: entryId, occurredAt, points, status: entryStatus } : null; });
+      const adjustmentHistory = boundedList(tab.adjustmentHistory, (entry) => { const entryId = boundedText(entry.id, 128); const points = boundedText(entry.points, 64); const entryStatus = phoneFreeText(entry.status, 64); const occurredAt = boundedText(entry.occurredAt, 64); const direction = entry.direction; const hasApprovalMetadata = entry.approverId !== undefined || entry.requestedById !== undefined || entry.version !== undefined; const validApprovalMetadata = isUuidV7(entry.approverId) && isUuidV7(entry.requestedById) && Number.isSafeInteger(entry.version) && Number(entry.version) > 0; return isUuidV7(entryId) && isPointsString(points) && entryStatus && isUtcIso8601Z(occurredAt) && (direction === 'CREDIT' || direction === 'DEBIT') && (!hasApprovalMetadata || validApprovalMetadata) ? { direction, id: entryId, occurredAt, points, status: entryStatus, ...(hasApprovalMetadata ? { approverId: entry.approverId as string, requestedById: entry.requestedById as string, version: entry.version as number } : {}) } : null; });
       const rechargeHistory = history(tab.rechargeHistory, 'CREDIT'); const consumptionHistory = history(tab.consumptionHistory, 'DEBIT');
       if (!isPointsString(balance) || !isPointsString(frozenBalance) || tab.unit !== 'POINTS' || tab.currency !== undefined || !rechargeHistory || !consumptionHistory || !adjustmentHistory) return null;
       tabs.push({ adjustmentHistory: adjustmentHistory as never, balance, consumptionHistory: consumptionHistory as never, frozenBalance, id, rechargeHistory: rechargeHistory as never, status: status as UserDetailTabStatus, unit: 'POINTS' });
@@ -487,6 +489,46 @@ export function createHttpUserOperationPorts(
       },
     },
     adjustmentPort: {
+      async getAdjustmentRequest(input) {
+        const operation = 'operations.user.wallet-adjustment-request-detail';
+        if (!input.trustedSessionToken || !isUuidV7(input.userId) || !isUuidV7(input.requestId)) throw new Error('Invalid adjustment request context');
+        const headers = baseHeaders(input.requestContext, operation); headers.set('X-Admin-Session-Token', input.trustedSessionToken);
+        return protectedFetch(`/v1/admin/users/${encodeURIComponent(input.userId)}/wallet-adjustment-requests/${encodeURIComponent(input.requestId)}`, { cache: 'no-store', headers, method: 'GET' }, operation, async (response, signal, requestContext) => {
+          if (!response.ok) { const reason = response.status === 401 || response.status === 403 || response.status === 409 ? 'DOWNSTREAM_DENIED' : 'UPSTREAM_FAILURE'; throw recordedFailure(operation, reason, requestContext, new Error('Adjustment request detail denied')); }
+          let payload: unknown; try { payload = await response.json(); } catch (error) { if (signal.aborted) throw error; payload = null; }
+          if (!payload || typeof payload !== 'object') throw recordedFailure(operation, 'MALFORMED_RESPONSE', requestContext, new Error('Invalid adjustment request detail'));
+          const candidate = payload as Record<string, unknown>;
+          if (!isUuidV7(candidate.id) || !isUuidV7(candidate.userId) || !isUuidV7(candidate.requestedById) || !isUuidV7(candidate.approverId) || !isPointsString(candidate.points) || candidate.points === '0' || (candidate.direction !== 'CREDIT' && candidate.direction !== 'DEBIT') || !['PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'EXPIRED'].includes(String(candidate.status)) || !Number.isSafeInteger(candidate.version) || Number(candidate.version) < 1) throw recordedFailure(operation, 'MALFORMED_RESPONSE', requestContext, new Error('Invalid adjustment request detail'));
+          return { approverId: candidate.approverId, direction: candidate.direction, id: candidate.id, points: candidate.points, requestedById: candidate.requestedById, status: candidate.status, userId: candidate.userId, version: candidate.version } as WalletAdjustmentApprovalRequest;
+        });
+      },
+      async previewApproval(input) {
+        const operation = 'operations.user.wallet-adjustment-approval-preview';
+        if (!input.trustedSessionToken || !isUuidV7(input.userId) || !isUuidV7(input.requestId) || !isUuidV7(input.audit.idempotencyKey) || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1 || !isPhoneFreeBoundedText(input.reason, 200)) throw new Error('Invalid approval preview context');
+        const headers = baseHeaders(input.requestContext, operation); headers.set('Content-Type', 'application/json'); headers.set('Idempotency-Key', input.audit.idempotencyKey); headers.set('X-Admin-Session-Token', input.trustedSessionToken);
+        return protectedFetch(`/v1/admin/users/${encodeURIComponent(input.userId)}/wallet-adjustment-requests/${encodeURIComponent(input.requestId)}/approval-previews`, { body: JSON.stringify({ audit: input.audit, expectedVersion: input.expectedVersion, reason: input.reason }), cache: 'no-store', headers, method: 'POST' }, operation, async (response, signal, requestContext) => {
+          if (!response.ok) { const reason = response.status === 401 || response.status === 403 || response.status === 409 ? 'DOWNSTREAM_DENIED' : 'UPSTREAM_FAILURE'; throw recordedFailure(operation, reason, requestContext, new Error('Approval preview denied')); }
+          let payload: unknown; try { payload = await response.json(); } catch (error) { if (signal.aborted) throw error; payload = null; }
+          if (!payload || typeof payload !== 'object') throw recordedFailure(operation, 'MALFORMED_RESPONSE', requestContext, new Error('Invalid approval preview'));
+          const candidate = payload as Record<string, unknown>;
+          const allowedKeys = new Set(['expiresAt', 'impact', 'preflightToken', 'resultStatus', 'resultVersion']);
+          if (Object.keys(candidate).length !== allowedKeys.size || !Object.keys(candidate).every((key) => allowedKeys.has(key)) || !isUtcIso8601Z(candidate.expiresAt) || !isPhoneFreeBoundedText(candidate.impact, 256) || !isPhoneFreeBoundedText(candidate.preflightToken, 512) || candidate.resultStatus !== 'APPROVED' || !Number.isSafeInteger(candidate.resultVersion) || Number(candidate.resultVersion) < 2) throw recordedFailure(operation, 'MALFORMED_RESPONSE', requestContext, new Error('Invalid approval preview'));
+          return { expiresAt: candidate.expiresAt, impact: candidate.impact, preflightToken: candidate.preflightToken, resultStatus: 'APPROVED', resultVersion: candidate.resultVersion as number } satisfies WalletAdjustmentApprovalPreview;
+        });
+      },
+      async approveAdjustment(input) {
+        const operation = 'operations.user.wallet-adjustment-approval';
+        if (!input.trustedSessionToken || !isUuidV7(input.userId) || !isUuidV7(input.requestId) || !isUuidV7(input.audit.idempotencyKey) || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1 || !isPhoneFreeBoundedText(input.reason, 200) || !isPhoneFreeBoundedText(input.preflightToken, 512)) throw new Error('Invalid adjustment approval context');
+        const headers = baseHeaders(input.requestContext, operation); headers.set('Content-Type', 'application/json'); headers.set('Idempotency-Key', input.audit.idempotencyKey); headers.set('X-Admin-Session-Token', input.trustedSessionToken);
+        return protectedFetch(`/v1/admin/users/${encodeURIComponent(input.userId)}/wallet-adjustment-requests/${encodeURIComponent(input.requestId)}/approvals`, { body: JSON.stringify({ audit: input.audit, expectedVersion: input.expectedVersion, preflightToken: input.preflightToken, reason: input.reason }), cache: 'no-store', headers, method: 'POST' }, operation, async (response, signal, requestContext) => {
+          if (!response.ok) { const reason = response.status === 401 || response.status === 403 || response.status === 409 ? 'DOWNSTREAM_DENIED' : 'UPSTREAM_FAILURE'; throw recordedFailure(operation, reason, requestContext, new Error('Adjustment approval denied')); }
+          let payload: unknown; try { payload = await response.json(); } catch (error) { if (signal.aborted) throw error; payload = null; }
+          if (!payload || typeof payload !== 'object') throw recordedFailure(operation, 'MALFORMED_RESPONSE', requestContext, new Error('Invalid adjustment approval receipt'));
+          const candidate = payload as Record<string, unknown>;
+          if (!isUuidV7(candidate.auditRecordId) || !isUuidV7(candidate.requestId) || !isUuidV7(candidate.userId) || candidate.status !== 'APPROVED' || !Number.isSafeInteger(candidate.version) || Number(candidate.version) < 2) throw recordedFailure(operation, 'MALFORMED_RESPONSE', requestContext, new Error('Invalid adjustment approval receipt'));
+          return { auditRecordId: candidate.auditRecordId, requestId: candidate.requestId, status: 'APPROVED' as const, userId: candidate.userId, version: candidate.version as number };
+        });
+      },
       async getEligibleApprovers(input) {
         const operation = 'operations.user.eligible-approvers';
         if (!input.trustedSessionToken || !isUuidV7(input.userId)) throw new Error('Invalid eligible approver context');

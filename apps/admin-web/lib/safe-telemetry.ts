@@ -20,6 +20,9 @@ export type SafeTelemetryOperation =
   | 'operations.user.csv-export'
   | 'operations.user.wallet-adjustment-request'
   | 'operations.user.wallet-adjustment-preview'
+  | 'operations.user.wallet-adjustment-request-detail'
+  | 'operations.user.wallet-adjustment-approval-preview'
+  | 'operations.user.wallet-adjustment-approval'
   | 'operations.user.eligible-approvers'
   | 'operations.user.status-change'
   | 'operations.provider.directory-read'
@@ -92,6 +95,9 @@ const operationValues = new Set<SafeTelemetryOperation>([
   'operations.user.csv-export',
   'operations.user.wallet-adjustment-request',
   'operations.user.wallet-adjustment-preview',
+  'operations.user.wallet-adjustment-request-detail',
+  'operations.user.wallet-adjustment-approval-preview',
+  'operations.user.wallet-adjustment-approval',
   'operations.user.eligible-approvers',
   'operations.user.status-change',
   'overview.config',
