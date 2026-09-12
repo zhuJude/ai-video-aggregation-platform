@@ -1,0 +1,419 @@
+import 'server-only';
+
+import { createUuidV7, isUuidV7 } from '../tasks/identifiers';
+import type {
+  AssetFilters,
+  AssetListItem,
+  CommerceGateway,
+  InvoiceHistoryItem,
+  LedgerTransaction,
+  RechargeOrderView,
+} from './types';
+
+export class CommerceCommandError extends Error {
+  readonly outcome = 'DEFINITIVE_FAILURE' as const;
+}
+
+const FIXTURE_OWNER = '+8613800138000';
+const ASSET_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7101';
+const IMAGE_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7102';
+const PAID_ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7201';
+const PENDING_ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7202';
+
+type Owned<T> = T & { readonly ownerId: string };
+
+const assets: Owned<AssetListItem>[] = [
+  {
+    ownerId: FIXTURE_OWNER,
+    id: ASSET_ID,
+    kind: 'RESULT',
+    name: '海边公路.mp4',
+    mimeType: 'video/mp4',
+    sizeBytes: '2097152',
+    createdAt: '2026-08-31T10:00:00.000Z',
+    posterAlt: '日落时分的海边公路生成视频',
+  },
+  {
+    ownerId: FIXTURE_OWNER,
+    id: IMAGE_ID,
+    kind: 'UPLOAD',
+    name: '山谷起始帧.webp',
+    mimeType: 'image/webp',
+    sizeBytes: '826340',
+    createdAt: '2026-08-30T08:30:00.000Z',
+    posterAlt: '晨雾山谷起始帧',
+  },
+];
+
+const ledger: readonly Owned<LedgerTransaction>[] = [
+  {
+    ownerId: FIXTURE_OWNER,
+    id: 'ledger-recharge-1',
+    type: 'RECHARGE',
+    direction: 'CREDIT',
+    status: 'POSTED',
+    points: '9007199254742193',
+    occurredAt: '2026-08-31T09:00:00.000Z',
+    reference: { kind: 'ORDER', id: PAID_ORDER_ID, label: '充值订单' },
+  },
+  {
+    ownerId: FIXTURE_OWNER,
+    id: 'ledger-reserve-1',
+    type: 'RESERVE',
+    direction: 'TRANSFER',
+    status: 'POSTED',
+    points: '1200',
+    occurredAt: '2026-08-31T10:00:00.000Z',
+    reference: { kind: 'TASK', id: 'task-1', label: '生成任务 T20260831-0001' },
+  },
+  {
+    ownerId: FIXTURE_OWNER,
+    id: 'ledger-settle-1',
+    type: 'SETTLE',
+    direction: 'DEBIT',
+    status: 'POSTED',
+    points: '800',
+    occurredAt: '2026-08-31T11:00:00.000Z',
+    reference: { kind: 'TASK', id: 'task-2', label: '生成任务 T20260831-0002' },
+  },
+];
+
+const orders: Owned<RechargeOrderView>[] = [
+  {
+    ownerId: FIXTURE_OWNER,
+    id: PAID_ORDER_ID,
+    amountMinor: '10001',
+    currency: 'CNY',
+    points: '9007199254740993',
+    status: 'PAID',
+    createdAt: '2026-08-31T09:00:00.000Z',
+    paidAt: '2026-08-31T09:01:00.000Z',
+  },
+  {
+    ownerId: FIXTURE_OWNER,
+    id: PENDING_ORDER_ID,
+    amountMinor: '9900',
+    currency: 'CNY',
+    points: '10000',
+    status: 'PENDING',
+    createdAt: '2026-09-12T10:00:00.000Z',
+    expiresAt: '2026-09-12T10:15:00.000Z',
+  },
+];
+
+const invoices: Owned<InvoiceHistoryItem>[] = [];
+const invoicedOrders = new Set<string>();
+const deletedAssets = new Set<string>();
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000;
+const IDEMPOTENCY_MAX_ENTRIES = 10_000;
+const idempotency = new Map<
+  string,
+  {
+    readonly ownerId: string;
+    readonly fingerprint: string;
+    readonly value: unknown;
+    readonly expiresAt: number;
+  }
+>();
+
+function assertOwner(ownerId: string): void {
+  if (!/^\+861[3-9]\d{9}$/.test(ownerId)) throw new CommerceCommandError('AUTHENTICATION_REQUIRED');
+}
+
+function publicValue<T extends { readonly ownerId: string }>(value: T): Omit<T, 'ownerId'> {
+  const { ownerId, ...result } = value;
+  void ownerId;
+  return result;
+}
+
+function ownedAsset(assetId: string, ownerId: string): Owned<AssetListItem> {
+  const asset = assets.find(
+    (candidate) =>
+      candidate.id === assetId && candidate.ownerId === ownerId && !deletedAssets.has(candidate.id),
+  );
+  if (!asset) throw new CommerceCommandError('ASSET_NOT_FOUND');
+  return asset;
+}
+
+function command<T>(key: string, ownerId: string, fingerprint: string, create: () => T): T {
+  if (!isUuidV7(key)) throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
+  const now = Date.now();
+  for (const [candidateKey, entry] of idempotency) {
+    if (entry.expiresAt <= now) idempotency.delete(candidateKey);
+  }
+  const existing = idempotency.get(key);
+  if (existing) {
+    if (existing.ownerId !== ownerId || existing.fingerprint !== fingerprint)
+      throw new CommerceCommandError('IDEMPOTENCY_CONFLICT');
+    return structuredClone(existing.value) as T;
+  }
+  if (idempotency.size >= IDEMPOTENCY_MAX_ENTRIES)
+    throw new CommerceCommandError('IDEMPOTENCY_CAPACITY_EXCEEDED');
+  const value = create();
+  idempotency.set(key, {
+    ownerId,
+    fingerprint,
+    value: structuredClone(value),
+    expiresAt: now + IDEMPOTENCY_TTL_MS,
+  });
+  return value;
+}
+
+function listOffset(cursor: string | undefined): number {
+  if (cursor === undefined || cursor === 'page-1') return 0;
+  if (cursor === 'page-2') return 2;
+  throw new CommerceCommandError('INVALID_CURSOR');
+}
+
+export const commerceGateway: CommerceGateway = {
+  async listAssets(filters: AssetFilters, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    const matches = assets.filter((asset) => {
+      if (asset.ownerId !== context.ownerId || deletedAssets.has(asset.id)) return false;
+      if (filters.kind && asset.kind !== filters.kind) return false;
+      if (filters.mediaType && !asset.mimeType.startsWith(filters.mediaType.toLowerCase()))
+        return false;
+      if (
+        filters.query &&
+        !asset.name.toLocaleLowerCase('zh-CN').includes(filters.query.toLocaleLowerCase('zh-CN'))
+      )
+        return false;
+      return true;
+    });
+    const offset = listOffset(filters.cursor);
+    return Promise.resolve({
+      items: matches.slice(offset, offset + 2).map(publicValue),
+      pageInfo: {
+        ...(offset > 0 ? { previousCursor: 'page-1' } : {}),
+        ...(offset + 2 < matches.length ? { nextCursor: 'page-2' } : {}),
+      },
+    });
+  },
+
+  async requestAssetAccess(assetId, purpose, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    ownedAsset(assetId, context.ownerId);
+    const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    const disposition = purpose === 'DOWNLOAD' ? 'attachment' : 'inline';
+    // This URL is deliberately generated per request and never stored with the asset fixture.
+    return Promise.resolve({
+      url: `https://private-cdn.example/${encodeURIComponent(assetId)}?disposition=${disposition}&signature=ephemeral`,
+      expiresAt,
+    });
+  },
+
+  uploadAsset(file, options): Promise<unknown> {
+    assertOwner(options.ownerId);
+    if (options.signal.aborted) throw new DOMException('Upload aborted.', 'AbortError');
+    const maxBytes = file.type.startsWith('image/') ? 20n * 1024n * 1024n : 500n * 1024n * 1024n;
+    if (!/^(?:image\/(?:jpeg|png|webp)|video\/mp4)$/.test(file.type))
+      throw new CommerceCommandError('UNSUPPORTED_UPLOAD_TYPE');
+    if (BigInt(file.size) <= 0n || BigInt(file.size) > maxBytes)
+      throw new CommerceCommandError('UPLOAD_SIZE_EXCEEDED');
+    return Promise.resolve(
+      command(
+        options.idempotencyKey,
+        options.ownerId,
+        `upload:${file.name}:${String(file.size)}`,
+        () => {
+          options.onProgress(35);
+          options.onProgress(100);
+          const created: Owned<AssetListItem> = {
+            ownerId: options.ownerId,
+            id: createUuidV7(),
+            kind: 'UPLOAD',
+            name: file.name,
+            mimeType: file.type,
+            sizeBytes: String(file.size),
+            createdAt: new Date().toISOString(),
+            posterAlt: `${file.name} 素材预览`,
+          };
+          assets.unshift(created);
+          return publicValue(created);
+        },
+      ),
+    );
+  },
+
+  renameAsset(assetId, name, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    const asset = ownedAsset(assetId, context.ownerId);
+    const normalized = name.trim();
+    if (normalized.length < 1 || normalized.length > 120)
+      throw new CommerceCommandError('INVALID_ASSET_NAME');
+    return Promise.resolve(
+      command(context.idempotencyKey, context.ownerId, `rename:${assetId}:${normalized}`, () => {
+        const renamed = { ...asset, name: normalized };
+        const index = assets.indexOf(asset);
+        assets[index] = renamed;
+        return publicValue(renamed);
+      }),
+    );
+  },
+
+  deleteAsset(assetId, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    return Promise.resolve(
+      command(context.idempotencyKey, context.ownerId, `delete:${assetId}`, () => {
+        ownedAsset(assetId, context.ownerId);
+        deletedAssets.add(assetId);
+        return { accepted: true };
+      }),
+    );
+  },
+
+  async getWallet(filters, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    const all = ledger.filter(
+      (transaction) =>
+        transaction.ownerId === context.ownerId &&
+        (!filters.type || transaction.type === filters.type),
+    );
+    const offset = listOffset(filters.cursor);
+    return Promise.resolve({
+      balance: {
+        available: context.ownerId === FIXTURE_OWNER ? '9007199254740993' : '0',
+        frozen: context.ownerId === FIXTURE_OWNER ? '1200' : '0',
+        totalRecharged: context.ownerId === FIXTURE_OWNER ? '9007199254742193' : '0',
+        totalConsumed: context.ownerId === FIXTURE_OWNER ? '800' : '0',
+      },
+      transactions: all.slice(offset, offset + 2).map(publicValue),
+      pageInfo: {
+        ...(offset > 0 ? { previousCursor: 'page-1' } : {}),
+        ...(offset + 2 < all.length ? { nextCursor: 'page-2' } : {}),
+      },
+    });
+  },
+
+  async listOrders(filters, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    const all = orders.filter(
+      (order) =>
+        order.ownerId === context.ownerId && (!filters.status || order.status === filters.status),
+    );
+    const offset = listOffset(filters.cursor);
+    return Promise.resolve({
+      packages: [
+        { id: 'starter', amountMinor: '9900', currency: 'CNY', points: '10000' },
+        { id: 'creator', amountMinor: '29900', currency: 'CNY', points: '32000' },
+        { id: 'studio', amountMinor: '89900', currency: 'CNY', points: '100000' },
+      ],
+      customAmount: { minMinor: '100', maxMinor: '500000', stepMinor: '100' },
+      items: all.slice(offset, offset + 2).map(publicValue),
+      pageInfo: {
+        ...(offset > 0 ? { previousCursor: 'page-1' } : {}),
+        ...(offset + 2 < all.length ? { nextCursor: 'page-2' } : {}),
+      },
+    });
+  },
+
+  async createOrder(input, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    const fingerprint = JSON.stringify(input);
+    return Promise.resolve(
+      command(context.idempotencyKey, context.ownerId, `order:${fingerprint}`, () => {
+        const packages = new Map([
+          ['starter', { amountMinor: '9900', points: '10000' }],
+          ['creator', { amountMinor: '29900', points: '32000' }],
+          ['studio', { amountMinor: '89900', points: '100000' }],
+        ]);
+        const selected = input.packageId ? packages.get(input.packageId) : undefined;
+        const custom = input.customAmountMinor;
+        if ((selected ? 1 : 0) + (custom ? 1 : 0) !== 1)
+          throw new CommerceCommandError('INVALID_RECHARGE_SELECTION');
+        const amountMinor = selected?.amountMinor ?? custom ?? '';
+        if (!/^\d+$/.test(amountMinor)) throw new CommerceCommandError('INVALID_RECHARGE_AMOUNT');
+        const amount = BigInt(amountMinor);
+        if (!selected && (amount < 100n || amount > 500000n || amount % 100n !== 0n))
+          throw new CommerceCommandError('INVALID_RECHARGE_AMOUNT');
+        const now = new Date();
+        const order: Owned<RechargeOrderView> = {
+          ownerId: context.ownerId,
+          id: createUuidV7(now.getTime()),
+          amountMinor,
+          currency: 'CNY',
+          points: selected?.points ?? amountMinor,
+          status: 'PENDING',
+          createdAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
+        };
+        orders.unshift(order);
+        return {
+          order: publicValue(order),
+          payment: {
+            kind: 'QR_CODE',
+            qrCodeUrl: `https://pay.weixin.qq.com/pay/${encodeURIComponent(order.id)}`,
+            expiresAt: order.expiresAt,
+          },
+        };
+      }),
+    );
+  },
+
+  async listInvoiceCandidates(context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    return Promise.resolve({
+      items: orders
+        .filter(
+          (order) =>
+            order.ownerId === context.ownerId &&
+            order.status === 'PAID' &&
+            order.paidAt &&
+            !invoicedOrders.has(`${context.ownerId}:${order.id}`),
+        )
+        .map((order) => ({
+          orderId: order.id,
+          paidAt: order.paidAt,
+          amountMinor: order.amountMinor,
+          currency: order.currency,
+          points: order.points,
+        })),
+      history: invoices.filter((invoice) => invoice.ownerId === context.ownerId).map(publicValue),
+    });
+  },
+
+  async createInvoice(input, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    return Promise.resolve(
+      command(context.idempotencyKey, context.ownerId, `invoice:${JSON.stringify(input)}`, () => {
+        const uniqueOrderIds = [...new Set(input.orderIds)];
+        if (uniqueOrderIds.length === 0 || uniqueOrderIds.length !== input.orderIds.length)
+          throw new CommerceCommandError('INVALID_INVOICE_ORDERS');
+        if (uniqueOrderIds.some((orderId) => invoicedOrders.has(`${context.ownerId}:${orderId}`)))
+          throw new CommerceCommandError('ORDER_NOT_INVOICE_ELIGIBLE');
+        const eligible = uniqueOrderIds.map((id) =>
+          orders.find(
+            (order) =>
+              order.id === id && order.ownerId === context.ownerId && order.status === 'PAID',
+          ),
+        );
+        if (eligible.some((order) => !order))
+          throw new CommerceCommandError('ORDER_NOT_INVOICE_ELIGIBLE');
+        if (input.title.trim().length < 2 || input.title.length > 100)
+          throw new CommerceCommandError('INVALID_INVOICE_TITLE');
+        if (!/^[0-9A-Z]{15,20}$/.test(input.taxNumber))
+          throw new CommerceCommandError('INVALID_TAX_NUMBER');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email) || input.email.length > 254)
+          throw new CommerceCommandError('INVALID_INVOICE_EMAIL');
+        const now = new Date().toISOString();
+        const invoice: Owned<InvoiceHistoryItem> = {
+          ownerId: context.ownerId,
+          id: createUuidV7(),
+          amountMinor: eligible
+            .reduce((total, order) => total + BigInt(order?.amountMinor ?? '0'), 0n)
+            .toString(),
+          currency: 'CNY',
+          title: input.title.trim(),
+          status: 'SUBMITTED',
+          updatedAt: now,
+          statusHistory: [{ status: 'SUBMITTED', occurredAt: now }],
+        };
+        invoices.unshift(invoice);
+        for (const orderId of uniqueOrderIds) {
+          invoicedOrders.add(`${context.ownerId}:${orderId}`);
+        }
+        return { id: invoice.id, status: invoice.status };
+      }),
+    );
+  },
+};
