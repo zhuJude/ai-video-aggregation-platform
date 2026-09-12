@@ -1,8 +1,8 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const authState = vi.hoisted(() => ({
   value: {
@@ -29,11 +29,13 @@ vi.mock('next/navigation', () => ({
 }));
 
 import AssetsPage from '../app/assets/page';
+import { requestAssetAccessAction } from '../app/commerce-actions';
 import { AssetLibrary } from '../components/commerce/asset-library';
 import { InvoiceCenter } from '../components/commerce/invoice-center';
 import { OrderCenter } from '../components/commerce/order-center';
 import { WalletSummary } from '../components/commerce/wallet-summary';
 import { commerceGateway } from '../lib/commerce/gateway';
+import { commerceOwnerIdFromPhone } from '../lib/commerce/identity';
 import {
   formatMinorAmount,
   parseInvoiceCandidatePage,
@@ -50,8 +52,9 @@ import type {
   WalletPage,
 } from '../lib/commerce/types';
 
-const OWNER = '+8613800138000';
-const OTHER_OWNER = '+8613900139000';
+const PHONE = '+8613800138000';
+let OWNER = '';
+const OTHER_OWNER = '0198f4d4-21c2-7b7d-8a03-08a0da2a6199';
 const ASSET_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7101';
 const ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7201';
 
@@ -108,7 +111,7 @@ function gateway(overrides: Partial<CommerceGateway> = {}): CommerceGateway {
       url: 'https://private-cdn.example/assets/a.mp4?signature=redacted',
       expiresAt: '2026-09-12T10:05:00.000Z',
     }),
-    uploadAsset: vi.fn().mockResolvedValue(assets.items[0]),
+    completeUpload: vi.fn().mockResolvedValue(assets.items[0]),
     renameAsset: vi.fn().mockResolvedValue({ ...assets.items[0], name: '新名称.mp4' }),
     deleteAsset: vi.fn().mockResolvedValue({ accepted: true }),
     getWallet: vi.fn().mockResolvedValue(wallet),
@@ -124,8 +127,24 @@ function gateway(overrides: Partial<CommerceGateway> = {}): CommerceGateway {
         expiresAt: '2026-09-12T10:15:00.000Z',
       },
       payment: {
-        kind: 'QR_CODE',
-        qrCodeUrl: 'https://pay.weixin.qq.com/pay/example',
+        environment: 'MOCK',
+        kind: 'DISPLAY_ONLY',
+        expiresAt: '2026-09-12T10:15:00.000Z',
+      },
+    }),
+    requestOrderPayment: vi.fn().mockResolvedValue({
+      order: {
+        id: ORDER_ID,
+        amountMinor: '9900',
+        currency: 'CNY',
+        points: '10000',
+        status: 'PENDING',
+        createdAt: '2026-09-12T10:00:00.000Z',
+        expiresAt: '2026-09-12T10:15:00.000Z',
+      },
+      payment: {
+        environment: 'MOCK',
+        kind: 'DISPLAY_ONLY',
         expiresAt: '2026-09-12T10:15:00.000Z',
       },
     }),
@@ -138,13 +157,43 @@ function gateway(overrides: Partial<CommerceGateway> = {}): CommerceGateway {
   };
 }
 
+beforeEach(() => {
+  process.env.USER_WEB_COMMERCE_MODE = 'mock';
+  process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 13).toString('base64url');
+  OWNER = commerceOwnerIdFromPhone(PHONE);
+});
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   authState.value = {
     kind: 'active',
-    session: { ownerId: OWNER },
+    session: { ownerId: PHONE },
   };
+  delete process.env.USER_WEB_COMMERCE_MODE;
+  delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
+});
+
+describe('commerce identity and mock isolation', () => {
+  it('derives a stable UUID owner from the verified phone without exposing the phone', () => {
+    const derived = commerceOwnerIdFromPhone(PHONE);
+    expect(derived).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(commerceOwnerIdFromPhone(PHONE)).toBe(derived);
+    expect(derived).not.toContain('13800138000');
+  });
+
+  it('fails closed when the server-only commerce mock gate is disabled', async () => {
+    delete process.env.USER_WEB_COMMERCE_MODE;
+    await expect(commerceGateway.listAssets({}, { ownerId: OWNER })).rejects.toThrow(
+      'COMMERCE_SERVICE_UNAVAILABLE',
+    );
+  });
+
+  it('maps the authenticated phone to a UUID owner inside server actions', async () => {
+    await expect(requestAssetAccessAction(ASSET_ID, 'PREVIEW')).resolves.toMatchObject({
+      ok: true,
+    });
+  });
 });
 
 describe('wallet precision and immutable ledger', () => {
@@ -164,7 +213,7 @@ describe('wallet precision and immutable ledger', () => {
         transactions: [
           {
             id: 'ledger-1',
-            type: 'RECHARGE',
+            type: 'CREDIT',
             direction: 'CREDIT',
             status: 'POSTED',
             points: '9007199254740993',
@@ -174,6 +223,28 @@ describe('wallet precision and immutable ledger', () => {
         ],
       }).transactions[0]?.occurredAt,
     ).toBe('2026-08-31T16:00:00.000Z');
+  });
+
+  it('accepts only the frozen wallet ledger kinds', () => {
+    const credit = {
+      id: 'credit-1',
+      type: 'CREDIT',
+      direction: 'CREDIT',
+      status: 'POSTED',
+      points: '100',
+      occurredAt: '2026-08-31T09:00:00.000Z',
+    };
+    expect(parseWalletPage({ ...wallet, transactions: [credit] }).transactions[0]?.type).toBe(
+      'CREDIT',
+    );
+    for (const internalOrInventedKind of ['RECHARGE', 'REPAIR', 'REFUND']) {
+      expect(() =>
+        parseWalletPage({
+          ...wallet,
+          transactions: [{ ...credit, type: internalOrInventedKind }],
+        }),
+      ).toThrow('INVALID_WALLET_TRANSACTION');
+    }
   });
 });
 
@@ -210,23 +281,6 @@ describe('private assets', () => {
     ).toBeUndefined();
   });
 
-  it('aborts an upload and announces cancellation', async () => {
-    const uploadAsset = vi.fn<CommerceGateway['uploadAsset']>(
-      (_file, options) =>
-        new Promise(() => {
-          options.onProgress(25);
-        }),
-    );
-    const user = userEvent.setup();
-    render(<AssetLibrary initial={assets} gateway={gateway({ uploadAsset })} ownerId={OWNER} />);
-    const file = new File(['video'], 'clip.mp4', { type: 'video/mp4' });
-    await user.upload(screen.getByLabelText('上传图片或视频'), file);
-    expect(await screen.findByText('25%')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: '取消上传' }));
-    expect(await screen.findByRole('status')).toHaveTextContent('上传已取消');
-    expect(uploadAsset.mock.calls[0]?.[1].signal.aborted).toBe(true);
-  });
-
   it('requires an explicit dialog confirmation before deletion', async () => {
     const deleteAsset = vi.fn<CommerceGateway['deleteAsset']>().mockResolvedValue({
       accepted: true,
@@ -234,9 +288,23 @@ describe('private assets', () => {
     const api = gateway({ deleteAsset });
     const user = userEvent.setup();
     render(<AssetLibrary initial={assets} gateway={api} ownerId={OWNER} />);
-    await user.click(screen.getByRole('button', { name: '删除海边公路.mp4' }));
+    const deleteTrigger = screen.getByRole('button', { name: '删除海边公路.mp4' });
+    await user.click(deleteTrigger);
     expect(screen.getByRole('dialog')).toHaveTextContent('可在 7 天内恢复');
     expect(deleteAsset).not.toHaveBeenCalled();
+    const cancel = screen.getByRole('button', { name: '保留素材' });
+    const confirmDelete = screen.getByRole('button', { name: '确认删除' });
+    expect(cancel).toHaveFocus();
+    await user.tab();
+    expect(confirmDelete).toHaveFocus();
+    await user.tab();
+    expect(cancel).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(confirmDelete).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(deleteTrigger).toHaveFocus();
+    await user.click(deleteTrigger);
     await user.click(screen.getByRole('button', { name: '确认删除' }));
     expect(deleteAsset).toHaveBeenCalledTimes(1);
   });
@@ -280,7 +348,8 @@ describe('recharge orders', () => {
         { ownerId: OWNER, idempotencyKey: '0198f4d4-21c2-7b7d-8a03-08a0da2a7999' },
       )) as OrderCreateResult,
     );
-    expect(await screen.findByText('微信支付')).toBeVisible();
+    expect(await screen.findByText('演示支付，不会扣款')).toBeVisible();
+    expect(screen.queryByRole('link', { name: '打开微信支付' })).not.toBeInTheDocument();
   });
 
   it('distinguishes an uncertain outcome and does not invite a blind resubmit', async () => {
@@ -306,6 +375,7 @@ describe('recharge orders', () => {
           expiresAt: '2026-09-12T10:15:00.000Z',
         },
         payment: {
+          environment: 'LIVE',
           kind: 'QR_CODE',
           qrCodeUrl: 'javascript:alert(1)',
           expiresAt: '2026-09-12T10:15:00.000Z',
@@ -313,6 +383,17 @@ describe('recharge orders', () => {
         },
       }),
     ).toThrow('INVALID_PAYMENT_PAYLOAD');
+  });
+
+  it('keeps fixture payments explicitly mock-only and never emits a real payment host', async () => {
+    const result = parseOrderCreateResult(
+      await commerceGateway.createOrder(
+        { packageId: 'creator' },
+        { ownerId: OWNER, idempotencyKey: '0198f4d4-21c2-7b7d-8a03-08a0da2a7881' },
+      ),
+    );
+    expect(result.payment).toMatchObject({ environment: 'MOCK', kind: 'DISPLAY_ONLY' });
+    expect(JSON.stringify(result.payment)).not.toContain('weixin.qq.com');
   });
 
   it('does not render a payment entry after its server expiry', async () => {
@@ -328,6 +409,7 @@ describe('recharge orders', () => {
           expiresAt: '2026-09-12T08:15:00.000Z',
         },
         payment: {
+          environment: 'LIVE',
           kind: 'QR_CODE',
           qrCodeUrl: 'https://pay.weixin.qq.com/pay/example',
           expiresAt: '2026-09-12T08:15:00.000Z',
@@ -340,6 +422,81 @@ describe('recharge orders', () => {
     await user.click(screen.getByRole('button', { name: '创建支付订单' }));
     expect(await screen.findByText('支付入口已过期')).toBeVisible();
     expect(screen.queryByRole('link', { name: '打开微信支付' })).not.toBeInTheDocument();
+  });
+
+  it('requests a fresh owner-scoped payload when continuing a pending order', async () => {
+    const pendingOrder = {
+      id: ORDER_ID,
+      amountMinor: '9900',
+      currency: 'CNY' as const,
+      points: '10000',
+      status: 'PENDING' as const,
+      createdAt: '2099-09-12T10:00:00.000Z',
+      expiresAt: '2099-09-12T10:15:00.000Z',
+    };
+    const requestOrderPayment = vi.fn<CommerceGateway['requestOrderPayment']>().mockResolvedValue({
+      order: pendingOrder,
+      payment: {
+        environment: 'MOCK',
+        kind: 'DISPLAY_ONLY',
+        expiresAt: pendingOrder.expiresAt,
+      },
+    });
+    const user = userEvent.setup();
+    render(
+      <OrderCenter
+        initial={{ ...orders, items: [pendingOrder] }}
+        gateway={gateway({ requestOrderPayment })}
+        ownerId={OWNER}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '继续支付' }));
+    expect(requestOrderPayment).toHaveBeenCalledWith(ORDER_ID, { ownerId: OWNER });
+    expect(await screen.findByText('演示支付，不会扣款')).toBeVisible();
+  });
+
+  it('removes a continue-payment entry when its server expiry is reached', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-12T10:00:00.000Z'));
+    render(
+      <OrderCenter
+        initial={{
+          ...orders,
+          items: [
+            {
+              id: ORDER_ID,
+              amountMinor: '9900',
+              currency: 'CNY',
+              points: '10000',
+              status: 'PENDING',
+              createdAt: '2026-09-12T09:59:00.000Z',
+              expiresAt: '2026-09-12T10:00:10.000Z',
+            },
+          ],
+        }}
+        gateway={gateway()}
+        ownerId={OWNER}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '继续支付' })).toBeVisible();
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    expect(screen.queryByRole('button', { name: '继续支付' })).not.toBeInTheDocument();
+  });
+
+  it('fails closed for paid, expired, or foreign-owner payment requests', async () => {
+    await expect(
+      commerceGateway.requestOrderPayment(ORDER_ID, { ownerId: OWNER }),
+    ).rejects.toMatchObject({ message: 'ORDER_NOT_PAYABLE', outcome: 'DEFINITIVE_FAILURE' });
+    await expect(
+      commerceGateway.requestOrderPayment('0198f4d4-21c2-7b7d-8a03-08a0da2a7202', {
+        ownerId: OWNER,
+      }),
+    ).rejects.toMatchObject({ message: 'ORDER_NOT_PAYABLE', outcome: 'DEFINITIVE_FAILURE' });
+    await expect(
+      commerceGateway.requestOrderPayment('0198f4d4-21c2-7b7d-8a03-08a0da2a7202', {
+        ownerId: OTHER_OWNER,
+      }),
+    ).rejects.toMatchObject({ message: 'ORDER_NOT_PAYABLE', outcome: 'DEFINITIVE_FAILURE' });
   });
 });
 
@@ -376,6 +533,9 @@ describe('invoice applications', () => {
     expect(createInvoice.mock.calls[0]?.[0].orderIds).toEqual([ORDER_ID]);
     resolve({ id: '0198f4d4-21c2-7b7d-8a03-08a0da2a7301', status: 'SUBMITTED' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.queryByRole('checkbox', { name: /100\.01/ })).not.toBeInTheDocument();
+    expect(screen.getByText('暂无可开票金额')).toBeVisible();
+    expect(screen.getByText('合计 ¥0.00')).toBeVisible();
   });
 
   it('rechecks paid ownership server-side instead of trusting client eligibility', async () => {

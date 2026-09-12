@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
-import { createOrderAction } from '../../app/commerce-actions';
+import { createOrderAction, requestOrderPaymentAction } from '../../app/commerce-actions';
+import { runCommerceActionWithRefresh } from '../../lib/commerce/client-command';
 import {
   classifyCommerceCommandError,
   formatChinaDate,
@@ -37,10 +38,12 @@ export function OrderCenter({
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState<string>();
   const [created, setCreated] = useState<OrderCreateResult>();
+  const [items, setItems] = useState(initial.items);
+  const [paymentPendingId, setPaymentPendingId] = useState<string>();
   const [paymentClock, setPaymentClock] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!created) return;
+    if (!created && !items.some((item) => item.status === 'PENDING' && item.expiresAt)) return;
     setPaymentClock(Date.now());
     const interval = window.setInterval(() => {
       setPaymentClock(Date.now());
@@ -48,7 +51,7 @@ export function OrderCenter({
     return () => {
       window.clearInterval(interval);
     };
-  }, [created]);
+  }, [created, items]);
 
   const paymentActive = created
     ? Date.parse(created.payment.expiresAt) > paymentClock + 5_000
@@ -86,14 +89,18 @@ export function OrderCenter({
     try {
       const raw = gateway
         ? await gateway.createOrder(input, { idempotencyKey: key, ownerId: ownerId ?? '' })
-        : await createOrderAction(input, key).then((result) => {
+        : await runCommerceActionWithRefresh(() => createOrderAction(input, key)).then((result) => {
             if (!result.ok)
               throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
             return result.data;
           });
-      setCreated(parseOrderCreateResult(raw));
+      const next = parseOrderCreateResult(raw);
+      setCreated(next);
+      setItems((current) => [next.order, ...current.filter((item) => item.id !== next.order.id)]);
     } catch (caught) {
-      if (classifyCommerceCommandError(caught) === 'UNCERTAIN') {
+      if (caught instanceof Error && caught.message === 'LOGIN_REQUIRED') {
+        setError('登录状态已失效，请重新登录后再创建订单。');
+      } else if (classifyCommerceCommandError(caught) === 'UNCERTAIN') {
         setUncertain(true);
         setError('订单创建结果待确认。请先到订单列表核对，避免重复支付。');
       } else {
@@ -101,6 +108,32 @@ export function OrderCenter({
       }
     } finally {
       setPending(false);
+    }
+  };
+
+  const requestPayment = async (orderId: string) => {
+    if (paymentPendingId) return;
+    setError(undefined);
+    setPaymentPendingId(orderId);
+    try {
+      const raw = gateway
+        ? await gateway.requestOrderPayment(orderId, { ownerId: ownerId ?? '' })
+        : await runCommerceActionWithRefresh(() => requestOrderPaymentAction(orderId)).then(
+            (result) => {
+              if (!result.ok)
+                throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
+              return result.data;
+            },
+          );
+      setCreated(parseOrderCreateResult(raw));
+    } catch (caught) {
+      if (caught instanceof Error && caught.message === 'LOGIN_REQUIRED') {
+        setError('登录状态已失效，请重新登录后再获取支付入口。');
+      } else {
+        setError('该订单当前不可支付，请刷新订单状态后重试。');
+      }
+    } finally {
+      setPaymentPendingId(undefined);
     }
   };
 
@@ -189,14 +222,22 @@ export function OrderCenter({
         <section className="payment-panel" aria-labelledby="payment-title">
           <div>
             <p className="section-kicker">安全支付</p>
-            <h2 id="payment-title">微信支付</h2>
+            <h2 id="payment-title">
+              {created.payment.environment === 'MOCK' ? '演示支付，不会扣款' : '微信支付'}
+            </h2>
             <p>
               订单 {created.order.id.slice(0, 8)}… ·{' '}
               {formatMinorAmount(created.order.amountMinor, created.order.currency)}
             </p>
           </div>
           <div className="payment-action">
-            {paymentActive ? (
+            {!paymentActive ? (
+              <strong role="status">支付入口已过期</strong>
+            ) : created.payment.environment === 'MOCK' ? (
+              <strong className="mock-payment-notice" role="status">
+                这是隔离的演示订单，不会发起真实支付或扣款。
+              </strong>
+            ) : (
               <a
                 className="button-link button-primary"
                 href={created.payment.qrCodeUrl}
@@ -205,8 +246,6 @@ export function OrderCenter({
               >
                 打开微信支付
               </a>
-            ) : (
-              <strong role="status">支付入口已过期</strong>
             )}
             <small>
               支付入口由服务端白名单载荷生成，不渲染渠道 HTML。
@@ -239,14 +278,14 @@ export function OrderCenter({
             <button type="submit">筛选</button>
           </form>
         </div>
-        {initial.items.length === 0 ? (
+        {items.length === 0 ? (
           <div className="commerce-empty" role="status">
             <h3>暂无充值订单</h3>
             <p>创建订单后可在这里核对支付状态。</p>
           </div>
         ) : (
           <div className="order-list">
-            {initial.items.map((order) => (
+            {items.map((order) => (
               <article key={order.id}>
                 <div>
                   <span className="status-chip" data-status={order.status}>
@@ -277,8 +316,14 @@ export function OrderCenter({
                 </dl>
                 {order.status === 'PENDING' &&
                 order.expiresAt &&
-                Date.parse(order.expiresAt) > Date.now() ? (
-                  <Link href={`/orders?pay=${encodeURIComponent(order.id)}`}>继续支付</Link>
+                Date.parse(order.expiresAt) > paymentClock + 5_000 ? (
+                  <button
+                    type="button"
+                    disabled={paymentPendingId !== undefined}
+                    onClick={() => void requestPayment(order.id)}
+                  >
+                    {paymentPendingId === order.id ? '正在获取支付入口…' : '继续支付'}
+                  </button>
                 ) : null}
               </article>
             ))}

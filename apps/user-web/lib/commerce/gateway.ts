@@ -1,6 +1,10 @@
 import 'server-only';
 
+import { UuidSchema } from '@repo/contracts/common';
+
 import { createUuidV7, isUuidV7 } from '../tasks/identifiers';
+import { commerceOwnerIdFromPhone } from './identity';
+import { requireMockCommerce } from './mock-config';
 import type {
   AssetFilters,
   AssetListItem,
@@ -14,7 +18,7 @@ export class CommerceCommandError extends Error {
   readonly outcome = 'DEFINITIVE_FAILURE' as const;
 }
 
-const FIXTURE_OWNER = '+8613800138000';
+const FIXTURE_PHONE = '+8613800138000';
 const ASSET_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7101';
 const IMAGE_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7102';
 const PAID_ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7201';
@@ -22,9 +26,15 @@ const PENDING_ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7202';
 
 type Owned<T> = T & { readonly ownerId: string };
 
+function fixtureOwnerId(): string {
+  return commerceOwnerIdFromPhone(FIXTURE_PHONE);
+}
+
 const assets: Owned<AssetListItem>[] = [
   {
-    ownerId: FIXTURE_OWNER,
+    get ownerId() {
+      return fixtureOwnerId();
+    },
     id: ASSET_ID,
     kind: 'RESULT',
     name: '海边公路.mp4',
@@ -34,7 +44,9 @@ const assets: Owned<AssetListItem>[] = [
     posterAlt: '日落时分的海边公路生成视频',
   },
   {
-    ownerId: FIXTURE_OWNER,
+    get ownerId() {
+      return fixtureOwnerId();
+    },
     id: IMAGE_ID,
     kind: 'UPLOAD',
     name: '山谷起始帧.webp',
@@ -47,9 +59,11 @@ const assets: Owned<AssetListItem>[] = [
 
 const ledger: readonly Owned<LedgerTransaction>[] = [
   {
-    ownerId: FIXTURE_OWNER,
+    get ownerId() {
+      return fixtureOwnerId();
+    },
     id: 'ledger-recharge-1',
-    type: 'RECHARGE',
+    type: 'CREDIT',
     direction: 'CREDIT',
     status: 'POSTED',
     points: '9007199254742193',
@@ -57,7 +71,9 @@ const ledger: readonly Owned<LedgerTransaction>[] = [
     reference: { kind: 'ORDER', id: PAID_ORDER_ID, label: '充值订单' },
   },
   {
-    ownerId: FIXTURE_OWNER,
+    get ownerId() {
+      return fixtureOwnerId();
+    },
     id: 'ledger-reserve-1',
     type: 'RESERVE',
     direction: 'TRANSFER',
@@ -67,7 +83,9 @@ const ledger: readonly Owned<LedgerTransaction>[] = [
     reference: { kind: 'TASK', id: 'task-1', label: '生成任务 T20260831-0001' },
   },
   {
-    ownerId: FIXTURE_OWNER,
+    get ownerId() {
+      return fixtureOwnerId();
+    },
     id: 'ledger-settle-1',
     type: 'SETTLE',
     direction: 'DEBIT',
@@ -80,7 +98,9 @@ const ledger: readonly Owned<LedgerTransaction>[] = [
 
 const orders: Owned<RechargeOrderView>[] = [
   {
-    ownerId: FIXTURE_OWNER,
+    get ownerId() {
+      return fixtureOwnerId();
+    },
     id: PAID_ORDER_ID,
     amountMinor: '10001',
     currency: 'CNY',
@@ -90,7 +110,9 @@ const orders: Owned<RechargeOrderView>[] = [
     paidAt: '2026-08-31T09:01:00.000Z',
   },
   {
-    ownerId: FIXTURE_OWNER,
+    get ownerId() {
+      return fixtureOwnerId();
+    },
     id: PENDING_ORDER_ID,
     amountMinor: '9900',
     currency: 'CNY',
@@ -117,7 +139,9 @@ const idempotency = new Map<
 >();
 
 function assertOwner(ownerId: string): void {
-  if (!/^\+861[3-9]\d{9}$/.test(ownerId)) throw new CommerceCommandError('AUTHENTICATION_REQUIRED');
+  requireMockCommerce();
+  if (!UuidSchema.safeParse(ownerId).success)
+    throw new CommerceCommandError('AUTHENTICATION_REQUIRED');
 }
 
 function publicValue<T extends { readonly ownerId: string }>(value: T): Omit<T, 'ownerId'> {
@@ -202,31 +226,25 @@ export const commerceGateway: CommerceGateway = {
     });
   },
 
-  uploadAsset(file, options): Promise<unknown> {
-    assertOwner(options.ownerId);
-    if (options.signal.aborted) throw new DOMException('Upload aborted.', 'AbortError');
-    const maxBytes = file.type.startsWith('image/') ? 20n * 1024n * 1024n : 500n * 1024n * 1024n;
-    if (!/^(?:image\/(?:jpeg|png|webp)|video\/mp4)$/.test(file.type))
-      throw new CommerceCommandError('UNSUPPORTED_UPLOAD_TYPE');
-    if (BigInt(file.size) <= 0n || BigInt(file.size) > maxBytes)
-      throw new CommerceCommandError('UPLOAD_SIZE_EXCEEDED');
+  completeUpload(receipt, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    if (receipt.ownerId !== context.ownerId || receipt.uploadId !== context.idempotencyKey)
+      throw new CommerceCommandError('UPLOAD_RECEIPT_MISMATCH');
     return Promise.resolve(
       command(
-        options.idempotencyKey,
-        options.ownerId,
-        `upload:${file.name}:${String(file.size)}`,
+        context.idempotencyKey,
+        context.ownerId,
+        `upload:${receipt.uploadId}:${receipt.sha256}`,
         () => {
-          options.onProgress(35);
-          options.onProgress(100);
           const created: Owned<AssetListItem> = {
-            ownerId: options.ownerId,
-            id: createUuidV7(),
+            ownerId: context.ownerId,
+            id: receipt.uploadId,
             kind: 'UPLOAD',
-            name: file.name,
-            mimeType: file.type,
-            sizeBytes: String(file.size),
+            name: receipt.name,
+            mimeType: receipt.mimeType,
+            sizeBytes: receipt.sizeBytes,
             createdAt: new Date().toISOString(),
-            posterAlt: `${file.name} 素材预览`,
+            posterAlt: `${receipt.name} 素材预览`,
           };
           assets.unshift(created);
           return publicValue(created);
@@ -272,10 +290,10 @@ export const commerceGateway: CommerceGateway = {
     const offset = listOffset(filters.cursor);
     return Promise.resolve({
       balance: {
-        available: context.ownerId === FIXTURE_OWNER ? '9007199254740993' : '0',
-        frozen: context.ownerId === FIXTURE_OWNER ? '1200' : '0',
-        totalRecharged: context.ownerId === FIXTURE_OWNER ? '9007199254742193' : '0',
-        totalConsumed: context.ownerId === FIXTURE_OWNER ? '800' : '0',
+        available: context.ownerId === fixtureOwnerId() ? '9007199254740993' : '0',
+        frozen: context.ownerId === fixtureOwnerId() ? '1200' : '0',
+        totalRecharged: context.ownerId === fixtureOwnerId() ? '9007199254742193' : '0',
+        totalConsumed: context.ownerId === fixtureOwnerId() ? '800' : '0',
       },
       transactions: all.slice(offset, offset + 2).map(publicValue),
       pageInfo: {
@@ -341,13 +359,36 @@ export const commerceGateway: CommerceGateway = {
         return {
           order: publicValue(order),
           payment: {
-            kind: 'QR_CODE',
-            qrCodeUrl: `https://pay.weixin.qq.com/pay/${encodeURIComponent(order.id)}`,
+            environment: 'MOCK',
+            kind: 'DISPLAY_ONLY',
             expiresAt: order.expiresAt,
           },
         };
       }),
     );
+  },
+
+  async requestOrderPayment(orderId, context): Promise<unknown> {
+    assertOwner(context.ownerId);
+    const order = orders.find(
+      (candidate) => candidate.id === orderId && candidate.ownerId === context.ownerId,
+    );
+    if (
+      !order ||
+      order.status !== 'PENDING' ||
+      !order.expiresAt ||
+      Date.parse(order.expiresAt) <= Date.now() + 5_000
+    ) {
+      throw new CommerceCommandError('ORDER_NOT_PAYABLE');
+    }
+    return Promise.resolve({
+      order: publicValue(order),
+      payment: {
+        environment: 'MOCK',
+        kind: 'DISPLAY_ONLY',
+        expiresAt: order.expiresAt,
+      },
+    });
   },
 
   async listInvoiceCandidates(context): Promise<unknown> {

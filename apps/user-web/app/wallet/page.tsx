@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { WalletView } from '../../components/commerce/wallet-view';
 import { readAuthenticatedServerSessionState } from '../../lib/auth/server-session';
 import { commerceGateway } from '../../lib/commerce/gateway';
+import { commerceOwnerIdFromPhone } from '../../lib/commerce/identity';
 import { parseWalletFilters, parseWalletPage } from '../../lib/commerce/runtime';
 
 export default async function WalletPage({
@@ -15,7 +16,11 @@ export default async function WalletPage({
   if (state.kind !== 'active') redirect('/login?returnTo=%2Fwallet');
   try {
     const filters = parseWalletFilters(await searchParams);
-    const page = parseWalletPage(await commerceGateway.getWallet(filters, state.session));
+    const page = parseWalletPage(
+      await commerceGateway.getWallet(filters, {
+        ownerId: commerceOwnerIdFromPhone(state.session.ownerId),
+      }),
+    );
     return <WalletView page={page} filters={filters} />;
   } catch {
     return (

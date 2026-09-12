@@ -5,11 +5,10 @@ import type { WalletFilters, WalletPage } from '../../lib/commerce/types';
 import { WalletSummary } from './wallet-summary';
 
 const labels = {
-  RECHARGE: '充值入账',
+  CREDIT: '充值入账',
   RESERVE: '任务冻结',
   SETTLE: '任务结算',
   RELEASE: '释放冻结',
-  REFUND: '任务退款',
   ADJUST: '账户调整',
 } as const;
 

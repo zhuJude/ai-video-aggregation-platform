@@ -6,17 +6,25 @@ import {
   SessionRefreshRequiredError,
 } from '../lib/auth/server-session';
 import { commerceGateway } from '../lib/commerce/gateway';
+import { commerceOwnerIdFromPhone } from '../lib/commerce/identity';
+import {
+  createMockUploadGrant,
+  verifyMockUploadReceipt,
+} from '../lib/commerce/mock-upload-boundary';
 import {
   classifyCommerceCommandError,
   parseAssetPage,
   parseOrderCreateResult,
   parseSignedAssetUrl,
+  parseUploadSessionGrant,
 } from '../lib/commerce/runtime';
 import type {
   AssetListItem,
   CommandOutcome,
   OrderCreateResult,
   SignedAssetUrl,
+  UploadFileDescriptor,
+  UploadSessionGrant,
 } from '../lib/commerce/types';
 
 type ActionResult<T> =
@@ -32,7 +40,7 @@ function outcome(error: unknown): CommandOutcome {
 async function authenticated<T>(run: (ownerId: string) => Promise<T>): Promise<ActionResult<T>> {
   try {
     const session = await requireMutableAuthenticatedServerSession();
-    return { ok: true, data: await run(session.ownerId) };
+    return { ok: true, data: await run(commerceOwnerIdFromPhone(session.ownerId)) };
   } catch (error) {
     return { ok: false, outcome: outcome(error) };
   }
@@ -47,20 +55,23 @@ export async function requestAssetAccessAction(
   );
 }
 
-export async function uploadAssetAction(
-  input: { readonly name: string; readonly size: number; readonly type: string },
+export async function createUploadSessionAction(
+  input: UploadFileDescriptor,
+  idempotencyKey: string,
+): Promise<ActionResult<UploadSessionGrant>> {
+  return authenticated((ownerId) =>
+    Promise.resolve(parseUploadSessionGrant(createMockUploadGrant(input, idempotencyKey, ownerId))),
+  );
+}
+
+export async function completeUploadAction(
+  receiptToken: string,
   idempotencyKey: string,
 ): Promise<ActionResult<AssetListItem>> {
   return authenticated(async (ownerId) => {
+    const receipt = verifyMockUploadReceipt(receiptToken);
     const page = parseAssetPage({
-      items: [
-        await commerceGateway.uploadAsset(input, {
-          idempotencyKey,
-          ownerId,
-          signal: new AbortController().signal,
-          onProgress: () => undefined,
-        }),
-      ],
+      items: [await commerceGateway.completeUpload(receipt, { idempotencyKey, ownerId })],
       pageInfo: {},
     });
     const asset = page.items[0];
@@ -111,6 +122,14 @@ export async function createOrderAction(
 ): Promise<ActionResult<OrderCreateResult>> {
   return authenticated(async (ownerId) =>
     parseOrderCreateResult(await commerceGateway.createOrder(input, { idempotencyKey, ownerId })),
+  );
+}
+
+export async function requestOrderPaymentAction(
+  orderId: string,
+): Promise<ActionResult<OrderCreateResult>> {
+  return authenticated(async (ownerId) =>
+    parseOrderCreateResult(await commerceGateway.requestOrderPayment(orderId, { ownerId })),
   );
 }
 

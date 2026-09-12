@@ -38,6 +38,28 @@ export interface UploadFileDescriptor {
   readonly type: string;
 }
 
+export interface UploadSessionGrant {
+  readonly id: string;
+  readonly url: string;
+  readonly headers: Readonly<{
+    'content-type': string;
+    'x-upload-content-length': string;
+  }>;
+  readonly expiresAt: string;
+}
+
+export interface VerifiedUploadGrant {
+  readonly uploadId: string;
+  readonly ownerId: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: string;
+}
+
+export interface VerifiedUploadReceipt extends VerifiedUploadGrant {
+  readonly sha256: string;
+}
+
 export interface WalletBalanceView {
   readonly available: string;
   readonly frozen: string;
@@ -45,8 +67,7 @@ export interface WalletBalanceView {
   readonly totalConsumed: string;
 }
 
-export type LedgerTransactionType =
-  'RECHARGE' | 'RESERVE' | 'SETTLE' | 'RELEASE' | 'REFUND' | 'ADJUST';
+export type LedgerTransactionType = 'CREDIT' | 'RESERVE' | 'SETTLE' | 'RELEASE' | 'ADJUST';
 
 export interface LedgerTransaction {
   readonly id: string;
@@ -104,11 +125,18 @@ export interface OrderPage {
   readonly pageInfo: CursorPageInfo;
 }
 
-export interface PaymentPayload {
-  readonly kind: 'QR_CODE';
-  readonly qrCodeUrl: string;
-  readonly expiresAt: string;
-}
+export type PaymentPayload =
+  | {
+      readonly environment: 'MOCK';
+      readonly kind: 'DISPLAY_ONLY';
+      readonly expiresAt: string;
+    }
+  | {
+      readonly environment: 'LIVE';
+      readonly kind: 'QR_CODE';
+      readonly qrCodeUrl: string;
+      readonly expiresAt: string;
+    };
 
 export interface OrderCreateResult {
   readonly order: RechargeOrderView;
@@ -156,15 +184,7 @@ export interface CommerceGateway {
     purpose: 'PREVIEW' | 'DOWNLOAD',
     context: { readonly ownerId: string },
   ): Promise<unknown>;
-  uploadAsset(
-    file: UploadFileDescriptor,
-    options: {
-      readonly idempotencyKey: string;
-      readonly ownerId: string;
-      readonly signal: AbortSignal;
-      readonly onProgress: (percentage: number) => void;
-    },
-  ): Promise<unknown>;
+  completeUpload(receipt: VerifiedUploadReceipt, context: CommandContext): Promise<unknown>;
   renameAsset(assetId: string, name: string, context: CommandContext): Promise<unknown>;
   deleteAsset(assetId: string, context: CommandContext): Promise<unknown>;
   getWallet(filters: WalletFilters, context: { readonly ownerId: string }): Promise<unknown>;
@@ -176,6 +196,7 @@ export interface CommerceGateway {
     input: { readonly packageId?: string; readonly customAmountMinor?: string },
     context: CommandContext,
   ): Promise<unknown>;
+  requestOrderPayment(orderId: string, context: { readonly ownerId: string }): Promise<unknown>;
   listInvoiceCandidates(context: { readonly ownerId: string }): Promise<unknown>;
   createInvoice(
     input: {

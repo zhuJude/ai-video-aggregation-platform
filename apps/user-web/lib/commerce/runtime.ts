@@ -4,6 +4,7 @@ import {
   UtcDateTimeSchema,
   UuidSchema,
 } from '@repo/contracts/common';
+import { LedgerKindSchema as WalletTransactionKindSchema } from '@repo/contracts/wallet';
 
 import type {
   AssetFilters,
@@ -14,7 +15,6 @@ import type {
   InvoiceHistoryItem,
   InvoiceStatus,
   LedgerTransaction,
-  LedgerTransactionType,
   OrderCreateResult,
   OrderPage,
   PaymentPayload,
@@ -23,6 +23,7 @@ import type {
   SignedAssetUrl,
   WalletFilters,
   WalletPage,
+  UploadSessionGrant,
 } from './types';
 
 export function classifyCommerceCommandError(error: unknown): 'DEFINITIVE_FAILURE' | 'UNCERTAIN' {
@@ -155,6 +156,37 @@ export function parseSignedAssetUrl(value: unknown): SignedAssetUrl {
   };
 }
 
+export function parseUploadSessionGrant(value: unknown): UploadSessionGrant {
+  const grant = record(value, 'INVALID_UPLOAD_GRANT');
+  exact(grant, ['id', 'url', 'headers', 'expiresAt'], 'INVALID_UPLOAD_GRANT');
+  const headers = record(grant.headers, 'INVALID_UPLOAD_GRANT');
+  exact(headers, ['content-type', 'x-upload-content-length'], 'INVALID_UPLOAD_GRANT');
+  const contentType = text(headers['content-type'], 'INVALID_UPLOAD_GRANT', 80);
+  const size = points(headers['x-upload-content-length'], 'INVALID_UPLOAD_GRANT');
+  const url = text(grant.url, 'INVALID_UPLOAD_GRANT', 4_096);
+  if (
+    !/^(?:image\/(?:jpeg|png|webp)|video\/mp4)$/.test(contentType) ||
+    BigInt(size) <= 0n ||
+    !url.startsWith('/api/commerce/mock-uploads/') ||
+    url.includes('?') ||
+    url.includes('#')
+  ) {
+    throw new Error('INVALID_UPLOAD_GRANT');
+  }
+  return {
+    id: uuid(grant.id, 'INVALID_UPLOAD_GRANT'),
+    url,
+    headers: { 'content-type': contentType, 'x-upload-content-length': size },
+    expiresAt: instant(grant.expiresAt, 'INVALID_UPLOAD_GRANT'),
+  };
+}
+
+export function parseUploadReceiptResponse(value: unknown): { readonly receipt: string } {
+  const response = record(value, 'INVALID_UPLOAD_RECEIPT');
+  exact(response, ['receipt'], 'INVALID_UPLOAD_RECEIPT');
+  return { receipt: text(response.receipt, 'INVALID_UPLOAD_RECEIPT', 4_096) };
+}
+
 export function usableSignedUrl(
   value: SignedAssetUrl,
   now: number = Date.now(),
@@ -171,15 +203,6 @@ export function usableSignedUrl(
   }
 }
 
-const LEDGER_TYPES = new Set<LedgerTransactionType>([
-  'RECHARGE',
-  'RESERVE',
-  'SETTLE',
-  'RELEASE',
-  'REFUND',
-  'ADJUST',
-]);
-
 function parseLedgerTransaction(value: unknown): LedgerTransaction {
   const item = record(value, 'INVALID_WALLET_TRANSACTION');
   exact(
@@ -187,8 +210,8 @@ function parseLedgerTransaction(value: unknown): LedgerTransaction {
     ['id', 'type', 'direction', 'status', 'points', 'occurredAt', 'reference'],
     'INVALID_WALLET_TRANSACTION',
   );
-  if (!LEDGER_TYPES.has(item.type as LedgerTransactionType))
-    throw new Error('INVALID_WALLET_TRANSACTION');
+  const transactionKind = WalletTransactionKindSchema.safeParse(item.type);
+  if (!transactionKind.success) throw new Error('INVALID_WALLET_TRANSACTION');
   if (item.direction !== 'CREDIT' && item.direction !== 'DEBIT' && item.direction !== 'TRANSFER')
     throw new Error('INVALID_WALLET_TRANSACTION');
   if (item.status !== 'POSTED') throw new Error('INVALID_WALLET_TRANSACTION');
@@ -205,7 +228,7 @@ function parseLedgerTransaction(value: unknown): LedgerTransaction {
   }
   return {
     id: text(item.id, 'INVALID_WALLET_TRANSACTION', 120),
-    type: item.type as LedgerTransactionType,
+    type: transactionKind.data,
     direction: item.direction,
     status: 'POSTED',
     points: points(item.points, 'INVALID_WALLET_TRANSACTION'),
@@ -303,8 +326,18 @@ export function parseOrderPage(value: unknown): OrderPage {
 
 function parsePaymentPayload(value: unknown): PaymentPayload {
   const payment = record(value, 'INVALID_PAYMENT_PAYLOAD');
-  exact(payment, ['kind', 'qrCodeUrl', 'expiresAt'], 'INVALID_PAYMENT_PAYLOAD');
-  if (payment.kind !== 'QR_CODE') throw new Error('INVALID_PAYMENT_PAYLOAD');
+  if (payment.environment === 'MOCK') {
+    exact(payment, ['environment', 'kind', 'expiresAt'], 'INVALID_PAYMENT_PAYLOAD');
+    if (payment.kind !== 'DISPLAY_ONLY') throw new Error('INVALID_PAYMENT_PAYLOAD');
+    return {
+      environment: 'MOCK',
+      kind: 'DISPLAY_ONLY',
+      expiresAt: instant(payment.expiresAt, 'INVALID_PAYMENT_PAYLOAD'),
+    };
+  }
+  exact(payment, ['environment', 'kind', 'qrCodeUrl', 'expiresAt'], 'INVALID_PAYMENT_PAYLOAD');
+  if (payment.environment !== 'LIVE' || payment.kind !== 'QR_CODE')
+    throw new Error('INVALID_PAYMENT_PAYLOAD');
   const urlValue = text(payment.qrCodeUrl, 'INVALID_PAYMENT_PAYLOAD', 2_048);
   try {
     const url = new URL(urlValue);
@@ -316,6 +349,7 @@ function parsePaymentPayload(value: unknown): PaymentPayload {
     throw new Error('INVALID_PAYMENT_PAYLOAD');
   }
   return {
+    environment: 'LIVE',
     kind: 'QR_CODE',
     qrCodeUrl: urlValue,
     expiresAt: instant(payment.expiresAt, 'INVALID_PAYMENT_PAYLOAD'),
@@ -428,10 +462,10 @@ export function parseWalletFilters(
 ): WalletFilters {
   const cursor = typeof value.cursor === 'string' && value.cursor ? value.cursor : undefined;
   const type = typeof value.type === 'string' && value.type ? value.type : undefined;
-  if (type && !LEDGER_TYPES.has(type as LedgerTransactionType))
-    throw new Error('INVALID_WALLET_FILTER');
+  const parsedType = type ? WalletTransactionKindSchema.safeParse(type) : undefined;
+  if (parsedType && !parsedType.success) throw new Error('INVALID_WALLET_FILTER');
   return {
     ...(cursor ? { cursor } : {}),
-    ...(type ? { type: type as LedgerTransactionType } : {}),
+    ...(parsedType?.success ? { type: parsedType.data } : {}),
   };
 }

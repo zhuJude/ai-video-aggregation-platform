@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 
 import { createInvoiceAction } from '../../app/commerce-actions';
+import { runCommerceActionWithRefresh } from '../../lib/commerce/client-command';
 import {
   classifyCommerceCommandError,
   formatChinaDate,
@@ -11,6 +12,7 @@ import {
 } from '../../lib/commerce/runtime';
 import { createUuidV7 } from '../../lib/tasks/identifiers';
 import type { CommerceGateway, InvoiceCandidatePage } from '../../lib/commerce/types';
+import { AccessibleDialog } from './accessible-dialog';
 
 const statusLabels = {
   SUBMITTED: '已提交',
@@ -30,6 +32,7 @@ export function InvoiceCenter({
   readonly ownerId?: string;
 }) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [eligibleItems, setEligibleItems] = useState(initial.items);
   const [title, setTitle] = useState('');
   const [taxNumber, setTaxNumber] = useState('');
   const [email, setEmail] = useState('');
@@ -37,8 +40,8 @@ export function InvoiceCenter({
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<{ tone: 'status' | 'alert'; message: string }>();
   const selectedCandidates = useMemo(
-    () => initial.items.filter((item) => selected.has(item.orderId)),
-    [initial.items, selected],
+    () => eligibleItems.filter((item) => selected.has(item.orderId)),
+    [eligibleItems, selected],
   );
   const totalMinor = selectedCandidates
     .reduce((total, item) => total + BigInt(item.amountMinor), 0n)
@@ -74,17 +77,20 @@ export function InvoiceCenter({
       taxNumber,
       email,
     };
+    const idempotencyKey = createUuidV7();
     try {
       const raw = gateway
         ? await gateway.createInvoice(input, {
-            idempotencyKey: createUuidV7(),
+            idempotencyKey,
             ownerId: ownerId ?? '',
           })
-        : await createInvoiceAction(input, createUuidV7()).then((result) => {
-            if (!result.ok)
-              throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
-            return result.data;
-          });
+        : await runCommerceActionWithRefresh(() => createInvoiceAction(input, idempotencyKey)).then(
+            (result) => {
+              if (!result.ok)
+                throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
+              return result.data;
+            },
+          );
       if (
         typeof raw !== 'object' ||
         raw === null ||
@@ -95,16 +101,21 @@ export function InvoiceCenter({
       )
         throw new Error('INVALID_INVOICE_RESULT');
       setConfirming(false);
+      const submittedOrders = new Set(input.orderIds);
+      setEligibleItems((current) => current.filter((item) => !submittedOrders.has(item.orderId)));
       setSelected(new Set());
       setFeedback({ tone: 'status', message: '发票申请已提交，可在状态历史中跟踪进度。' });
     } catch (error) {
+      const loginRequired = error instanceof Error && error.message === 'LOGIN_REQUIRED';
       const uncertain = classifyCommerceCommandError(error) === 'UNCERTAIN';
       setConfirming(false);
       setFeedback({
         tone: 'alert',
-        message: uncertain
-          ? '申请结果待确认，请刷新开票记录后再操作，避免重复申请。'
-          : '申请未提交。订单可能已被开票，请刷新后重新选择。',
+        message: loginRequired
+          ? '登录状态已失效，请重新登录后再申请开票。'
+          : uncertain
+            ? '申请结果待确认，请刷新开票记录后再操作，避免重复申请。'
+            : '申请未提交。订单可能已被开票，请刷新后重新选择。',
       });
     } finally {
       setPending(false);
@@ -122,14 +133,14 @@ export function InvoiceCenter({
           </div>
           <strong className="invoice-total">合计 {formatMinorAmount(totalMinor, 'CNY')}</strong>
         </div>
-        {initial.items.length === 0 ? (
+        {eligibleItems.length === 0 ? (
           <div className="commerce-empty" role="status">
             <h3>暂无可开票金额</h3>
             <p>已支付订单通过资格核验后会显示在这里。</p>
           </div>
         ) : (
           <div className="invoice-candidates">
-            {initial.items.map((item) => (
+            {eligibleItems.map((item) => (
               <label key={item.orderId}>
                 <input
                   type="checkbox"
@@ -204,7 +215,7 @@ export function InvoiceCenter({
         ) : null}
         <button
           type="button"
-          disabled={pending || initial.items.length === 0}
+          disabled={pending || eligibleItems.length === 0}
           onClick={() => {
             if (validate()) setConfirming(true);
           }}
@@ -252,51 +263,50 @@ export function InvoiceCenter({
       </section>
 
       {confirming ? (
-        <div className="dialog-backdrop">
-          <section
-            className="commerce-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="invoice-confirm-title"
-          >
-            <p className="section-kicker">提交前确认</p>
-            <h2 id="invoice-confirm-title">确认发票信息</h2>
-            <dl className="confirmation-list">
-              <div>
-                <dt>开票金额</dt>
-                <dd>{formatMinorAmount(totalMinor, 'CNY')}</dd>
-              </div>
-              <div>
-                <dt>发票抬头</dt>
-                <dd>{title.trim()}</dd>
-              </div>
-              <div>
-                <dt>税号</dt>
-                <dd>{taxNumber}</dd>
-              </div>
-              <div>
-                <dt>接收邮箱</dt>
-                <dd>{email}</dd>
-              </div>
-            </dl>
-            <p>提交后不能自行修改；订单资格将由服务端再次核验。</p>
-            <div className="dialog-actions">
-              <button
-                type="button"
-                className="button-secondary-plain"
-                disabled={pending}
-                onClick={() => {
-                  setConfirming(false);
-                }}
-              >
-                返回修改
-              </button>
-              <button type="button" disabled={pending} onClick={() => void submit()}>
-                {pending ? '正在提交…' : '确认申请'}
-              </button>
+        <AccessibleDialog
+          labelledBy="invoice-confirm-title"
+          busy={pending}
+          onClose={() => {
+            setConfirming(false);
+          }}
+        >
+          <p className="section-kicker">提交前确认</p>
+          <h2 id="invoice-confirm-title">确认发票信息</h2>
+          <dl className="confirmation-list">
+            <div>
+              <dt>开票金额</dt>
+              <dd>{formatMinorAmount(totalMinor, 'CNY')}</dd>
             </div>
-          </section>
-        </div>
+            <div>
+              <dt>发票抬头</dt>
+              <dd>{title.trim()}</dd>
+            </div>
+            <div>
+              <dt>税号</dt>
+              <dd>{taxNumber}</dd>
+            </div>
+            <div>
+              <dt>接收邮箱</dt>
+              <dd>{email}</dd>
+            </div>
+          </dl>
+          <p>提交后不能自行修改；订单资格将由服务端再次核验。</p>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              className="button-secondary-plain"
+              disabled={pending}
+              onClick={() => {
+                setConfirming(false);
+              }}
+            >
+              返回修改
+            </button>
+            <button type="button" disabled={pending} onClick={() => void submit()}>
+              {pending ? '正在提交…' : '确认申请'}
+            </button>
+          </div>
+        </AccessibleDialog>
       ) : null}
     </>
   );

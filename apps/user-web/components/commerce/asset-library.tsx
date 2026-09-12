@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 import {
+  completeUploadAction,
+  createUploadSessionAction,
   deleteAssetAction,
   renameAssetAction,
   requestAssetAccessAction,
-  uploadAssetAction,
 } from '../../app/commerce-actions';
 import {
   classifyCommerceCommandError,
@@ -15,13 +16,16 @@ import {
   parseSignedAssetUrl,
   usableSignedUrl,
 } from '../../lib/commerce/runtime';
+import { runCommerceActionWithRefresh } from '../../lib/commerce/client-command';
 import { createUuidV7 } from '../../lib/tasks/identifiers';
+import { uploadAssetBytesWithSessionRefresh } from '../../lib/commerce/upload-client';
 import type {
   AssetListItem,
   AssetPage,
   CommerceGateway,
   SignedAssetUrl,
 } from '../../lib/commerce/types';
+import { AccessibleDialog } from './accessible-dialog';
 
 const ALLOWED_UPLOADS = /^(?:image\/(?:jpeg|png|webp)|video\/mp4)$/;
 const IMAGE_LIMIT = 20n * 1024n * 1024n;
@@ -86,7 +90,9 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
     try {
       const raw = gateway
         ? await gateway.requestAssetAccess(asset.id, purpose, { ownerId: ownerId ?? '' })
-        : await requestAssetAccessAction(asset.id, purpose).then((result) => {
+        : await runCommerceActionWithRefresh(() =>
+            requestAssetAccessAction(asset.id, purpose),
+          ).then((result) => {
             if (!result.ok)
               throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
             return result.data;
@@ -96,8 +102,17 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
       if (!url) throw new Error('SIGNED_URL_EXPIRED');
       setAccessClock(Date.now());
       setAccess((current) => ({ ...current, [`${asset.id}:${purpose}`]: grant }));
-    } catch {
-      setFeedback({ tone: 'alert', message: '访问链接已过期或暂不可用，请重新获取。' });
+    } catch (error) {
+      setFeedback({
+        tone: 'alert',
+        message:
+          typeof error === 'object' &&
+          error !== null &&
+          'outcome' in error &&
+          error.outcome === 'LOGIN_REQUIRED'
+            ? '登录状态已失效，请重新登录后获取访问链接。'
+            : '访问链接已过期或暂不可用，请重新获取。',
+      });
     }
   };
 
@@ -111,33 +126,45 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
     uploadController.current = controller;
     setProgress(0);
     setFeedback({ tone: 'status', message: `正在上传 ${file.name}` });
+    const key = createUuidV7();
     try {
-      const raw = gateway
-        ? await gateway.uploadAsset(file, {
-            idempotencyKey: createUuidV7(),
-            ownerId: ownerId ?? '',
-            signal: controller.signal,
-            onProgress: (percentage) => {
-              setProgress(percentage);
-            },
-          })
-        : await uploadAssetAction(
-            { name: file.name, size: file.size, type: file.type },
-            createUuidV7(),
-          ).then((result) => {
-            if (!result.ok)
-              throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
-            setProgress(100);
-            return result.data;
-          });
+      if (gateway || ownerId) throw new Error('INJECTED_UPLOAD_NOT_SUPPORTED');
+      const grant = await runCommerceActionWithRefresh(() =>
+        createUploadSessionAction({ name: file.name, size: file.size, type: file.type }, key),
+      ).then((result) => {
+        if (!result.ok) throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
+        return result.data;
+      });
+      const receipt = await uploadAssetBytesWithSessionRefresh(grant, file, {
+        signal: controller.signal,
+        onProgress: (percentage) => {
+          setProgress(percentage);
+        },
+      });
+      const raw = await runCommerceActionWithRefresh(() => completeUploadAction(receipt, key)).then(
+        (result) => {
+          if (!result.ok)
+            throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
+          return result.data;
+        },
+      );
       if (controller.signal.aborted) return;
       const uploaded = parseAssetPage({ items: [raw], pageInfo: {} }).items[0];
       if (!uploaded) throw new Error('INVALID_UPLOAD_RESULT');
       setItems((current) => [uploaded, ...current]);
       setFeedback({ tone: 'status', message: '上传完成，可在生成工作台中复用。' });
-    } catch {
+    } catch (error) {
       if (!controller.signal.aborted) {
-        setFeedback({ tone: 'alert', message: '上传未完成，请检查网络后重试。' });
+        setFeedback({
+          tone: 'alert',
+          message:
+            typeof error === 'object' &&
+            error !== null &&
+            'outcome' in error &&
+            error.outcome === 'LOGIN_REQUIRED'
+              ? '登录状态已失效，请重新登录后上传。'
+              : '上传未完成，请检查网络后重试。',
+        });
       }
     } finally {
       if (uploadController.current === controller) {
@@ -150,17 +177,20 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
   const confirmDelete = async () => {
     if (!deleting || busy) return;
     setBusy(true);
+    const key = createUuidV7();
     try {
       const raw = gateway
         ? await gateway.deleteAsset(deleting.id, {
-            idempotencyKey: createUuidV7(),
+            idempotencyKey: key,
             ownerId: ownerId ?? '',
           })
-        : await deleteAssetAction(deleting.id, createUuidV7()).then((result) => {
-            if (!result.ok)
-              throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
-            return result.data;
-          });
+        : await runCommerceActionWithRefresh(() => deleteAssetAction(deleting.id, key)).then(
+            (result) => {
+              if (!result.ok)
+                throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
+              return result.data;
+            },
+          );
       if (typeof raw !== 'object' || raw === null || !('accepted' in raw) || raw.accepted !== true)
         throw new Error('INVALID_DELETE_RESULT');
       setItems((current) => current.filter((item) => item.id !== deleting.id));
@@ -168,12 +198,19 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
       setFeedback({ tone: 'status', message: '删除请求已受理，可在 7 天内联系支持恢复。' });
     } catch (error) {
       const uncertain = classifyCommerceCommandError(error) === 'UNCERTAIN';
+      const loginRequired =
+        typeof error === 'object' &&
+        error !== null &&
+        'outcome' in error &&
+        error.outcome === 'LOGIN_REQUIRED';
       setDeleting(undefined);
       setFeedback({
         tone: 'alert',
-        message: uncertain
-          ? '删除结果暂无法确认，请刷新素材列表核对，避免重复操作。'
-          : '无法删除这个素材。',
+        message: loginRequired
+          ? '登录状态已失效，请重新登录后再删除。'
+          : uncertain
+            ? '删除结果暂无法确认，请刷新素材列表核对，避免重复操作。'
+            : '无法删除这个素材。',
       });
     } finally {
       setBusy(false);
@@ -187,13 +224,16 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
       return;
     }
     setBusy(true);
+    const key = createUuidV7();
     try {
       const raw = gateway
         ? await gateway.renameAsset(renaming.id, renameValue, {
-            idempotencyKey: createUuidV7(),
+            idempotencyKey: key,
             ownerId: ownerId ?? '',
           })
-        : await renameAssetAction(renaming.id, renameValue, createUuidV7()).then((result) => {
+        : await runCommerceActionWithRefresh(() =>
+            renameAssetAction(renaming.id, renameValue, key),
+          ).then((result) => {
             if (!result.ok)
               throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
             return result.data;
@@ -205,10 +245,16 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
       setFeedback({ tone: 'status', message: '名称已更新。' });
     } catch (error) {
       setRenaming(undefined);
+      const loginRequired =
+        typeof error === 'object' &&
+        error !== null &&
+        'outcome' in error &&
+        error.outcome === 'LOGIN_REQUIRED';
       setFeedback({
         tone: 'alert',
-        message:
-          classifyCommerceCommandError(error) === 'UNCERTAIN'
+        message: loginRequired
+          ? '登录状态已失效，请重新登录后再重命名。'
+          : classifyCommerceCommandError(error) === 'UNCERTAIN'
             ? '重命名结果暂无法确认，请刷新后核对。'
             : '无法更新名称。',
       });
@@ -365,75 +411,73 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
       )}
 
       {deleting ? (
-        <div className="dialog-backdrop">
-          <section
-            className="commerce-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-title"
-          >
-            <p className="section-kicker">确认操作</p>
-            <h2 id="delete-title">删除“{deleting.name}”？</h2>
-            <p>素材会立即从列表隐藏，可在 7 天内恢复。正在运行的任务快照不会被修改。</p>
-            <div className="dialog-actions">
-              <button
-                type="button"
-                className="button-secondary-plain"
-                onClick={() => {
-                  setDeleting(undefined);
-                }}
-                disabled={busy}
-              >
-                保留素材
-              </button>
-              <button
-                type="button"
-                className="button-danger"
-                onClick={() => void confirmDelete()}
-                disabled={busy}
-              >
-                {busy ? '正在提交…' : '确认删除'}
-              </button>
-            </div>
-          </section>
-        </div>
+        <AccessibleDialog
+          labelledBy="delete-title"
+          busy={busy}
+          onClose={() => {
+            setDeleting(undefined);
+          }}
+        >
+          <p className="section-kicker">确认操作</p>
+          <h2 id="delete-title">删除“{deleting.name}”？</h2>
+          <p>素材会立即从列表隐藏，可在 7 天内恢复。正在运行的任务快照不会被修改。</p>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              className="button-secondary-plain"
+              onClick={() => {
+                setDeleting(undefined);
+              }}
+              disabled={busy}
+            >
+              保留素材
+            </button>
+            <button
+              type="button"
+              className="button-danger"
+              onClick={() => void confirmDelete()}
+              disabled={busy}
+            >
+              {busy ? '正在提交…' : '确认删除'}
+            </button>
+          </div>
+        </AccessibleDialog>
       ) : null}
       {renaming ? (
-        <div className="dialog-backdrop">
-          <section
-            className="commerce-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rename-title"
-          >
-            <p className="section-kicker">素材信息</p>
-            <h2 id="rename-title">重命名素材</h2>
-            <label htmlFor="asset-name">新名称</label>
-            <input
-              id="asset-name"
-              value={renameValue}
-              maxLength={120}
-              onChange={(event) => {
-                setRenameValue(event.target.value);
+        <AccessibleDialog
+          labelledBy="rename-title"
+          busy={busy}
+          onClose={() => {
+            setRenaming(undefined);
+          }}
+        >
+          <p className="section-kicker">素材信息</p>
+          <h2 id="rename-title">重命名素材</h2>
+          <label htmlFor="asset-name">新名称</label>
+          <input
+            id="asset-name"
+            value={renameValue}
+            maxLength={120}
+            onChange={(event) => {
+              setRenameValue(event.target.value);
+            }}
+          />
+          <div className="dialog-actions">
+            <button
+              type="button"
+              className="button-secondary-plain"
+              onClick={() => {
+                setRenaming(undefined);
               }}
-            />
-            <div className="dialog-actions">
-              <button
-                type="button"
-                className="button-secondary-plain"
-                onClick={() => {
-                  setRenaming(undefined);
-                }}
-                disabled={busy}
-              >
-                取消
-              </button>
-              <button type="button" onClick={() => void confirmRename()} disabled={busy}>
-                {busy ? '正在保存…' : '保存名称'}
-              </button>
-            </div>
-          </section>
-        </div>
+              disabled={busy}
+            >
+              取消
+            </button>
+            <button type="button" onClick={() => void confirmRename()} disabled={busy}>
+              {busy ? '正在保存…' : '保存名称'}
+            </button>
+          </div>
+        </AccessibleDialog>
       ) : null}
     </>
   );
