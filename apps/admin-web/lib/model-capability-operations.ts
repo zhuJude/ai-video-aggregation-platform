@@ -17,6 +17,7 @@ import {
   type ModelDirectoryPayload,
 } from './model-capabilities';
 import { type DataScope, hasPermission } from './permissions';
+import { isUtcIso8601Z } from './frozen-scalars';
 import {
   assertAdminDataScope,
   requireAdminAnyAuthorization,
@@ -49,6 +50,17 @@ export type CapabilityMutationReceipt = Readonly<{
   targetVersionId: string | null;
   version: number;
   versionId: string;
+}>;
+
+export type CapabilityRollbackPreviewReceipt = Readonly<{
+  diff: CapabilityDiff;
+  expiresAt: string;
+  impact: string;
+  modelId: string;
+  preflightToken: string;
+  sourceVersionId: string;
+  targetVersionId: string;
+  version: number;
 }>;
 
 type CommandInput = Readonly<{
@@ -89,6 +101,15 @@ export interface ModelCapabilityPort {
 
 export interface ModelCapabilityCommandPort {
   execute(input: CommandInput): Promise<unknown>;
+  previewRollback?(input: Readonly<{
+    expectedVersion: number;
+    modelId: string;
+    requestContext: OutboundRequestContext;
+    scope: DataScope;
+    sourceVersionId: string;
+    targetVersionId: string;
+    trustedSessionToken: string;
+  }>): Promise<unknown>;
 }
 
 function assertNoProxyTree(value: unknown, depth = 0, seen = new Set<object>()): void {
@@ -227,6 +248,55 @@ export function parseCapabilityValidationReceipt(
     preflightToken: receipt.preflightToken,
     pricingImpact,
     valid: receipt.valid,
+  });
+}
+
+export function parseCapabilityRollbackPreviewReceipt(
+  value: unknown,
+  binding: Readonly<{
+    expectedVersion: number;
+    modelId: string;
+    sourceVersionId: string;
+    targetVersionId: string;
+  }>,
+): CapabilityRollbackPreviewReceipt {
+  const receipt = exactRecord(value, [
+    'diff',
+    'expiresAt',
+    'impact',
+    'modelId',
+    'preflightToken',
+    'sourceVersionId',
+    'targetVersionId',
+    'version',
+  ]);
+  const diff = parseDiff(receipt?.diff);
+  const expiresAt = safeText(receipt?.expiresAt, 40);
+  const impact = safeText(receipt?.impact, 500);
+  if (
+    !receipt ||
+    !diff ||
+    !expiresAt ||
+    !isUtcIso8601Z(expiresAt) ||
+    Date.parse(expiresAt) <= Date.now() ||
+    !impact ||
+    !isSameUuidV7(receipt.modelId, binding.modelId) ||
+    !isSameUuidV7(receipt.sourceVersionId, binding.sourceVersionId) ||
+    !isSameUuidV7(receipt.targetVersionId, binding.targetVersionId) ||
+    receipt.version !== binding.expectedVersion ||
+    typeof receipt.preflightToken !== 'string' ||
+    !/^pf_[A-Za-z0-9_-]{24,256}$/u.test(receipt.preflightToken)
+  )
+    throw new Error('模型能力回滚预检回执无效');
+  return Object.freeze({
+    diff,
+    expiresAt,
+    impact,
+    modelId: binding.modelId,
+    preflightToken: receipt.preflightToken,
+    sourceVersionId: binding.sourceVersionId,
+    targetVersionId: binding.targetVersionId,
+    version: binding.expectedVersion,
   });
 }
 
@@ -527,6 +597,20 @@ export function createCapabilityAction({
         )
       )
         throw new Error('回滚目标版本无效');
+      if (!port.previewRollback) throw new Error('模型能力回滚预检不可用');
+      const preview = parseCapabilityRollbackPreviewReceipt(
+        await port.previewRollback({
+          expectedVersion,
+          modelId,
+          requestContext,
+          scope: authorization.claims.dataScope,
+          sourceVersionId,
+          targetVersionId,
+          trustedSessionToken: authorization.trustedSessionToken,
+        }),
+        { expectedVersion, modelId, sourceVersionId, targetVersionId },
+      );
+      preflightToken = preview.preflightToken;
     }
     if (kind === 'PUBLISH') {
       preflightToken = formString(formData, 'preflightToken') ?? undefined;

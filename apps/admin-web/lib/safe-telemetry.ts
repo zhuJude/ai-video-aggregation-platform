@@ -52,6 +52,7 @@ export type SafeTelemetryOperation =
   | 'catalog.model.capability-save'
   | 'catalog.model.capability-publish'
   | 'catalog.model.capability-rollback'
+  | 'catalog.model.capability-rollback-preview'
   | 'overview.config'
   | 'overview.read';
 
@@ -129,6 +130,7 @@ const operationValues = new Set<SafeTelemetryOperation>([
   'catalog.model.capability-save',
   'catalog.model.capability-publish',
   'catalog.model.capability-rollback',
+  'catalog.model.capability-rollback-preview',
 ]);
 const reasonValues = new Set<SafeTelemetryReason>([
   'ACTION_FAILURE',

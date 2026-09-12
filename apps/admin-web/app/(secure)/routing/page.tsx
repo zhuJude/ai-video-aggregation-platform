@@ -36,13 +36,16 @@ export default async function RoutingPage() {
     requireAdminAuthorization('routing:read'),
     loadRoutingView({ port: ports.routing }),
   ]);
+  const canMutateGlobalConfiguration = auth.claims.dataScope === 'ALL';
   return (
     <section aria-labelledby="routing-heading">
       <Title2 as="h2" id="routing-heading">
         路由策略与权威模拟
       </Title2>
       <Text>模拟结果展示候选、排除条件、分项评分、毛利风险和最终选择，不会直接改变生产路由。</Text>
-      {hasPermission(auth.claims, 'routing:write') && view.status === 'DRAFT' ? (
+      {canMutateGlobalConfiguration &&
+      hasPermission(auth.claims, 'routing:write') &&
+      view.status === 'DRAFT' ? (
         <form action={saveRoutingAction} aria-label="路由草稿编辑">
           <input name="versionId" type="hidden" value={view.versionId} />
           <input name="expectedVersion" type="hidden" value={String(view.version)} />
@@ -93,7 +96,9 @@ export default async function RoutingPage() {
           <Button type="submit">保存路由草稿</Button>
         </form>
       ) : null}
-      {hasPermission(auth.claims, 'routing:publish') && view.status === 'DRAFT' ? (
+      {canMutateGlobalConfiguration &&
+      hasPermission(auth.claims, 'routing:publish') &&
+      view.status === 'DRAFT' ? (
         view.publishPreflight && Date.parse(view.publishPreflight.expiresAt) > Date.now() ? (
           <form action={publishRoutingAction} aria-label="发布路由策略">
             <input name="versionId" type="hidden" value={view.versionId} />
@@ -140,7 +145,9 @@ export default async function RoutingPage() {
               <TableCell>{version.status}</TableCell>
               <TableCell>{version.effectiveAt}</TableCell>
               <TableCell>
-                {hasPermission(auth.claims, 'routing:rollback') && version.status !== 'DRAFT' ? (
+                {canMutateGlobalConfiguration &&
+                hasPermission(auth.claims, 'routing:rollback') &&
+                version.status !== 'DRAFT' ? (
                   <form action={rollbackRoutingAction}>
                     <input name="versionId" type="hidden" value={view.versionId} />
                     <input name="targetVersionId" type="hidden" value={version.versionId} />

@@ -11,6 +11,8 @@ const intentId = '0198f7a4-c6d3-7b39-8a4e-73af0c1d2e3f';
 const auditId = '0198f7a4-c6d4-7b39-8a4e-73af0c1d2e3f';
 const requestId = '0198f7a4-c6d5-7b39-8a4e-73af0c1d2e3f';
 const versionId = '0198f7a4-c6d6-7b39-8a4e-73af0c1d2e3f';
+const rollbackTargetVersionId = '0198f7a4-c6d8-7b39-8a4e-73af0c1d2e3f';
+const rollbackReceiptVersionId = '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f';
 const context = createOutboundRequestContext(
   () => '00112233445566778899aabbccddeeff',
   () => '0198f7a4-c6d7-7b39-8a4e-73af0c1d2e3f',
@@ -130,6 +132,89 @@ describe('HTTP model capability port', () => {
       kind: 'PUBLISH',
       preflightToken: 'pf_abcdefghijklmnopqrstuvwxyz123456',
       sourceVersionId: versionId,
+    });
+  });
+
+  it('uses a dedicated fresh rollback preview and binds its token into the audited command', async () => {
+    const requests: Array<{ init: RequestInit | undefined; url: string }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        input instanceof URL ? input.toString() : typeof input === 'string' ? input : input.url;
+      requests.push({ init, url });
+      const payload = url.endsWith('/rollback-preview')
+        ? {
+            diff: '回滚能力定义至 v6',
+            expiresAt: '2099-09-12T01:00:00.000Z',
+            modelId,
+            preflightToken: 'pf_rollback_abcdefghijklmnopqrstuvwxyz',
+            sourceVersionId: versionId,
+            targetVersionId: rollbackTargetVersionId,
+            version: 7,
+          }
+        : {
+            auditRecordId: auditId,
+            idempotencyKey: intentId,
+            kind: 'ROLLBACK',
+            modelId,
+            requestId,
+            sourceVersionId: versionId,
+            status: 'PUBLISHED',
+            targetVersionId: rollbackTargetVersionId,
+            version: 8,
+            versionId: rollbackReceiptVersionId,
+          };
+      return new Response(JSON.stringify(payload), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    });
+    const ports = createHttpModelCapabilityPorts(environment, { fetchImpl });
+
+    await ports.commandPort.previewRollback?.({
+      expectedVersion: 7,
+      modelId,
+      requestContext: context,
+      scope: 'ALL',
+      sourceVersionId: versionId,
+      targetVersionId: rollbackTargetVersionId,
+      trustedSessionToken: 'trusted-session',
+    });
+    await ports.commandPort.execute({
+      actorId,
+      audit: { idempotencyKey: intentId, reason: '回滚原因' },
+      expectedVersion: 7,
+      kind: 'ROLLBACK',
+      modelId,
+      preflightToken: 'pf_rollback_abcdefghijklmnopqrstuvwxyz',
+      requestContext: context,
+      scope: 'ALL',
+      sourceVersionId: versionId,
+      targetVersionId: rollbackTargetVersionId,
+      trustedSessionToken: 'trusted-session',
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.url).toBe(
+      `https://catalog.internal/v1/admin/models/${modelId}/capabilities/rollback-preview`,
+    );
+    expect(new Headers(requests[0]?.init?.headers).has('Idempotency-Key')).toBe(false);
+    const previewBody = requests[0]?.init?.body;
+    if (typeof previewBody !== 'string') throw new Error('expected preview JSON body');
+    expect(JSON.parse(previewBody)).toEqual({
+      expectedVersion: 7,
+      sourceVersionId: versionId,
+      targetVersionId: rollbackTargetVersionId,
+    });
+    expect(new Headers(requests[1]?.init?.headers).get('Idempotency-Key')).toBe(intentId);
+    const rollbackBody = requests[1]?.init?.body;
+    if (typeof rollbackBody !== 'string') throw new Error('expected rollback JSON body');
+    expect(JSON.parse(rollbackBody)).toEqual({
+      audit: { actorId, reason: '回滚原因' },
+      expectedVersion: 7,
+      kind: 'ROLLBACK',
+      preflightToken: 'pf_rollback_abcdefghijklmnopqrstuvwxyz',
+      sourceVersionId: versionId,
+      targetVersionId: rollbackTargetVersionId,
     });
   });
 

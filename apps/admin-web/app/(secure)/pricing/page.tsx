@@ -36,6 +36,8 @@ export async function renderPricingPage(
     loadPricingView(dependencies),
     requireAdminAuthorization('pricing:read', dependencies.context),
   ]);
+  const globalMutationPermissions =
+    auth.claims.dataScope === 'ALL' ? auth.claims.permissions : [];
   return (
     <section aria-labelledby="pricing-heading">
       <Title2 as="h2" id="pricing-heading">
@@ -49,7 +51,7 @@ export async function renderPricingPage(
         onPreview={previewPricingAction}
         onPublish={publishPricingAction}
         onSave={savePricingAction}
-        permissions={auth.claims.permissions}
+        permissions={globalMutationPermissions}
       />
       <Table aria-label="定价版本历史">
         <TableHeader>
@@ -67,7 +69,9 @@ export async function renderPricingPage(
               <TableCell>{version.status}</TableCell>
               <TableCell>{version.effectiveAt}</TableCell>
               <TableCell>
-                {hasPermission(auth.claims, 'pricing:rollback') && version.status !== 'DRAFT' ? (
+                {auth.claims.dataScope === 'ALL' &&
+                hasPermission(auth.claims, 'pricing:rollback') &&
+                version.status !== 'DRAFT' ? (
                   <form action={rollbackPricingAction}>
                     <input name="versionId" type="hidden" value={view.versionId} />
                     <input name="targetVersionId" type="hidden" value={version.versionId} />

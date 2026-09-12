@@ -13,8 +13,11 @@ import {
 import {
   createQueueAction,
   createPricingPreviewAction,
+  createPricingRollbackAction,
   createPricingSaveAction,
   createRoutingPreviewAction,
+  createRoutingRollbackAction,
+  createRoutingSaveAction,
   createTaskAction,
   loadTaskDetailView,
   loadTaskRawView,
@@ -28,6 +31,11 @@ import { signAdminSession } from '../lib/session-auth';
 const taskId = '0198f7a4-c7d1-7b39-8a4e-73af0c1d2e3f';
 const intentId = '0198f7a4-c7d2-7b39-8a4e-73af0c1d2e3f';
 const routingVersionId = '0198f7a4-c7d6-7b39-8a4e-73af0c1d2e3f';
+const pricingVersionId = '0198f7a4-c7d4-7b39-8a4e-73af0c1d2e3f';
+const rollbackTargetVersionId = '0198f7a4-c7d7-7b39-8a4e-73af0c1d2e3f';
+const receiptVersionId = '0198f7a4-c7d8-7b39-8a4e-73af0c1d2e3f';
+const auditRecordId = '0198f7a4-c7d9-7b39-8a4e-73af0c1d2e3f';
+const requestId = '0198f7a4-c7da-7b39-8a4e-73af0c1d2e3f';
 
 const routingView = {
   backupCapabilityMapJson: '{"video-fast":["provider-b"]}',
@@ -314,6 +322,209 @@ describe('pricing and routing operations', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['pricing', 'pricing:write'],
+    ['routing', 'routing:write'],
+  ] as const)('rejects %s singleton mutations from a non-ALL data scope', async (kind, permission) => {
+    const signingKey = 'test-signing-key-that-is-long-enough-for-hmac';
+    const sessionToken = await signAdminSession(
+      {
+        dataScope: 'OWN',
+        expiresAt: Date.now() + 60_000,
+        permissions: [permission],
+        sessionInstanceId: intentId,
+        subjectId: taskId,
+      },
+      signingKey,
+    );
+    const mutation = vi.fn(() => Promise.resolve({ ok: true }));
+    if (kind === 'pricing') {
+      const form = new FormData();
+      form.set('effectiveAt', '2099-09-11T00:00:00.000Z');
+      form.set('expectedVersion', '7');
+      form.set('intentId', intentId);
+      form.set('markupBps', '5000');
+      form.set('reason', '更新全局定价');
+      form.set('ruleId', 'video-fast-5s');
+      form.set('salePoints', '1500');
+      form.set('strategy', 'FIXED');
+      form.set('tiersJson', '[]');
+      form.set('versionId', pricingVersionId);
+      await expect(
+        createPricingSaveAction({
+          context: { sessionToken, signingKey },
+          port: {
+            getPricing: vi.fn(), preview: vi.fn(), publish: vi.fn(), rollback: vi.fn(), save: mutation,
+          },
+        })(form),
+      ).rejects.toThrow('ALL');
+    } else {
+      const form = new FormData();
+      form.set('backupCapabilityMapJson', '{"video-fast":["provider-b"]}');
+      form.set('effectiveAt', '2099-09-11T00:00:00.000Z');
+      form.set('expectedVersion', '7');
+      form.set('failoverMode', 'SMART_ONLY');
+      form.set('intentId', intentId);
+      form.set('minimumMarginBps', '2000');
+      form.set('priceWeight', '20');
+      form.set('providerPriorityJson', '["provider-a","provider-b"]');
+      form.set('qualityWeight', '50');
+      form.set('reason', '更新全局路由');
+      form.set('speedWeight', '30');
+      form.set('versionId', routingVersionId);
+      await expect(
+        createRoutingSaveAction({
+          context: { sessionToken, signingKey },
+          port: {
+            getRouting: vi.fn(), preview: vi.fn(), publish: vi.fn(), rollback: vi.fn(), save: mutation, simulate: vi.fn(),
+          },
+        })(form),
+      ).rejects.toThrow('ALL');
+    }
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['pricing', pricingVersionId],
+    ['routing', routingVersionId],
+  ] as const)('binds %s rollback to a fresh authoritative preview', async (kind, versionId) => {
+    const signingKey = 'test-signing-key-that-is-long-enough-for-hmac';
+    const permission = kind === 'pricing' ? 'pricing:rollback' : 'routing:rollback';
+    const sessionToken = await signAdminSession(
+      {
+        dataScope: 'ALL',
+        expiresAt: Date.now() + 60_000,
+        permissions: [permission],
+        sessionInstanceId: intentId,
+        subjectId: taskId,
+      },
+      signingKey,
+    );
+    const previewRollback = vi.fn(() => Promise.resolve({
+      diff: '恢复上一已发布版本',
+      expiresAt: '2099-09-11T00:05:00.000Z',
+      impact: '影响后续新任务',
+      previewToken: 'rollback-preview-token',
+      sourceVersionId: versionId,
+      targetVersionId: rollbackTargetVersionId,
+      version: 7,
+    }));
+    const rollback = vi.fn(() => Promise.resolve({
+      auditRecordId,
+      idempotencyKey: intentId,
+      operation: kind === 'pricing' ? 'PRICING_ROLLBACK' : 'ROUTING_ROLLBACK',
+      requestId,
+      sourceVersionId: versionId,
+      status: 'PUBLISHED',
+      targetVersionId: rollbackTargetVersionId,
+      version: 8,
+      versionId: receiptVersionId,
+    }));
+    const form = new FormData();
+    form.set('confirmed', 'true');
+    form.set('expectedVersion', '7');
+    form.set('intentId', intentId);
+    form.set('reason', '恢复稳定版本');
+    form.set('targetVersionId', rollbackTargetVersionId);
+    form.set('versionId', versionId);
+    if (kind === 'pricing') {
+      await createPricingRollbackAction({
+        context: { sessionToken, signingKey },
+        port: {
+          getPricing: () => Promise.resolve({
+            costPoints: '1000', effectiveAt: '2099-09-11T00:00:00.000Z', minimumMarginBps: 1000,
+            rules: [], salePoints: '1500', sourceUpdatedAt: '2099-09-10T00:00:00.000Z', status: 'PUBLISHED',
+            version: 7,
+            versionId,
+            versions: [{
+              effectiveAt: '2099-09-01T00:00:00.000Z',
+              status: 'PUBLISHED',
+              version: 6,
+              versionId: rollbackTargetVersionId,
+            }],
+          }),
+          preview: vi.fn(), previewRollback, publish: vi.fn(), rollback, save: vi.fn(),
+        } as never,
+      })(form);
+    } else {
+      await createRoutingRollbackAction({
+        context: { sessionToken, signingKey },
+        port: {
+          getRouting: () => Promise.resolve({
+            ...routingView,
+            status: 'PUBLISHED',
+            versions: [{ effectiveAt: '2099-09-01T00:00:00.000Z', status: 'PUBLISHED', version: 6, versionId: rollbackTargetVersionId }],
+          }),
+          preview: vi.fn(), previewRollback, publish: vi.fn(), rollback, save: vi.fn(), simulate: vi.fn(),
+        } as never,
+      })(form);
+    }
+    expect(previewRollback).toHaveBeenCalledWith(expect.objectContaining({
+      expectedVersion: 7,
+      sourceVersionId: versionId,
+      targetVersionId: rollbackTargetVersionId,
+    }));
+    expect(rollback).toHaveBeenCalledWith(expect.objectContaining({
+      preflightToken: 'rollback-preview-token',
+      targetVersionId: rollbackTargetVersionId,
+    }));
+  });
+
+  it('rejects an unbound success-shaped receipt for pricing and routing mutations', async () => {
+    const signingKey = 'test-signing-key-that-is-long-enough-for-hmac';
+    const sessionBase = {
+      dataScope: 'ALL' as const,
+      expiresAt: Date.now() + 60_000,
+      sessionInstanceId: intentId,
+      subjectId: taskId,
+    };
+    const pricingToken = await signAdminSession(
+      { ...sessionBase, permissions: ['pricing:write'] }, signingKey,
+    );
+    const pricingForm = new FormData();
+    pricingForm.set('effectiveAt', '2099-09-11T00:00:00.000Z');
+    pricingForm.set('expectedVersion', '7');
+    pricingForm.set('intentId', intentId);
+    pricingForm.set('markupBps', '5000');
+    pricingForm.set('reason', '更新全局定价');
+    pricingForm.set('ruleId', 'video-fast-5s');
+    pricingForm.set('salePoints', '1500');
+    pricingForm.set('strategy', 'FIXED');
+    pricingForm.set('tiersJson', '[]');
+    pricingForm.set('versionId', pricingVersionId);
+    await expect(createPricingSaveAction({
+      context: { sessionToken: pricingToken, signingKey },
+      port: {
+        getPricing: vi.fn(), preview: vi.fn(), publish: vi.fn(), rollback: vi.fn(),
+        save: () => Promise.resolve({ ok: true }),
+      },
+    })(pricingForm)).rejects.toThrow('回执无效');
+
+    const routingToken = await signAdminSession(
+      { ...sessionBase, permissions: ['routing:write'] }, signingKey,
+    );
+    const routingForm = new FormData();
+    routingForm.set('backupCapabilityMapJson', '{"video-fast":["provider-b"]}');
+    routingForm.set('effectiveAt', '2099-09-11T00:00:00.000Z');
+    routingForm.set('expectedVersion', '7');
+    routingForm.set('failoverMode', 'SMART_ONLY');
+    routingForm.set('intentId', intentId);
+    routingForm.set('minimumMarginBps', '2000');
+    routingForm.set('priceWeight', '20');
+    routingForm.set('providerPriorityJson', '["provider-a","provider-b"]');
+    routingForm.set('qualityWeight', '50');
+    routingForm.set('reason', '更新全局路由');
+    routingForm.set('speedWeight', '30');
+    routingForm.set('versionId', routingVersionId);
+    await expect(createRoutingSaveAction({
+      context: { sessionToken: routingToken, signingKey },
+      port: {
+        getRouting: vi.fn(), preview: vi.fn(), publish: vi.fn(), rollback: vi.fn(),
+        save: () => Promise.resolve({ ok: true }), simulate: vi.fn(),
+      },
+    })(routingForm)).rejects.toThrow('回执无效');
+  });
+
   it('shows authoritative route candidates, exclusions, scores and margin risk', async () => {
     const result: RoutingSimulation = {
       candidates: [
@@ -441,6 +652,97 @@ describe('task operations', () => {
     expect(screen.getByRole('button', { name: '切换供应商' })).toBeEnabled();
   });
 
+  it('rejects global queue controls from a non-ALL data scope before reading queue state', async () => {
+    const signingKey = 'test-signing-key-that-is-long-enough-for-hmac';
+    const sessionToken = await signAdminSession(
+      {
+        dataScope: 'ASSIGNED',
+        expiresAt: Date.now() + 60_000,
+        permissions: ['tasks:read', 'tasks:priority-write'],
+        sessionInstanceId: intentId,
+        subjectId: task.ownerAdminId as string,
+      },
+      signingKey,
+    );
+    const listTasks = vi.fn(() => Promise.resolve(taskDirectory));
+    const executeQueue = vi.fn(() => Promise.resolve({
+      auditRecordId,
+      concurrencyLimit: 24,
+      defaultPriority: 8,
+      idempotencyKey: intentId,
+      operation: 'UPDATE_LIMITS',
+      paused: false,
+      rateLimitPerMinute: 600,
+      requestId,
+      version: 13,
+    }));
+    const form = new FormData();
+    form.set('action', 'UPDATE_LIMITS');
+    form.set('concurrencyLimit', '24');
+    form.set('defaultPriority', '8');
+    form.set('expectedPaused', 'false');
+    form.set('expectedVersion', '12');
+    form.set('impactToken', 'queue-limits-token');
+    form.set('rateLimitPerMinute', '600');
+    form.set('intentId', intentId);
+    form.set('reason', '夜间批处理容量调整');
+    form.set('confirmed', 'true');
+    await expect(createQueueAction({
+      context: { sessionToken, signingKey },
+      port: { executeQueue, getTask: () => Promise.resolve(task), listTasks },
+    })(form)).rejects.toThrow('ALL');
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(executeQueue).not.toHaveBeenCalled();
+  });
+
+  it('rejects unbound 2xx payloads for task and queue mutations', async () => {
+    const signingKey = 'test-signing-key-that-is-long-enough-for-hmac';
+    const sessionBase = {
+      dataScope: 'ALL' as const,
+      expiresAt: Date.now() + 60_000,
+      sessionInstanceId: intentId,
+      subjectId: task.ownerAdminId as string,
+    };
+    const taskToken = await signAdminSession(
+      { ...sessionBase, permissions: ['tasks:cancel'] }, signingKey,
+    );
+    const taskForm = new FormData();
+    taskForm.set('action', 'CANCEL');
+    taskForm.set('confirmed', 'true');
+    taskForm.set('expectedVersion', '4');
+    taskForm.set('impactToken', 'task-pf-cancel-safe');
+    taskForm.set('intentId', intentId);
+    taskForm.set('reason', '用户请求取消');
+    taskForm.set('taskId', taskId);
+    await expect(createTaskAction({
+      context: { sessionToken: taskToken, signingKey },
+      port: { execute: () => Promise.resolve({ ok: true }), getTask: () => Promise.resolve(task) },
+    })(taskForm)).rejects.toThrow('回执无效');
+
+    const queueToken = await signAdminSession(
+      { ...sessionBase, permissions: ['tasks:read', 'tasks:priority-write'] }, signingKey,
+    );
+    const queueForm = new FormData();
+    queueForm.set('action', 'UPDATE_LIMITS');
+    queueForm.set('concurrencyLimit', '24');
+    queueForm.set('confirmed', 'true');
+    queueForm.set('defaultPriority', '8');
+    queueForm.set('expectedPaused', 'false');
+    queueForm.set('expectedVersion', '12');
+    queueForm.set('impactToken', 'queue-limits-token');
+    queueForm.set('intentId', intentId);
+    queueForm.set('rateLimitPerMinute', '600');
+    queueForm.set('reason', '夜间批处理容量调整');
+    await expect(createQueueAction({
+      context: { sessionToken: queueToken, signingKey },
+      port: {
+        executeQueue: () => Promise.resolve({ ok: true }),
+        getTask: () => Promise.resolve(task),
+        listTasks: () => Promise.resolve(taskDirectory),
+      },
+    })(queueForm)).rejects.toThrow('回执无效');
+  });
+
   it('executes queue limit updates only with permission, confirmation, reason and idempotency', async () => {
     const signingKey = 'test-signing-key-that-is-long-enough-for-hmac';
     const sessionToken = await signAdminSession(
@@ -453,7 +755,17 @@ describe('task operations', () => {
       },
       signingKey,
     );
-    const executeQueue = vi.fn(() => Promise.resolve({ ok: true }));
+    const executeQueue = vi.fn(() => Promise.resolve({
+      auditRecordId,
+      concurrencyLimit: 24,
+      defaultPriority: 8,
+      idempotencyKey: intentId,
+      operation: 'UPDATE_LIMITS',
+      paused: false,
+      rateLimitPerMinute: 600,
+      requestId,
+      version: 13,
+    }));
     const form = new FormData();
     form.set('action', 'UPDATE_LIMITS');
     form.set('concurrencyLimit', '24');

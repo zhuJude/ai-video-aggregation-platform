@@ -269,6 +269,50 @@ export function createHttpModelCapabilityPorts(
   });
 
   const commandPort: ModelCapabilityCommandPort = Object.freeze({
+    async previewRollback(input: Parameters<NonNullable<ModelCapabilityCommandPort['previewRollback']>>[0]) {
+      const preview = exactRecord(input, [
+        'expectedVersion',
+        'modelId',
+        'requestContext',
+        'scope',
+        'sourceVersionId',
+        'targetVersionId',
+        'trustedSessionToken',
+      ]);
+      if (
+        !preview ||
+        !Number.isSafeInteger(preview.expectedVersion) ||
+        (preview.expectedVersion as number) < 1 ||
+        !isUuidV7(preview.modelId) ||
+        !isUuidV7(preview.sourceVersionId) ||
+        !isUuidV7(preview.targetVersionId) ||
+        !isOutboundRequestContext(preview.requestContext) ||
+        !validScope(preview.scope) ||
+        !safeToken(preview.trustedSessionToken)
+      )
+        throw new Error('模型能力回滚预检上下文无效');
+      const requestHeaders = headers(
+        preview.requestContext,
+        preview.trustedSessionToken,
+        preview.scope,
+      );
+      requestHeaders.set('Content-Type', 'application/json');
+      return request(
+        `/v1/admin/models/${encodeURIComponent(preview.modelId)}/capabilities/rollback-preview`,
+        {
+          body: JSON.stringify({
+            expectedVersion: preview.expectedVersion,
+            sourceVersionId: preview.sourceVersionId,
+            targetVersionId: preview.targetVersionId,
+          }),
+          headers: requestHeaders,
+          method: 'POST',
+        },
+        'catalog.model.capability-rollback-preview',
+        preview.requestContext,
+        (value) => value,
+      );
+    },
     async execute(input: Parameters<ModelCapabilityCommandPort['execute']>[0]) {
       const command = exactRecord(
         input,
@@ -316,7 +360,7 @@ export function createHttpModelCapabilityPorts(
         ? parseStrictCapabilityDefinition(command.definition)
         : undefined;
       if (
-        kind === 'PUBLISH'
+        kind === 'PUBLISH' || kind === 'ROLLBACK'
           ? typeof command.preflightToken !== 'string' ||
             !/^pf_[A-Za-z0-9_-]{24,256}$/u.test(command.preflightToken)
           : command.preflightToken !== undefined

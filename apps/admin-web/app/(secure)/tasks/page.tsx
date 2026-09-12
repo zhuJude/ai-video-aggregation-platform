@@ -70,7 +70,8 @@ export async function renderTasksPage(
         {String(view.queue.rateLimitPerMinute)}/分钟 · 并发 {String(view.queue.concurrencyLimit)} ·
         默认优先级 {String(view.queue.defaultPriority)} · {view.queue.paused ? '已暂停' : '运行中'}
       </Text>
-      {hasPermission(auth.claims, view.queue.paused ? 'tasks:queue-resume' : 'tasks:queue-pause') &&
+      {auth.claims.dataScope === 'ALL' &&
+      hasPermission(auth.claims, view.queue.paused ? 'tasks:queue-resume' : 'tasks:queue-pause') &&
       queueStatePreview ? (
         <form
           action={executeQueueAction}
@@ -93,7 +94,9 @@ export async function renderTasksPage(
           <Button type="submit">{view.queue.paused ? '恢复队列' : '暂停队列'}</Button>
         </form>
       ) : null}
-      {hasPermission(auth.claims, 'tasks:priority-write') && queueLimitsPreview ? (
+      {auth.claims.dataScope === 'ALL' &&
+      hasPermission(auth.claims, 'tasks:priority-write') &&
+      queueLimitsPreview ? (
         <form action={executeQueueAction} aria-label="调整任务队列限制">
           <input name="action" type="hidden" value="UPDATE_LIMITS" />
           <input name="expectedPaused" type="hidden" value={String(view.queue.paused)} />

@@ -18,7 +18,7 @@ import {
   requireAdminAuthorization,
   type ServerGuardContext,
 } from './server-guard';
-import { isUuidV7 } from './uuid-v7';
+import { isSameUuidV7, isUuidV7 } from './uuid-v7';
 import { isUtcIso8601Z } from './frozen-scalars';
 
 export type VersionSummary = Readonly<{
@@ -138,6 +138,14 @@ export interface PricingOperationsPort {
         versionId: string;
       }>,
   ): Promise<unknown>;
+  previewRollback?(
+    input: BaseRequest &
+      Readonly<{
+        expectedVersion: number;
+        sourceVersionId: string;
+        targetVersionId: string;
+      }>,
+  ): Promise<unknown>;
   publish(
     input: BaseRequest &
       Readonly<{
@@ -156,6 +164,7 @@ export interface PricingOperationsPort {
         audit: Readonly<{ idempotencyKey: string; reason: string }>;
         confirmed: true;
         expectedVersion: number;
+        preflightToken: string;
         targetVersionId: string;
         versionId: string;
       }>,
@@ -165,6 +174,14 @@ export interface RoutingOperationsPort {
   getRouting(input: BaseRequest): Promise<unknown>;
   preview(
     input: BaseRequest & Readonly<{ expectedVersion: number; versionId: string }>,
+  ): Promise<unknown>;
+  previewRollback?(
+    input: BaseRequest &
+      Readonly<{
+        expectedVersion: number;
+        sourceVersionId: string;
+        targetVersionId: string;
+      }>,
   ): Promise<unknown>;
   save(
     input: BaseRequest &
@@ -201,6 +218,7 @@ export interface RoutingOperationsPort {
         audit: Readonly<{ idempotencyKey: string; reason: string }>;
         confirmed: true;
         expectedVersion: number;
+        preflightToken: string;
         targetVersionId: string;
         versionId: string;
       }>,
@@ -268,6 +286,14 @@ function exact(value: unknown, keys: readonly string[]) {
     throw new Error('运营服务响应无效');
   return record;
 }
+
+function exactReceipt(value: unknown, keys: readonly string[]) {
+  try {
+    return exact(value, keys);
+  } catch {
+    throw new Error('运营操作回执无效');
+  }
+}
 function safeText(value: unknown, max = 300): value is string {
   return (
     typeof value === 'string' && value.length > 0 && value.length <= max && !/[\p{C}]/u.test(value)
@@ -275,6 +301,185 @@ function safeText(value: unknown, max = 300): value is string {
 }
 function safeVersion(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1;
+}
+
+function assertGlobalMutationScope(claims: Readonly<{ dataScope: DataScope }>): void {
+  if (claims.dataScope !== 'ALL') throw new Error('全局操作仅允许 ALL 数据范围');
+}
+
+type VersionedMutationOperation =
+  | 'PRICING_SAVE'
+  | 'PRICING_PUBLISH'
+  | 'PRICING_ROLLBACK'
+  | 'ROUTING_SAVE'
+  | 'ROUTING_PUBLISH'
+  | 'ROUTING_ROLLBACK';
+
+function parseVersionedMutationReceipt(
+  value: unknown,
+  binding: Readonly<{
+    expectedStatus: 'DRAFT' | 'PUBLISHED';
+    expectedVersion: number;
+    idempotencyKey: string;
+    operation: VersionedMutationOperation;
+    sourceVersionId: string;
+    targetVersionId?: string;
+  }>,
+) {
+  const receipt = exactReceipt(value, [
+    'auditRecordId',
+    'idempotencyKey',
+    'operation',
+    'requestId',
+    'sourceVersionId',
+    'status',
+    'targetVersionId',
+    'version',
+    'versionId',
+  ]);
+  const targetVersionId = binding.targetVersionId ?? null;
+  if (
+    !isUuidV7(receipt.auditRecordId) ||
+    !isUuidV7(receipt.requestId) ||
+    !isUuidV7(receipt.versionId) ||
+    !isSameUuidV7(receipt.idempotencyKey, binding.idempotencyKey) ||
+    receipt.operation !== binding.operation ||
+    !isSameUuidV7(receipt.sourceVersionId, binding.sourceVersionId) ||
+    (targetVersionId === null
+      ? receipt.targetVersionId !== null
+      : !isSameUuidV7(receipt.targetVersionId, targetVersionId)) ||
+    receipt.status !== binding.expectedStatus ||
+    !safeVersion(receipt.version) ||
+    receipt.version <= binding.expectedVersion
+  )
+    throw new Error('运营操作回执无效');
+  return Object.freeze({
+    auditRecordId: receipt.auditRecordId,
+    idempotencyKey: binding.idempotencyKey,
+    operation: binding.operation,
+    requestId: receipt.requestId,
+    sourceVersionId: binding.sourceVersionId,
+    status: binding.expectedStatus,
+    targetVersionId,
+    version: receipt.version,
+    versionId: receipt.versionId,
+  });
+}
+
+function parseRollbackPreviewReceipt(
+  value: unknown,
+  binding: Readonly<{
+    expectedVersion: number;
+    sourceVersionId: string;
+    targetVersionId: string;
+  }>,
+) {
+  const receipt = exactReceipt(value, [
+    'diff',
+    'expiresAt',
+    'impact',
+    'previewToken',
+    'sourceVersionId',
+    'targetVersionId',
+    'version',
+  ]);
+  const expiresAt = typeof receipt.expiresAt === 'string' ? receipt.expiresAt : '';
+  if (
+    !safeText(receipt.diff, 1000) ||
+    !isUtcIso8601Z(expiresAt) ||
+    Date.parse(expiresAt) <= Date.now() ||
+    !safeText(receipt.impact, 1000) ||
+    !safeText(receipt.previewToken, 500) ||
+    !isSameUuidV7(receipt.sourceVersionId, binding.sourceVersionId) ||
+    !isSameUuidV7(receipt.targetVersionId, binding.targetVersionId) ||
+    receipt.version !== binding.expectedVersion
+  )
+    throw new Error('运营回滚预检回执无效');
+  return Object.freeze({
+    diff: receipt.diff,
+    expiresAt,
+    impact: receipt.impact,
+    previewToken: receipt.previewToken,
+    sourceVersionId: binding.sourceVersionId,
+    targetVersionId: binding.targetVersionId,
+    version: binding.expectedVersion,
+  });
+}
+
+const taskResultStatus: Readonly<Record<TaskOperation, string>> = {
+  CANCEL: 'CANCELED',
+  REFUND: 'REFUNDING',
+  REPAIR: 'REPAIRED',
+  RETRY_PROVIDER: 'QUEUED',
+  SWITCH_PROVIDER: 'QUEUED',
+};
+
+function parseTaskMutationReceipt(
+  value: unknown,
+  binding: Readonly<{
+    action: TaskOperation;
+    expectedVersion: number;
+    idempotencyKey: string;
+    taskId: string;
+  }>,
+) {
+  const receipt = exactReceipt(value, [
+    'auditRecordId', 'idempotencyKey', 'operation', 'requestId', 'status', 'taskId', 'version',
+  ]);
+  if (
+    !isUuidV7(receipt.auditRecordId) ||
+    !isUuidV7(receipt.requestId) ||
+    !isSameUuidV7(receipt.idempotencyKey, binding.idempotencyKey) ||
+    receipt.operation !== binding.action ||
+    !isSameUuidV7(receipt.taskId, binding.taskId) ||
+    receipt.status !== taskResultStatus[binding.action] ||
+    !safeVersion(receipt.version) ||
+    receipt.version <= binding.expectedVersion
+  )
+    throw new Error('运营操作回执无效');
+  return Object.freeze({ ...receipt });
+}
+
+function parseQueueMutationReceipt(
+  value: unknown,
+  binding: Readonly<{
+    action: 'PAUSE' | 'RESUME' | 'UPDATE_LIMITS';
+    expectedPaused: boolean;
+    expectedVersion: number;
+    idempotencyKey: string;
+    concurrencyLimit?: number;
+    defaultPriority?: number;
+    rateLimitPerMinute?: number;
+  }>,
+) {
+  const limitKeys = ['concurrencyLimit', 'defaultPriority', 'rateLimitPerMinute'];
+  const receipt = exactReceipt(value, [
+    'auditRecordId',
+    ...((binding.action === 'UPDATE_LIMITS') ? limitKeys : []),
+    'idempotencyKey',
+    'operation',
+    'paused',
+    'requestId',
+    'version',
+  ]);
+  if (
+    !isUuidV7(receipt.auditRecordId) ||
+    !isUuidV7(receipt.requestId) ||
+    !isSameUuidV7(receipt.idempotencyKey, binding.idempotencyKey) ||
+    receipt.operation !== binding.action ||
+    typeof receipt.paused !== 'boolean' ||
+    (binding.action === 'PAUSE' && !receipt.paused) ||
+    (binding.action === 'RESUME' && receipt.paused) ||
+    (binding.action === 'UPDATE_LIMITS' && receipt.paused !== binding.expectedPaused) ||
+    !safeVersion(receipt.version) ||
+    receipt.version <= binding.expectedVersion ||
+    (binding.action === 'UPDATE_LIMITS' &&
+      (receipt.concurrencyLimit !== binding.concurrencyLimit ||
+        receipt.defaultPriority !== binding.defaultPriority ||
+        receipt.rateLimitPerMinute !== binding.rateLimitPerMinute))
+  )
+    throw new Error('运营操作回执无效');
+  return Object.freeze({ ...receipt });
 }
 function stringArray(value: unknown, max = 100): readonly string[] {
   if (!Array.isArray(value) || value.length > max || value.some((item) => !safeText(item)))
@@ -1056,6 +1261,7 @@ export function createPricingSaveAction(
     )
       throw new Error('定价草稿字段无效');
     const auth = await requireAdminAuthorization('pricing:write', dependencies.context);
+    assertGlobalMutationScope(auth.claims);
     const versionId = formText(form, 'versionId', 64);
     const intentId = formText(form, 'intentId', 64);
     const expected = formText(form, 'expectedVersion', 12);
@@ -1084,11 +1290,12 @@ export function createPricingSaveAction(
     )
       throw new Error('定价草稿字段无效');
     const tiers = parsePricingTiers(tiersJson, strategy as 'FIXED' | 'MARKUP' | 'TIERED');
-    return dependencies.port.save({
+    const expectedVersion = Number(expected);
+    const response = await dependencies.port.save({
       actorId: auth.claims.subjectId,
       audit: { idempotencyKey: intentId, reason },
       effectiveAt,
-      expectedVersion: Number(expected),
+      expectedVersion,
       markupBps,
       requestContext: createOutboundRequestContext(),
       ruleId,
@@ -1099,6 +1306,13 @@ export function createPricingSaveAction(
       tiers,
       versionId,
     });
+    return parseVersionedMutationReceipt(response, {
+      expectedStatus: 'DRAFT',
+      expectedVersion,
+      idempotencyKey: intentId,
+      operation: 'PRICING_SAVE',
+      sourceVersionId: versionId,
+    });
   };
 }
 
@@ -1107,6 +1321,7 @@ export function createPricingRollbackAction(
 ) {
   return async (form: FormData) => {
     const auth = await requireAdminAuthorization('pricing:rollback', dependencies.context);
+    assertGlobalMutationScope(auth.claims);
     const versionId = formText(form, 'versionId', 64);
     const targetVersionId = formText(form, 'targetVersionId', 64);
     const intentId = formText(form, 'intentId', 64);
@@ -1133,16 +1348,51 @@ export function createPricingRollbackAction(
       form.get('confirmed') !== 'true'
     )
       throw new Error('定价回滚字段无效');
-    return dependencies.port.rollback({
+    if (!dependencies.port.previewRollback) throw new Error('定价回滚预检不可用');
+    const expectedVersion = Number(expected);
+    const base = {
+      requestContext: createOutboundRequestContext(),
+      scope: auth.claims.dataScope,
+      trustedSessionToken: auth.trustedSessionToken,
+    };
+    const current = parsePricingView(await dependencies.port.getPricing(base));
+    const eligibleTarget = current.versions.some(
+      (version) =>
+        version.status !== 'DRAFT' && isSameUuidV7(version.versionId, targetVersionId),
+    );
+    if (
+      current.version !== expectedVersion ||
+      !isSameUuidV7(current.versionId, versionId) ||
+      isSameUuidV7(versionId, targetVersionId) ||
+      !eligibleTarget
+    )
+      throw new Error('定价回滚版本已变化');
+    const preview = parseRollbackPreviewReceipt(
+      await dependencies.port.previewRollback({
+        ...base,
+        expectedVersion,
+        sourceVersionId: versionId,
+        targetVersionId,
+      }),
+      { expectedVersion, sourceVersionId: versionId, targetVersionId },
+    );
+    const response = await dependencies.port.rollback({
       actorId: auth.claims.subjectId,
       audit: { idempotencyKey: intentId, reason },
       confirmed: true,
-      expectedVersion: Number(expected),
-      requestContext: createOutboundRequestContext(),
-      scope: auth.claims.dataScope,
+      expectedVersion,
+      preflightToken: preview.previewToken,
+      ...base,
       targetVersionId,
-      trustedSessionToken: auth.trustedSessionToken,
       versionId,
+    });
+    return parseVersionedMutationReceipt(response, {
+      expectedStatus: 'PUBLISHED',
+      expectedVersion,
+      idempotencyKey: intentId,
+      operation: 'PRICING_ROLLBACK',
+      sourceVersionId: versionId,
+      targetVersionId,
     });
   };
 }
@@ -1166,6 +1416,7 @@ export function createPricingPublishAction(
     )
       throw new Error('定价发布字段无效');
     const auth = await requireAdminAuthorization('pricing:publish', dependencies.context);
+    assertGlobalMutationScope(auth.claims);
     const versionId = formText(form, 'versionId', 64);
     const expected = formText(form, 'expectedVersion', 12);
     const previewToken = formText(form, 'previewToken', 500);
@@ -1181,16 +1432,24 @@ export function createPricingPublishAction(
       form.get('confirmed') !== 'true'
     )
       throw new Error('定价发布字段无效');
-    return dependencies.port.publish({
+    const expectedVersion = Number(expected);
+    const response = await dependencies.port.publish({
       actorId: auth.claims.subjectId,
       audit: { idempotencyKey: intentId, reason },
       confirmed: true,
-      expectedVersion: Number(expected),
+      expectedVersion,
       previewToken,
       requestContext: createOutboundRequestContext(),
       scope: auth.claims.dataScope,
       trustedSessionToken: auth.trustedSessionToken,
       versionId,
+    });
+    return parseVersionedMutationReceipt(response, {
+      expectedStatus: 'PUBLISHED',
+      expectedVersion,
+      idempotencyKey: intentId,
+      operation: 'PRICING_PUBLISH',
+      sourceVersionId: versionId,
     });
   };
 }
@@ -1245,6 +1504,7 @@ export function createRoutingSaveAction(
     if ([...form.keys()].some((key) => !allowedKeys.includes(key)))
       throw new Error('路由草稿字段无效');
     const auth = await requireAdminAuthorization('routing:write', dependencies.context);
+    assertGlobalMutationScope(auth.claims);
     const versionId = formText(form, 'versionId', 64);
     const intentId = formText(form, 'intentId', 64);
     const reason = formText(form, 'reason', 200);
@@ -1283,7 +1543,7 @@ export function createRoutingSaveAction(
     } catch {
       throw new Error('路由优先级或备援映射无效');
     }
-    return dependencies.port.save({
+    const response = await dependencies.port.save({
       actorId: auth.claims.subjectId,
       audit: { idempotencyKey: intentId, reason },
       backupCapabilityMap,
@@ -1299,6 +1559,13 @@ export function createRoutingSaveAction(
       speedWeight,
       trustedSessionToken: auth.trustedSessionToken,
       versionId,
+    });
+    return parseVersionedMutationReceipt(response, {
+      expectedStatus: 'DRAFT',
+      expectedVersion,
+      idempotencyKey: intentId,
+      operation: 'ROUTING_SAVE',
+      sourceVersionId: versionId,
     });
   };
 }
@@ -1359,6 +1626,7 @@ export function createRoutingPublishAction(
     )
       throw new Error('路由发布字段无效');
     const auth = await requireAdminAuthorization('routing:publish', dependencies.context);
+    assertGlobalMutationScope(auth.claims);
     const versionId = formText(form, 'versionId', 64);
     const intentId = formText(form, 'intentId', 64);
     const reason = formText(form, 'reason', 200);
@@ -1391,7 +1659,7 @@ export function createRoutingPublishAction(
       preflightExpiresMs <= Date.now()
     )
       throw new Error('路由预检已失效');
-    return dependencies.port.publish({
+    const response = await dependencies.port.publish({
       actorId: auth.claims.subjectId,
       audit: { idempotencyKey: intentId, reason },
       confirmed: true,
@@ -1401,6 +1669,13 @@ export function createRoutingPublishAction(
       scope: auth.claims.dataScope,
       trustedSessionToken: auth.trustedSessionToken,
       versionId,
+    });
+    return parseVersionedMutationReceipt(response, {
+      expectedStatus: 'PUBLISHED',
+      expectedVersion,
+      idempotencyKey: intentId,
+      operation: 'ROUTING_PUBLISH',
+      sourceVersionId: versionId,
     });
   };
 }
@@ -1423,6 +1698,7 @@ export function createRoutingRollbackAction(
     )
       throw new Error('路由回滚字段无效');
     const auth = await requireAdminAuthorization('routing:rollback', dependencies.context);
+    assertGlobalMutationScope(auth.claims);
     const versionId = formText(form, 'versionId', 64);
     const targetVersionId = formText(form, 'targetVersionId', 64);
     const intentId = formText(form, 'intentId', 64);
@@ -1437,16 +1713,50 @@ export function createRoutingRollbackAction(
       form.get('confirmed') !== 'true'
     )
       throw new Error('路由回滚字段无效');
-    return dependencies.port.rollback({
+    if (!dependencies.port.previewRollback) throw new Error('路由回滚预检不可用');
+    const base = {
+      requestContext: createOutboundRequestContext(),
+      scope: auth.claims.dataScope,
+      trustedSessionToken: auth.trustedSessionToken,
+    };
+    const current = parseRoutingPolicyView(await dependencies.port.getRouting(base));
+    const eligibleTarget = current.versions.some(
+      (version) =>
+        version.status !== 'DRAFT' && isSameUuidV7(version.versionId, targetVersionId),
+    );
+    if (
+      current.version !== expectedVersion ||
+      !isSameUuidV7(current.versionId, versionId) ||
+      isSameUuidV7(versionId, targetVersionId) ||
+      !eligibleTarget
+    )
+      throw new Error('路由回滚版本已变化');
+    const preview = parseRollbackPreviewReceipt(
+      await dependencies.port.previewRollback({
+        ...base,
+        expectedVersion,
+        sourceVersionId: versionId,
+        targetVersionId,
+      }),
+      { expectedVersion, sourceVersionId: versionId, targetVersionId },
+    );
+    const response = await dependencies.port.rollback({
       actorId: auth.claims.subjectId,
       audit: { idempotencyKey: intentId, reason },
       confirmed: true,
       expectedVersion,
-      requestContext: createOutboundRequestContext(),
-      scope: auth.claims.dataScope,
+      preflightToken: preview.previewToken,
+      ...base,
       targetVersionId,
-      trustedSessionToken: auth.trustedSessionToken,
       versionId,
+    });
+    return parseVersionedMutationReceipt(response, {
+      expectedStatus: 'PUBLISHED',
+      expectedVersion,
+      idempotencyKey: intentId,
+      operation: 'ROUTING_ROLLBACK',
+      sourceVersionId: versionId,
+      targetVersionId,
     });
   };
 }
@@ -1517,7 +1827,7 @@ export function createTaskAction(
           preview.purchaseSafety !== 'CONFIRMED_NO_CHARGE'))
     )
       throw new Error('重复采购风险阻止此操作');
-    return dependencies.port.execute({
+    const response = await dependencies.port.execute({
       ...base,
       action,
       actorId: auth.claims.subjectId,
@@ -1527,6 +1837,7 @@ export function createTaskAction(
       impactToken,
       taskId,
     });
+    return parseTaskMutationReceipt(response, { action, expectedVersion, idempotencyKey: intentId, taskId });
   };
 }
 
@@ -1571,6 +1882,7 @@ export function createQueueAction(
       queueActionPermission[action],
       dependencies.context,
     );
+    assertGlobalMutationScope(auth.claims);
     const intentId = formText(form, 'intentId', 64);
     const reason = formText(form, 'reason', 200);
     const expectedPausedText = formText(form, 'expectedPaused', 5);
@@ -1614,8 +1926,15 @@ export function createQueueAction(
       scope: auth.claims.dataScope,
       trustedSessionToken: auth.trustedSessionToken,
     } as const;
-    if (action === 'PAUSE' || action === 'RESUME')
-      return dependencies.port.executeQueue({ ...base, action });
+    if (action === 'PAUSE' || action === 'RESUME') {
+      const response = await dependencies.port.executeQueue({ ...base, action });
+      return parseQueueMutationReceipt(response, {
+        action,
+        expectedPaused,
+        expectedVersion,
+        idempotencyKey: intentId,
+      });
+    }
     const concurrencyLimit = formInteger(form, 'concurrencyLimit', 100_000);
     const defaultPriority = formInteger(form, 'defaultPriority', 100);
     const rateLimitPerMinute = formInteger(form, 'rateLimitPerMinute', 10_000_000);
@@ -1626,11 +1945,20 @@ export function createQueueAction(
       rateLimitPerMinute === null
     )
       throw new Error('队列操作字段无效');
-    return dependencies.port.executeQueue({
+    const response = await dependencies.port.executeQueue({
       ...base,
       action,
       concurrencyLimit,
       defaultPriority,
+      rateLimitPerMinute,
+    });
+    return parseQueueMutationReceipt(response, {
+      action,
+      concurrencyLimit,
+      defaultPriority,
+      expectedPaused,
+      expectedVersion,
+      idempotencyKey: intentId,
       rateLimitPerMinute,
     });
   };

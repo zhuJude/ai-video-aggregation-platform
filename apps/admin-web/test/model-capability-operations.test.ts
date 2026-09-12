@@ -269,7 +269,21 @@ describe('model capability server boundary', () => {
           };
         },
       },
-      port: { execute },
+      port: {
+        execute,
+        async previewRollback() {
+          return {
+            diff: { added: [], changed: ['duration'], removed: [] },
+            expiresAt: '2099-09-11T00:05:00.000Z',
+            impact: '恢复已发布能力版本并影响后续任务',
+            modelId,
+            preflightToken: 'pf_rollbackpreviewtoken1234567890',
+            sourceVersionId: versionId,
+            targetVersionId: publishedVersionId,
+            version: 7,
+          };
+        },
+      },
     });
     const invalid = commandForm('ROLLBACK');
     invalid.set('targetVersionId', versionId);
@@ -282,6 +296,51 @@ describe('model capability server boundary', () => {
       version: 8,
     });
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds rollback to a fresh authoritative preview before mutation', async () => {
+    const previewRollback = vi.fn(async () => ({
+      diff: { added: [], changed: ['duration'], removed: [] },
+      expiresAt: '2099-09-11T00:05:00.000Z',
+      impact: '恢复已发布能力版本并影响后续任务',
+      modelId,
+      preflightToken: 'pf_rollbackpreviewtoken1234567890',
+      sourceVersionId: versionId,
+      targetVersionId: publishedVersionId,
+      version: 7,
+    }));
+    const execute = vi.fn(async () => ({
+      auditRecordId,
+      idempotencyKey: intentId,
+      kind: 'ROLLBACK',
+      modelId,
+      requestId,
+      sourceVersionId: versionId,
+      status: 'PUBLISHED',
+      targetVersionId: publishedVersionId,
+      version: 8,
+      versionId: nextVersionId,
+    }));
+    const action = createCapabilityAction({
+      context: await context(['models:rollback']),
+      createRequestContext: () => requestContext,
+      detailPort: { async getCapability() { return capability; } },
+      port: { execute, previewRollback } as never,
+    });
+
+    await action(commandForm('ROLLBACK'));
+
+    expect(previewRollback).toHaveBeenCalledWith(expect.objectContaining({
+      expectedVersion: 7,
+      modelId,
+      sourceVersionId: versionId,
+      targetVersionId: publishedVersionId,
+    }));
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'ROLLBACK',
+      preflightToken: 'pf_rollbackpreviewtoken1234567890',
+      targetVersionId: publishedVersionId,
+    }));
   });
 
   it('creates a new draft only from the current immutable published version', async () => {

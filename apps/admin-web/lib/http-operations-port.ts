@@ -118,6 +118,12 @@ export function createHttpOperationsPorts(
         tiers: input.tiers,
         versionId: input.versionId,
       }),
+    previewRollback: (input: Parameters<NonNullable<PricingOperationsPort['previewRollback']>>[0]) =>
+      request(input, '/admin/pricing/rollback-preview', {
+        expectedVersion: input.expectedVersion,
+        sourceVersionId: input.sourceVersionId,
+        targetVersionId: input.targetVersionId,
+      }),
     publish: (input: Parameters<PricingOperationsPort['publish']>[0]) =>
       request(
         input,
@@ -141,6 +147,7 @@ export function createHttpOperationsPorts(
           audit: input.audit,
           confirmed: input.confirmed,
           expectedVersion: input.expectedVersion,
+          preflightToken: input.preflightToken,
           targetVersionId: input.targetVersionId,
           versionId: input.versionId,
         },
@@ -154,6 +161,12 @@ export function createHttpOperationsPorts(
       request(input, '/admin/routing/preview', {
         expectedVersion: input.expectedVersion,
         versionId: input.versionId,
+      }),
+    previewRollback: (input: Parameters<NonNullable<RoutingOperationsPort['previewRollback']>>[0]) =>
+      request(input, '/admin/routing/rollback-preview', {
+        expectedVersion: input.expectedVersion,
+        sourceVersionId: input.sourceVersionId,
+        targetVersionId: input.targetVersionId,
       }),
     save: (input: Parameters<RoutingOperationsPort['save']>[0]) =>
       request(
@@ -198,6 +211,7 @@ export function createHttpOperationsPorts(
           audit: input.audit,
           confirmed: input.confirmed,
           expectedVersion: input.expectedVersion,
+          preflightToken: input.preflightToken,
           targetVersionId: input.targetVersionId,
           versionId: input.versionId,
         },

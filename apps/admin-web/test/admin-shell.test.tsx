@@ -1256,6 +1256,96 @@ describe('admin authorization boundary', () => {
     );
   });
 
+  it('keeps declared task filters in the unauthenticated login return location', async () => {
+    const response = await proxy(
+      new NextRequest(
+        'https://admin.ai-video.internal/tasks?cursor=next_1&query=failed-job&status=FAILED',
+      ),
+    );
+    const location = response.headers.get('location');
+
+    expect(response.status).toBe(307);
+    expect(location).toBe(
+      'https://admin.ai-video.internal/login?next=%2Ftasks%3Fcursor%3Dnext_1%26query%3Dfailed-job%26status%3DFAILED',
+    );
+    if (!location) throw new Error('Missing login redirect');
+    const loginResponse = await proxy(new NextRequest(location));
+    expect(loginResponse.status).toBe(200);
+    expect(loginResponse.headers.get('location')).toBeNull();
+  });
+
+  it('preserves each declared list filter while removing undeclared query parameters', async () => {
+    const sessionToken = await signAdminSession(
+      {
+        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+        sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
+        permissions: ['*'],
+        dataScope: 'ALL',
+        expiresAt: Date.now() + 60_000,
+      },
+      signingKey,
+    );
+    process.env.ADMIN_SESSION_SIGNING_KEY = signingKey;
+    try {
+      const cases = [
+        ['/tasks', new URLSearchParams({ cursor: 'next_1', query: 'failed-job', status: 'FAILED' })],
+        ['/tickets', new URLSearchParams({ cursor: 'next_1', query: 'refund', status: 'OPEN' })],
+        ['/content', new URLSearchParams({ cursor: 'next_1', status: 'PUBLISHED' })],
+        [
+          '/finance/invoices',
+          new URLSearchParams({ cursor: 'next_1', query: 'invoice', status: 'ISSUED' }),
+        ],
+        ['/finance/ledger', new URLSearchParams({ cursor: 'next_1', query: 'entry' })],
+        [
+          '/finance/orders',
+          new URLSearchParams({ cursor: 'next_1', query: 'order', status: 'PAID' }),
+        ],
+        [
+          '/finance/reconciliation',
+          new URLSearchParams({
+            category: 'AMOUNT_MISMATCH',
+            cursor: 'next_1',
+            status: 'INVESTIGATING',
+          }),
+        ],
+        [
+          '/audit',
+          new URLSearchParams({
+            action: 'PUBLISH',
+            actor: 'operator',
+            cursor: 'next_1',
+            from: '2026-09-01T00:00:00.000Z',
+            resource: 'pricing',
+            to: '2026-09-12T00:00:00.000Z',
+            traceId: '0123456789abcdef0123456789abcdef',
+          }),
+        ],
+      ] as const;
+      for (const [pathname, params] of cases) {
+        const filtered = await proxy(
+          new NextRequest(`https://admin.ai-video.internal${pathname}?${params.toString()}`, {
+            headers: { cookie: `__Host-admin_session=${sessionToken}` },
+          }),
+        );
+        expect(filtered.status, pathname).toBe(200);
+        expect(filtered.headers.get('location'), pathname).toBeNull();
+      }
+
+      const sanitized = await proxy(
+        new NextRequest(
+          'https://admin.ai-video.internal/tasks?future=drop&status=FAILED&query=failed-job&cursor=next_1',
+          { headers: { cookie: `__Host-admin_session=${sessionToken}` } },
+        ),
+      );
+      expect(sanitized.status).toBe(307);
+      expect(sanitized.headers.get('location')).toBe(
+        'https://admin.ai-video.internal/tasks?cursor=next_1&query=failed-job&status=FAILED',
+      );
+    } finally {
+      delete process.env.ADMIN_SESSION_SIGNING_KEY;
+    }
+  });
+
   it('allows the public login route through the proxy', async () => {
     const response = await proxy(
       new NextRequest('https://admin.ai-video.internal/login'),
