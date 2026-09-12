@@ -31,6 +31,7 @@ export interface MockFinanceState {
   readonly invoices: readonly InvoiceHistoryItem[];
   readonly invoicedOrderIds: readonly string[];
   readonly commands: readonly MockFinanceCommand[];
+  readonly commercial?: unknown;
 }
 
 interface MockFinanceCommand {
@@ -47,6 +48,7 @@ export interface MutableMockFinanceState {
   orders: RechargeOrderView[];
   invoices: InvoiceHistoryItem[];
   invoicedOrderIds: string[];
+  commercial?: unknown;
 }
 
 export class MockFinanceStoreError extends Error {
@@ -118,6 +120,7 @@ function parseState(value: unknown, expectedOwnerId: string): MockFinanceState {
     'invoices',
     'invoicedOrderIds',
     'commands',
+    ...(Object.prototype.hasOwnProperty.call(state, 'commercial') ? ['commercial'] : []),
   ]);
   if (
     state.version !== FINANCE_VERSION ||
@@ -162,6 +165,7 @@ function parseState(value: unknown, expectedOwnerId: string): MockFinanceState {
     invoices: invoicePage.history,
     invoicedOrderIds,
     commands,
+    ...(state.commercial === undefined ? {} : { commercial: structuredClone(state.commercial) }),
   };
 }
 
@@ -194,6 +198,7 @@ function serializableState(
       invoices: business.invoices,
       invoicedOrderIds: business.invoicedOrderIds,
       commands,
+      ...(business.commercial === undefined ? {} : { commercial: business.commercial }),
     },
     ownerId,
   );
@@ -249,6 +254,7 @@ export async function runMockFinanceCommand<T>(
       orders: [...structuredClone(state.orders)],
       invoices: [...structuredClone(state.invoices)],
       invoicedOrderIds: [...state.invoicedOrderIds],
+      ...(state.commercial === undefined ? {} : { commercial: structuredClone(state.commercial) }),
     };
     const result = mutate(business);
     const next = serializableState(ownerId, business, [
@@ -261,6 +267,32 @@ export async function runMockFinanceCommand<T>(
         expiresAt: new Date(now + COMMAND_TTL_MS).toISOString(),
       },
     ]);
+    return { result, next };
+  });
+}
+
+/**
+ * Runs generation state and wallet mutations under the same durable object-store lock and
+ * atomic JSON replacement as recharge/invoice commands. The commercial payload is parsed by
+ * its owning module; this store only preserves the boundary without coupling finance to Studio.
+ */
+export async function runMockFinanceTransaction<T>(
+  ownerId: string,
+  seed: () => MockFinanceState,
+  mutate: (state: MutableMockFinanceState) => T,
+): Promise<T> {
+  return transactMockStoreJson(fileName(ownerId), (current) => {
+    const state = parseState(current ?? seed(), ownerId);
+    const business: MutableMockFinanceState = {
+      balance: structuredClone(state.balance),
+      ledger: [...structuredClone(state.ledger)],
+      orders: [...structuredClone(state.orders)],
+      invoices: [...structuredClone(state.invoices)],
+      invoicedOrderIds: [...state.invoicedOrderIds],
+      ...(state.commercial === undefined ? {} : { commercial: structuredClone(state.commercial) }),
+    };
+    const result = mutate(business);
+    const next = serializableState(ownerId, business, state.commands);
     return { result, next };
   });
 }

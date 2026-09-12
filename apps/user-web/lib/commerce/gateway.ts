@@ -108,14 +108,14 @@ const fixtureOrders: readonly RechargeOrderView[] = [
   },
 ];
 
-function financeSeed(ownerId: string): MockFinanceState {
+export function createMockFinanceSeed(ownerId: string): MockFinanceState {
   const isFixtureOwner = ownerId === fixtureOwnerId();
   return {
     version: 1,
     ownerId,
     balance: isFixtureOwner
       ? {
-          available: '9007199254740993',
+          available: '9007199254740193',
           frozen: '1200',
           totalRecharged: '9007199254742193',
           totalConsumed: '800',
@@ -271,7 +271,9 @@ export const commerceGateway: CommerceGateway = {
 
   async getWallet(filters, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const state = await readMockFinanceState(context.ownerId, () => financeSeed(context.ownerId));
+    const state = await readMockFinanceState(context.ownerId, () =>
+      createMockFinanceSeed(context.ownerId),
+    );
     const all = state.ledger.filter(
       (transaction) => !filters.type || transaction.type === filters.type,
     );
@@ -288,7 +290,9 @@ export const commerceGateway: CommerceGateway = {
 
   async listOrders(filters, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const state = await readMockFinanceState(context.ownerId, () => financeSeed(context.ownerId));
+    const state = await readMockFinanceState(context.ownerId, () =>
+      createMockFinanceSeed(context.ownerId),
+    );
     const all = state.orders.filter((order) => !filters.status || order.status === filters.status);
     const offset = listOffset(filters.cursor);
     return Promise.resolve({
@@ -314,7 +318,7 @@ export const commerceGateway: CommerceGateway = {
     try {
       return await runMockFinanceCommand(
         context.ownerId,
-        () => financeSeed(context.ownerId),
+        () => createMockFinanceSeed(context.ownerId),
         {
           key: context.idempotencyKey,
           fingerprint: `order:${fingerprint}`,
@@ -363,7 +367,9 @@ export const commerceGateway: CommerceGateway = {
 
   async requestOrderPayment(orderId, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const state = await readMockFinanceState(context.ownerId, () => financeSeed(context.ownerId));
+    const state = await readMockFinanceState(context.ownerId, () =>
+      createMockFinanceSeed(context.ownerId),
+    );
     const order = state.orders.find((candidate) => candidate.id === orderId);
     if (
       !order ||
@@ -385,7 +391,9 @@ export const commerceGateway: CommerceGateway = {
 
   async listInvoiceCandidates(context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const state = await readMockFinanceState(context.ownerId, () => financeSeed(context.ownerId));
+    const state = await readMockFinanceState(context.ownerId, () =>
+      createMockFinanceSeed(context.ownerId),
+    );
     return {
       items: state.orders
         .filter(
@@ -410,7 +418,7 @@ export const commerceGateway: CommerceGateway = {
     try {
       return await runMockFinanceCommand(
         context.ownerId,
-        () => financeSeed(context.ownerId),
+        () => createMockFinanceSeed(context.ownerId),
         {
           key: context.idempotencyKey,
           fingerprint: `invoice:${JSON.stringify(input)}`,

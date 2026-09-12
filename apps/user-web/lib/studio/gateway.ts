@@ -111,14 +111,19 @@ const textCapability: StudioCapabilityDocument = {
       duration: { type: 'integer', default: 5, minimum: 3, maximum: 10 },
       aspectRatio: { type: 'string', enum: ['16:9', '9:16', '1:1'], default: '16:9' },
       seed: { type: 'integer', minimum: 0, maximum: 2147483647 },
+      mockFailure: { type: 'boolean', default: false },
     },
     required: ['prompt', 'duration', 'aspectRatio'],
   },
   uiSchema: {
-    order: ['prompt', 'duration', 'aspectRatio', 'seed'],
+    order: ['prompt', 'duration', 'aspectRatio', 'seed', 'mockFailure'],
     groups: [
       { key: 'idea', title: '创作内容', fields: ['prompt'] },
-      { key: 'output', title: '输出参数', fields: ['duration', 'aspectRatio', 'seed'] },
+      {
+        key: 'output',
+        title: '输出参数',
+        fields: ['duration', 'aspectRatio', 'seed', 'mockFailure'],
+      },
     ],
     fields: {
       prompt: {
@@ -136,6 +141,10 @@ const textCapability: StudioCapabilityDocument = {
         ],
       },
       seed: { label: '随机种子', help: '可选；相同种子有助于复现实验。' },
+      mockFailure: {
+        label: '模拟失败路径',
+        help: '仅在显式 Mock 环境中用于验证退款与恢复流程。',
+      },
     },
   },
   costDimensions: ['duration'],

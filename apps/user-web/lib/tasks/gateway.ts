@@ -1,4 +1,8 @@
 import { saveRetryDraft } from '../studio/retry-drafts';
+import {
+  listMockCommercialTasks,
+  readAndAdvanceMockCommercialTask,
+} from '../studio/mock-commercial-store';
 import { createUuidV7, isUuidV7 } from './identifiers';
 import type {
   RetryDraft,
@@ -218,7 +222,7 @@ function sweepCanceledCache(now: number): void {
   }
 }
 
-function matches(task: OwnedTaskDetail, filters: TaskFilters): boolean {
+function matches(task: TaskDetail, filters: TaskFilters): boolean {
   if (filters.status && task.statusSnapshot.status !== filters.status) return false;
   if (filters.model && task.modelSnapshot.modelId !== filters.model) return false;
   if (filters.generationMode && task.generationMode !== filters.generationMode) return false;
@@ -229,7 +233,7 @@ function matches(task: OwnedTaskDetail, filters: TaskFilters): boolean {
   return true;
 }
 
-function toSummary(task: OwnedTaskDetail): TaskPage['items'][number] {
+function toSummary(task: TaskDetail): TaskPage['items'][number] {
   return {
     id: task.id,
     taskNumber: task.taskNumber,
@@ -242,11 +246,21 @@ function toSummary(task: OwnedTaskDetail): TaskPage['items'][number] {
   };
 }
 
+async function commercialTasks(ownerId: string): Promise<readonly TaskDetail[]> {
+  return process.env.USER_WEB_STUDIO_MODE === 'mock'
+    ? listMockCommercialTasks(ownerId)
+    : Promise.resolve([]);
+}
+
 export const taskGateway: TaskGateway = {
   async listTasks(filters, context): Promise<unknown> {
-    const filtered = fixtures.filter(
-      (task) => task.ownerId === context.ownerId && matches(task, filters),
+    const dynamic = (await commercialTasks(context.ownerId)).filter((task) =>
+      matches(task, filters),
     );
+    const filtered = [
+      ...dynamic,
+      ...fixtures.filter((task) => task.ownerId === context.ownerId && matches(task, filters)),
+    ];
     const offset = filters.cursor ? cursorOffsets.get(filters.cursor) : 0;
     if (offset === undefined) throw new Error('INVALID_TASK_CURSOR');
     const page: TaskPage = {
@@ -260,6 +274,10 @@ export const taskGateway: TaskGateway = {
   },
 
   async getTask(taskId, context): Promise<unknown> {
+    if (process.env.USER_WEB_STUDIO_MODE === 'mock') {
+      const generated = await readAndAdvanceMockCommercialTask(context.ownerId, taskId);
+      if (generated) return generated;
+    }
     const task = fixtures.find(
       (candidate) => candidate.id === taskId && candidate.ownerId === context.ownerId,
     );

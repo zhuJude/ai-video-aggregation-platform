@@ -260,6 +260,7 @@ export function parseTaskDetail(value: unknown): TaskDetail {
       'parameterSummary',
       'financial',
       'timeline',
+      'result',
     ],
     'UNKNOWN_TASK_DETAIL_FIELD',
   );
@@ -289,6 +290,11 @@ export function parseTaskDetail(value: unknown): TaskDetail {
       label: requireString(rawLabel, 'INVALID_TASK_TIMELINE_LABEL'),
     };
   });
+  const result =
+    task.result === undefined ? undefined : requireRecord(task.result, 'INVALID_TASK_RESULT');
+  if (result) assertOnlyKeys(result, ['assetId'], 'UNKNOWN_TASK_RESULT_FIELD');
+  if (result && summary.statusSnapshot.status !== 'SETTLED')
+    throw new Error('PREMATURE_TASK_RESULT');
   return {
     ...summary,
     modelSnapshot: {
@@ -308,6 +314,9 @@ export function parseTaskDetail(value: unknown): TaskDetail {
       refundedPoints: parsePoints(financial.refundedPoints),
     },
     timeline,
+    ...(result
+      ? { result: { assetId: requireString(result.assetId, 'INVALID_TASK_RESULT_ASSET_ID') } }
+      : {}),
   };
 }
 

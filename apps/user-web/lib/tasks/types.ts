@@ -73,6 +73,9 @@ export interface TaskDetail extends TaskSummary {
     readonly refundedPoints: string;
   };
   readonly timeline: readonly TaskTimelineItem[];
+  readonly result?: {
+    readonly assetId: string;
+  };
 }
 
 export interface TaskFilters {
