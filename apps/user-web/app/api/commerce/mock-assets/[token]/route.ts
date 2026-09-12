@@ -1,5 +1,3 @@
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 
 import {
@@ -13,7 +11,7 @@ import {
 } from '../../../../../lib/commerce/mock-upload-boundary';
 import {
   findMockObject,
-  mockObjectContentPath,
+  openMockObjectContent,
 } from '../../../../../lib/commerce/mock-object-store';
 
 const PRIVATE_HEADERS = {
@@ -64,20 +62,20 @@ export async function GET(
     if (!metadata || metadata.storageKey !== access.storageKey) {
       return new Response(null, { headers: PRIVATE_HEADERS, status: 404 });
     }
-    const path = mockObjectContentPath(metadata);
-    const file = await stat(path);
-    if (!file.isFile() || file.size <= 0 || BigInt(file.size) !== BigInt(metadata.sizeBytes)) {
+    const opened = await openMockObjectContent(metadata).catch(() => undefined);
+    if (!opened || opened.size <= 0) {
       return new Response(null, { headers: PRIVATE_HEADERS, status: 404 });
     }
-    const range = rangeBounds(request.headers.get('range'), file.size);
+    const range = rangeBounds(request.headers.get('range'), opened.size);
     if (range === null) {
+      await opened.handle.close();
       return new Response(null, {
-        headers: { ...PRIVATE_HEADERS, 'content-range': `bytes */${String(file.size)}` },
+        headers: { ...PRIVATE_HEADERS, 'content-range': `bytes */${String(opened.size)}` },
         status: 416,
       });
     }
     const start = range?.start ?? 0;
-    const end = range?.end ?? file.size - 1;
+    const end = range?.end ?? opened.size - 1;
     const headers = new Headers(PRIVATE_HEADERS);
     headers.set('content-type', metadata.mimeType);
     headers.set('content-length', String(end - start + 1));
@@ -86,8 +84,8 @@ export async function GET(
       `${access.purpose === 'DOWNLOAD' ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(metadata.name)}`,
     );
     if (range)
-      headers.set('content-range', `bytes ${String(start)}-${String(end)}/${String(file.size)}`);
-    const stream = Readable.toWeb(createReadStream(path, { start, end }));
+      headers.set('content-range', `bytes ${String(start)}-${String(end)}/${String(opened.size)}`);
+    const stream = Readable.toWeb(opened.handle.createReadStream({ start, end, autoClose: true }));
     return new Response(stream as ReadableStream<Uint8Array>, {
       headers,
       status: range ? 206 : 200,

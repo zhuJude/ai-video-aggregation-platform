@@ -18,12 +18,16 @@ import {
 } from '../../lib/commerce/runtime';
 import { runCommerceActionWithRefresh } from '../../lib/commerce/client-command';
 import { createUuidV7 } from '../../lib/tasks/identifiers';
-import { uploadAssetBytesWithSessionRefresh } from '../../lib/commerce/upload-client';
+import {
+  getUploadStatusWithSessionRefresh,
+  uploadAssetBytesWithSessionRefresh,
+} from '../../lib/commerce/upload-client';
 import type {
   AssetListItem,
   AssetPage,
   CommerceGateway,
   SignedAssetUrl,
+  UploadSessionGrant,
 } from '../../lib/commerce/types';
 import { AccessibleDialog } from './accessible-dialog';
 
@@ -32,6 +36,14 @@ const IMAGE_LIMIT = 20n * 1024n * 1024n;
 const VIDEO_LIMIT = 500n * 1024n * 1024n;
 
 type Feedback = { readonly tone: 'status' | 'alert'; readonly message: string } | undefined;
+type UploadAttempt = {
+  readonly key: string;
+  readonly file: File;
+  readonly fingerprint: string;
+  grant?: UploadSessionGrant;
+  receipt?: string;
+  verifyStatus: boolean;
+};
 
 function formatBytes(value: string): string {
   const bytes = BigInt(value);
@@ -64,7 +76,23 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
   const [renaming, setRenaming] = useState<AssetListItem>();
   const [renameValue, setRenameValue] = useState('');
   const [busy, setBusy] = useState(false);
+  const [recoverableUpload, setRecoverableUpload] = useState(false);
   const uploadController = useRef<AbortController | undefined>(undefined);
+  const uploadAttempt = useRef<UploadAttempt | undefined>(undefined);
+  const deleteAttempt = useRef<{ assetId: string; key: string } | undefined>(undefined);
+  const renameAttempt = useRef<{ assetId: string; name: string; key: string } | undefined>(
+    undefined,
+  );
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      uploadController.current?.abort(new DOMException('Component unmounted', 'AbortError'));
+      uploadController.current = undefined;
+    };
+  }, []);
 
   useEffect(() => {
     if (Object.keys(access).length === 0) return;
@@ -81,6 +109,8 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
     if (!controller) return;
     controller.abort(new DOMException('User canceled upload', 'AbortError'));
     uploadController.current = undefined;
+    uploadAttempt.current = undefined;
+    setRecoverableUpload(false);
     setProgress(undefined);
     setFeedback({ tone: 'status', message: '上传已取消。' });
   };
@@ -116,45 +146,67 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
     }
   };
 
-  const upload = async (file: File) => {
-    const validation = validateUpload(file);
-    if (validation) {
-      setFeedback({ tone: 'alert', message: validation });
-      return;
-    }
+  const runUpload = async (attempt: UploadAttempt) => {
     const controller = new AbortController();
     uploadController.current = controller;
     setProgress(0);
-    setFeedback({ tone: 'status', message: `正在上传 ${file.name}` });
-    const key = createUuidV7();
+    setRecoverableUpload(false);
+    setFeedback({ tone: 'status', message: `正在上传 ${attempt.file.name}` });
     try {
       if (gateway || ownerId) throw new Error('INJECTED_UPLOAD_NOT_SUPPORTED');
-      const grant = await runCommerceActionWithRefresh(() =>
-        createUploadSessionAction({ name: file.name, size: file.size, type: file.type }, key),
+      if (!attempt.grant) {
+        attempt.grant = await runCommerceActionWithRefresh(() =>
+          createUploadSessionAction(
+            { name: attempt.file.name, size: attempt.file.size, type: attempt.file.type },
+            attempt.key,
+          ),
+        ).then((result) => {
+          if (!result.ok)
+            throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
+          return result.data;
+        });
+      }
+      if (!attempt.receipt && attempt.verifyStatus) {
+        const storedReceipt = await getUploadStatusWithSessionRefresh(
+          attempt.grant,
+          controller.signal,
+        );
+        if (storedReceipt) attempt.receipt = storedReceipt;
+        attempt.verifyStatus = false;
+      }
+      if (!attempt.receipt) {
+        try {
+          attempt.receipt = await uploadAssetBytesWithSessionRefresh(attempt.grant, attempt.file, {
+            signal: controller.signal,
+            onProgress: (percentage) => {
+              if (mounted.current && uploadController.current === controller) {
+                setProgress(percentage);
+              }
+            },
+          });
+        } catch (error) {
+          if (classifyCommerceCommandError(error) === 'UNCERTAIN') attempt.verifyStatus = true;
+          throw error;
+        }
+      }
+      const raw = await runCommerceActionWithRefresh(() =>
+        completeUploadAction(attempt.receipt as string, attempt.key),
       ).then((result) => {
         if (!result.ok) throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
         return result.data;
       });
-      const receipt = await uploadAssetBytesWithSessionRefresh(grant, file, {
-        signal: controller.signal,
-        onProgress: (percentage) => {
-          setProgress(percentage);
-        },
-      });
-      const raw = await runCommerceActionWithRefresh(() => completeUploadAction(receipt, key)).then(
-        (result) => {
-          if (!result.ok)
-            throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
-          return result.data;
-        },
-      );
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || !mounted.current || uploadAttempt.current !== attempt)
+        return;
       const uploaded = parseAssetPage({ items: [raw], pageInfo: {} }).items[0];
       if (!uploaded) throw new Error('INVALID_UPLOAD_RESULT');
       setItems((current) => [uploaded, ...current]);
+      uploadAttempt.current = undefined;
+      setRecoverableUpload(false);
       setFeedback({ tone: 'status', message: '上传完成，可在生成工作台中复用。' });
     } catch (error) {
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && mounted.current) {
+        const uncertain = classifyCommerceCommandError(error) === 'UNCERTAIN';
+        setRecoverableUpload(uncertain);
         setFeedback({
           tone: 'alert',
           message:
@@ -163,37 +215,61 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
             'outcome' in error &&
             error.outcome === 'LOGIN_REQUIRED'
               ? '登录状态已失效，请重新登录后上传。'
-              : '上传未完成，请检查网络后重试。',
+              : uncertain
+                ? '上传结果待确认，请使用“恢复上传”以同一请求继续。'
+                : '上传未完成，请检查文件或网络后重试。',
         });
+        if (!uncertain) uploadAttempt.current = undefined;
       }
     } finally {
-      if (uploadController.current === controller) {
+      if (mounted.current && uploadController.current === controller) {
         uploadController.current = undefined;
         setProgress(undefined);
       }
     }
   };
 
+  const upload = async (file: File) => {
+    const validation = validateUpload(file);
+    if (validation) {
+      setFeedback({ tone: 'alert', message: validation });
+      return;
+    }
+    const attempt: UploadAttempt = {
+      key: createUuidV7(),
+      file,
+      fingerprint: `${file.name}:${String(file.size)}:${file.type}:${String(file.lastModified)}`,
+      verifyStatus: false,
+    };
+    uploadAttempt.current = attempt;
+    await runUpload(attempt);
+  };
+
   const confirmDelete = async () => {
     if (!deleting || busy) return;
     setBusy(true);
-    const key = createUuidV7();
+    const attempt =
+      deleteAttempt.current?.assetId === deleting.id
+        ? deleteAttempt.current
+        : { assetId: deleting.id, key: createUuidV7() };
+    deleteAttempt.current = attempt;
     try {
       const raw = gateway
         ? await gateway.deleteAsset(deleting.id, {
-            idempotencyKey: key,
+            idempotencyKey: attempt.key,
             ownerId: ownerId ?? '',
           })
-        : await runCommerceActionWithRefresh(() => deleteAssetAction(deleting.id, key)).then(
-            (result) => {
-              if (!result.ok)
-                throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
-              return result.data;
-            },
-          );
+        : await runCommerceActionWithRefresh(() =>
+            deleteAssetAction(deleting.id, attempt.key),
+          ).then((result) => {
+            if (!result.ok)
+              throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
+            return result.data;
+          });
       if (typeof raw !== 'object' || raw === null || !('accepted' in raw) || raw.accepted !== true)
         throw new Error('INVALID_DELETE_RESULT');
       setItems((current) => current.filter((item) => item.id !== deleting.id));
+      deleteAttempt.current = undefined;
       setDeleting(undefined);
       setFeedback({ tone: 'status', message: '删除请求已受理，演示环境中的本机临时副本已清理。' });
     } catch (error) {
@@ -203,13 +279,16 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
         error !== null &&
         'outcome' in error &&
         error.outcome === 'LOGIN_REQUIRED';
-      setDeleting(undefined);
+      if (!uncertain) {
+        deleteAttempt.current = undefined;
+        setDeleting(undefined);
+      }
       setFeedback({
         tone: 'alert',
         message: loginRequired
           ? '登录状态已失效，请重新登录后再删除。'
           : uncertain
-            ? '删除结果暂无法确认，请刷新素材列表核对，避免重复操作。'
+            ? '删除结果暂无法确认，请再次确认以同一请求恢复。'
             : '无法删除这个素材。',
       });
     } finally {
@@ -224,15 +303,20 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
       return;
     }
     setBusy(true);
-    const key = createUuidV7();
+    const normalized = renameValue.trim();
+    const attempt =
+      renameAttempt.current?.assetId === renaming.id && renameAttempt.current.name === normalized
+        ? renameAttempt.current
+        : { assetId: renaming.id, name: normalized, key: createUuidV7() };
+    renameAttempt.current = attempt;
     try {
       const raw = gateway
         ? await gateway.renameAsset(renaming.id, renameValue, {
-            idempotencyKey: key,
+            idempotencyKey: attempt.key,
             ownerId: ownerId ?? '',
           })
         : await runCommerceActionWithRefresh(() =>
-            renameAssetAction(renaming.id, renameValue, key),
+            renameAssetAction(renaming.id, normalized, attempt.key),
           ).then((result) => {
             if (!result.ok)
               throw Object.assign(new Error(result.outcome), { outcome: result.outcome });
@@ -241,10 +325,15 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
       const renamed = parseAssetPage({ items: [raw], pageInfo: {} }).items[0];
       if (!renamed) throw new Error('INVALID_RENAME_RESULT');
       setItems((current) => current.map((item) => (item.id === renamed.id ? renamed : item)));
+      renameAttempt.current = undefined;
       setRenaming(undefined);
       setFeedback({ tone: 'status', message: '名称已更新。' });
     } catch (error) {
-      setRenaming(undefined);
+      const uncertain = classifyCommerceCommandError(error) === 'UNCERTAIN';
+      if (!uncertain) {
+        renameAttempt.current = undefined;
+        setRenaming(undefined);
+      }
       const loginRequired =
         typeof error === 'object' &&
         error !== null &&
@@ -254,8 +343,8 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
         tone: 'alert',
         message: loginRequired
           ? '登录状态已失效，请重新登录后再重命名。'
-          : classifyCommerceCommandError(error) === 'UNCERTAIN'
-            ? '重命名结果暂无法确认，请刷新后核对。'
+          : uncertain
+            ? '重命名结果暂无法确认，请再次保存以同一请求恢复。'
             : '无法更新名称。',
       });
     } finally {
@@ -277,7 +366,7 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
             aria-label="上传图片或视频"
             type="file"
             accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
-            disabled={progress !== undefined}
+            disabled={progress !== undefined || recoverableUpload}
             onChange={(event) => {
               const file = event.currentTarget.files?.[0];
               if (file) void upload(file);
@@ -293,6 +382,18 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
               取消上传
             </button>
           </div>
+        ) : null}
+        {recoverableUpload && uploadAttempt.current ? (
+          <button
+            type="button"
+            className="button-secondary-plain"
+            onClick={() => {
+              const attempt = uploadAttempt.current;
+              if (attempt) void runUpload(attempt);
+            }}
+          >
+            恢复上传
+          </button>
         ) : null}
       </section>
 
@@ -386,6 +487,7 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
                       type="button"
                       className="button-secondary-plain"
                       onClick={() => {
+                        renameAttempt.current = undefined;
                         setRenaming(asset);
                         setRenameValue(asset.name);
                       }}
@@ -397,6 +499,7 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
                       className="button-danger-subtle"
                       aria-label={`删除${asset.name}`}
                       onClick={() => {
+                        deleteAttempt.current = undefined;
                         setDeleting(asset);
                       }}
                     >
@@ -415,6 +518,7 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
           labelledBy="delete-title"
           busy={busy}
           onClose={() => {
+            deleteAttempt.current = undefined;
             setDeleting(undefined);
           }}
         >
@@ -429,6 +533,7 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
               type="button"
               className="button-secondary-plain"
               onClick={() => {
+                deleteAttempt.current = undefined;
                 setDeleting(undefined);
               }}
               disabled={busy}
@@ -451,6 +556,7 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
           labelledBy="rename-title"
           busy={busy}
           onClose={() => {
+            renameAttempt.current = undefined;
             setRenaming(undefined);
           }}
         >
@@ -470,6 +576,7 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
               type="button"
               className="button-secondary-plain"
               onClick={() => {
+                renameAttempt.current = undefined;
                 setRenaming(undefined);
               }}
               disabled={busy}

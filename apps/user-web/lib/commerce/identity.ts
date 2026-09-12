@@ -3,13 +3,14 @@ import 'server-only';
 import { createHmac } from 'node:crypto';
 import { UuidSchema } from '@repo/contracts/common';
 
-import { requireMockCommerceSigningKey } from './mock-config';
+import { requireMockCommerceIdentityKey } from './mock-config';
 
 const VERIFIED_PHONE = /^\+861[3-9]\d{9}$/;
 
 export function commerceOwnerIdFromPhone(phone: string): string {
   if (!VERIFIED_PHONE.test(phone)) throw new Error('INVALID_VERIFIED_COMMERCE_OWNER');
-  const bytes = createHmac('sha256', requireMockCommerceSigningKey())
+  // This stable, independently rotated key prevents upload-token key rotation from changing owners.
+  const bytes = createHmac('sha256', requireMockCommerceIdentityKey())
     .update(`commerce-owner:v1:${phone}`, 'utf8')
     .digest()
     .subarray(0, 16);

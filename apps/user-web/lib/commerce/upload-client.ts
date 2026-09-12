@@ -32,6 +32,89 @@ export async function uploadAssetBytesWithSessionRefresh(
   }
 }
 
+function isRefreshRequired(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).join(',') === 'code' &&
+    'code' in value &&
+    value.code === 'SESSION_REFRESH_REQUIRED'
+  );
+}
+
+function isTypedUncertain(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join(',') === 'code,outcome' &&
+    'outcome' in value &&
+    value.outcome === 'UNCERTAIN' &&
+    'code' in value &&
+    typeof value.code === 'string' &&
+    /^UPLOAD_[A-Z_]+$/.test(value.code)
+  );
+}
+
+async function uploadStatus(
+  grant: UploadSessionGrant,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  const parsedGrant = parseUploadSessionGrant(grant);
+  const response = await fetch(parsedGrant.url, {
+    credentials: 'same-origin',
+    method: 'GET',
+    signal,
+    headers: { 'x-correlation-id': crypto.randomUUID(), 'x-trace-id': traceId() },
+  });
+  if (response.status === 204) return undefined;
+  const body = (await response.json().catch(() => undefined)) as unknown;
+  if (response.status === 200) {
+    if (
+      typeof body !== 'object' ||
+      body === null ||
+      Array.isArray(body) ||
+      Object.keys(body).sort().join(',') !== 'receipt,state' ||
+      !('state' in body) ||
+      body.state !== 'STORED' ||
+      !('receipt' in body)
+    ) {
+      throw new UploadTransportError('UNCERTAIN');
+    }
+    return parseUploadReceiptResponse({ receipt: body.receipt }).receipt;
+  }
+  if (response.status === 401 && isRefreshRequired(body)) {
+    throw new UploadTransportError('SESSION_REFRESH_REQUIRED');
+  }
+  if ((response.status === 409 || response.status === 503) && isTypedUncertain(body)) {
+    throw new UploadTransportError('UNCERTAIN');
+  }
+  throw new UploadTransportError(
+    response.status === 400 ||
+      response.status === 403 ||
+      response.status === 404 ||
+      response.status === 410
+      ? 'DEFINITIVE_FAILURE'
+      : 'UNCERTAIN',
+  );
+}
+
+export async function getUploadStatusWithSessionRefresh(
+  grant: UploadSessionGrant,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  try {
+    return await uploadStatus(grant, signal);
+  } catch (error) {
+    if (!(error instanceof UploadTransportError) || error.outcome !== 'SESSION_REFRESH_REQUIRED') {
+      throw error;
+    }
+    if (!(await coordinateSessionRefresh())) throw new UploadTransportError('LOGIN_REQUIRED');
+    return uploadStatus(grant, signal);
+  }
+}
+
 function traceId(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
     byte.toString(16).padStart(2, '0'),
@@ -100,19 +183,22 @@ export function uploadAssetBytes(
         if (xhr.status === 401) {
           try {
             const body = JSON.parse(xhr.responseText) as unknown;
-            if (
-              typeof body === 'object' &&
-              body !== null &&
-              !Array.isArray(body) &&
-              Object.keys(body).join(',') === 'code' &&
-              'code' in body &&
-              body.code === 'SESSION_REFRESH_REQUIRED'
-            ) {
+            if (isRefreshRequired(body)) {
               reject(new UploadTransportError('SESSION_REFRESH_REQUIRED'));
               return;
             }
           } catch {
             // The response is deliberately collapsed below.
+          }
+        }
+        if (xhr.status === 409 || xhr.status === 503) {
+          try {
+            if (isTypedUncertain(JSON.parse(xhr.responseText) as unknown)) {
+              reject(new UploadTransportError('UNCERTAIN'));
+              return;
+            }
+          } catch {
+            // Malformed non-success responses remain uncertain.
           }
         }
         reject(

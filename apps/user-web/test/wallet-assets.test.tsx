@@ -1,5 +1,10 @@
 import '@testing-library/jest-dom/vitest';
 
+import { createHash, randomBytes } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,7 +34,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 import AssetsPage from '../app/assets/page';
-import { requestAssetAccessAction } from '../app/commerce-actions';
+import { createInvoiceAction, requestAssetAccessAction } from '../app/commerce-actions';
 import { AssetLibrary } from '../components/commerce/asset-library';
 import { InvoiceCenter } from '../components/commerce/invoice-center';
 import { OrderCenter } from '../components/commerce/order-center';
@@ -160,6 +165,7 @@ function gateway(overrides: Partial<CommerceGateway> = {}): CommerceGateway {
 beforeEach(() => {
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 13).toString('base64url');
+  process.env.USER_WEB_COMMERCE_IDENTITY_KEY = randomBytes(32).toString('base64url');
   OWNER = commerceOwnerIdFromPhone(PHONE);
 });
 
@@ -172,6 +178,7 @@ afterEach(() => {
   };
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
+  delete process.env.USER_WEB_COMMERCE_IDENTITY_KEY;
 });
 
 describe('commerce identity and mock isolation', () => {
@@ -180,6 +187,14 @@ describe('commerce identity and mock isolation', () => {
     expect(derived).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(commerceOwnerIdFromPhone(PHONE)).toBe(derived);
     expect(derived).not.toContain('13800138000');
+  });
+
+  it('keeps owner identity stable when the upload signing key rotates', () => {
+    const derived = commerceOwnerIdFromPhone(PHONE);
+    process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 91).toString('base64url');
+    expect(commerceOwnerIdFromPhone(PHONE)).toBe(derived);
+    delete process.env.USER_WEB_COMMERCE_IDENTITY_KEY;
+    expect(() => commerceOwnerIdFromPhone(PHONE)).toThrow('COMMERCE_IDENTITY_KEY_UNAVAILABLE');
   });
 
   it('fails closed when the server-only commerce mock gate is disabled', async () => {
@@ -318,6 +333,47 @@ describe('private assets', () => {
     expect(deleteAsset).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps an uncertain delete dialog open and retries with the same logical key', async () => {
+    const deleteAsset = vi
+      .fn<CommerceGateway['deleteAsset']>()
+      .mockRejectedValueOnce(Object.assign(new Error('LOCK'), { outcome: 'UNCERTAIN' }))
+      .mockResolvedValueOnce({ accepted: true });
+    const user = userEvent.setup();
+    render(<AssetLibrary initial={assets} gateway={gateway({ deleteAsset })} ownerId={OWNER} />);
+    await user.click(screen.getByRole('button', { name: '删除海边公路.mp4' }));
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
+    expect(await screen.findByRole('dialog')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('同一请求恢复');
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
+    expect(deleteAsset).toHaveBeenCalledTimes(2);
+    expect(deleteAsset.mock.calls[1]?.[1].idempotencyKey).toBe(
+      deleteAsset.mock.calls[0]?.[1].idempotencyKey,
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps an uncertain rename dialog open and retries with the same logical key', async () => {
+    const renameAsset = vi
+      .fn<CommerceGateway['renameAsset']>()
+      .mockRejectedValueOnce(Object.assign(new Error('PENDING'), { outcome: 'UNCERTAIN' }))
+      .mockResolvedValueOnce({ ...assets.items[0], name: '恢复后名称.mp4' });
+    const user = userEvent.setup();
+    render(<AssetLibrary initial={assets} gateway={gateway({ renameAsset })} ownerId={OWNER} />);
+    await user.click(screen.getByRole('button', { name: '重命名' }));
+    const input = screen.getByLabelText('新名称');
+    await user.clear(input);
+    await user.type(input, '恢复后名称.mp4');
+    await user.click(screen.getByRole('button', { name: '保存名称' }));
+    expect(await screen.findByRole('dialog')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('同一请求恢复');
+    await user.click(screen.getByRole('button', { name: '保存名称' }));
+    expect(renameAsset).toHaveBeenCalledTimes(2);
+    expect(renameAsset.mock.calls[1]?.[2].idempotencyKey).toBe(
+      renameAsset.mock.calls[0]?.[2].idempotencyKey,
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
   it('keeps fixture assets isolated by authenticated owner', async () => {
     await expect(commerceGateway.listAssets({}, { ownerId: OTHER_OWNER })).resolves.toMatchObject({
       items: [],
@@ -335,6 +391,34 @@ describe('private assets', () => {
 });
 
 describe('recharge orders', () => {
+  it('replays one order across concurrent calls and fresh module runtimes', async () => {
+    const input = { customAmountMinor: '1200' };
+    const context = {
+      ownerId: OWNER,
+      idempotencyKey: '0198f4d4-21c2-7b7d-8a03-000000009100',
+    };
+    const [first, concurrent] = await Promise.all([
+      commerceGateway.createOrder(input, context),
+      commerceGateway.createOrder(input, context),
+    ]);
+    expect(concurrent).toEqual(first);
+
+    vi.resetModules();
+    const freshGateway = (await import('../lib/commerce/gateway')).commerceGateway;
+    await expect(freshGateway.createOrder(input, context)).resolves.toEqual(first);
+    await expect(
+      freshGateway.createOrder({ customAmountMinor: '1300' }, context),
+    ).rejects.toMatchObject({
+      message: 'IDEMPOTENCY_CONFLICT',
+      outcome: 'DEFINITIVE_FAILURE',
+    });
+    const listed = (await freshGateway.listOrders({}, { ownerId: OWNER })) as {
+      items: Array<{ id: string }>;
+    };
+    const id = parseOrderCreateResult(first).order.id;
+    expect(listed.items.filter((item) => item.id === id)).toHaveLength(1);
+  });
+
   it('locks duplicate submission while pending and reuses one UUIDv7 key', async () => {
     let resolve!: (value: OrderCreateResult) => void;
     const createOrder = vi.fn<CommerceGateway['createOrder']>(
@@ -510,6 +594,66 @@ describe('recharge orders', () => {
 });
 
 describe('invoice applications', () => {
+  it('rejects a paid order without a paid timestamp from authoritative eligibility', async () => {
+    await commerceGateway.listOrders({}, { ownerId: OWNER });
+    const digest = createHash('sha256').update(`mock-finance:v1:${OWNER}`).digest('hex');
+    const path = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1', `.finance-${digest}.json`);
+    const state = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    const orders = state.orders;
+    if (!Array.isArray(orders)) throw new Error('EXPECTED_ORDER_STATE');
+    const missingPaidAtId = '0198f4d4-21c2-7b7d-8a03-000000007401';
+    orders.unshift({
+      id: missingPaidAtId,
+      amountMinor: '1200',
+      currency: 'CNY',
+      points: '1200',
+      status: 'PAID',
+      createdAt: '2026-09-12T10:00:00.000Z',
+    });
+    await writeFile(path, JSON.stringify(state), 'utf8');
+
+    const candidates = (await commerceGateway.listInvoiceCandidates({ ownerId: OWNER })) as {
+      items: Array<{ orderId: string }>;
+    };
+    expect(candidates.items).not.toContainEqual(
+      expect.objectContaining({ orderId: missingPaidAtId }),
+    );
+    await expect(
+      commerceGateway.createInvoice(
+        {
+          orderIds: [missingPaidAtId],
+          title: '上海光帧科技有限公司',
+          taxNumber: '91310000MA1K12345X',
+          email: 'billing@example.cn',
+        },
+        {
+          ownerId: OWNER,
+          idempotencyKey: '0198f4d4-21c2-7b7d-8a03-000000007402',
+        },
+      ),
+    ).rejects.toMatchObject({
+      message: 'ORDER_NOT_INVOICE_ELIGIBLE',
+      outcome: 'DEFINITIVE_FAILURE',
+    });
+  });
+
+  it('rejects a non-UUID invoice id returned by the gateway', async () => {
+    vi.spyOn(commerceGateway, 'createInvoice').mockResolvedValueOnce({
+      id: 'not-a-uuid',
+      status: 'SUBMITTED',
+    });
+    await expect(
+      createInvoiceAction(
+        {
+          orderIds: [ORDER_ID],
+          title: '上海光帧科技有限公司',
+          taxNumber: '91310000MA1K12345X',
+          email: 'billing@example.cn',
+        },
+        '0198f4d4-21c2-7b7d-8a03-000000009001',
+      ),
+    ).resolves.toMatchObject({ ok: false });
+  });
   it('keeps exact fen precision and rejects ineligible response shapes', () => {
     expect(formatMinorAmount('10001', 'CNY')).toBe('¥100.01');
     expect(formatMinorAmount('900719925474099301', 'CNY')).toBe('¥9,007,199,254,740,993.01');
@@ -577,8 +721,12 @@ describe('invoice applications', () => {
     };
     const first = await commerceGateway.createInvoice(input, context);
     await expect(commerceGateway.createInvoice(input, context)).resolves.toEqual(first);
+
+    vi.resetModules();
+    const freshGateway = (await import('../lib/commerce/gateway')).commerceGateway;
+    await expect(freshGateway.createInvoice(input, context)).resolves.toEqual(first);
     await expect(
-      commerceGateway.createInvoice(input, {
+      freshGateway.createInvoice(input, {
         ...context,
         idempotencyKey: '0198f4d4-21c2-7b7d-8a03-08a0da2a7996',
       }),
@@ -586,5 +734,16 @@ describe('invoice applications', () => {
       message: 'ORDER_NOT_INVOICE_ELIGIBLE',
       outcome: 'DEFINITIVE_FAILURE',
     });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
+    vi.resetModules();
+    const afterCommandTtl = (await import('../lib/commerce/gateway')).commerceGateway;
+    const candidatesAfterTtl = (await afterCommandTtl.listInvoiceCandidates({
+      ownerId: OWNER,
+    })) as { items: Array<{ orderId: string }> };
+    expect(candidatesAfterTtl.items).not.toContainEqual(
+      expect.objectContaining({ orderId: ORDER_ID }),
+    );
   });
 });

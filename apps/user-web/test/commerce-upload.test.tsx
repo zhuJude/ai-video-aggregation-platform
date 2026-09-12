@@ -2,9 +2,10 @@ import '@testing-library/jest-dom/vitest';
 
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -35,13 +36,18 @@ vi.mock('../lib/auth/server-session', () => {
 });
 
 import { completeUploadAction, createUploadSessionAction } from '../app/commerce-actions';
-import { PUT as putMockUpload } from '../app/api/commerce/mock-uploads/[token]/route';
+import {
+  GET as getMockUploadStatus,
+  PUT as putMockUpload,
+} from '../app/api/commerce/mock-uploads/[token]/route';
 import { AssetLibrary } from '../components/commerce/asset-library';
 import { commerceOwnerIdFromPhone } from '../lib/commerce/identity';
 import { createMockUploadGrant, verifyMockUploadGrant } from '../lib/commerce/mock-upload-boundary';
 import * as mockObjectStore from '../lib/commerce/mock-object-store';
 import {
+  getStoredMockUploadSha,
   listMockObjects,
+  openMockObjectContent,
   reserveMockUpload,
   storeMockUpload,
 } from '../lib/commerce/mock-object-store';
@@ -58,6 +64,7 @@ beforeEach(() => {
   sessionState.phone = PHONE;
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 17).toString('base64url');
+  process.env.USER_WEB_COMMERCE_IDENTITY_KEY = randomBytes(32).toString('base64url');
 });
 
 afterEach(() => {
@@ -66,16 +73,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
+  delete process.env.USER_WEB_COMMERCE_IDENTITY_KEY;
 });
 
 const emptyAssets: AssetPage = { items: [], pageInfo: {} };
 
-function installRouteXhr() {
+function installRouteXhr(options: { readonly loseFirstResponse?: boolean } = {}) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const state = { aborted: false, bytes: new Uint8Array() };
+  const state = { aborted: false, bytes: new Uint8Array(), requests: 0 };
 
   class RouteXhr {
     readonly upload = new EventTarget();
@@ -135,8 +143,17 @@ function installRouteXhr() {
           }),
           { params: Promise.resolve({ token }) },
         );
-        this.status = response.status;
-        this.responseText = await response.text();
+        state.requests += 1;
+        if (options.loseFirstResponse && state.requests === 1 && response.status === 200) {
+          this.status = 503;
+          this.responseText = JSON.stringify({
+            outcome: 'UNCERTAIN',
+            code: 'UPLOAD_LOCK_UNAVAILABLE',
+          });
+        } else {
+          this.status = response.status;
+          this.responseText = await response.text();
+        }
         this.onload?.(new ProgressEvent('load'));
       })().catch(() => {
         this.onerror?.(new ProgressEvent('error'));
@@ -534,26 +551,131 @@ describe('stateless commerce upload boundary', () => {
         .at(-1) ?? '',
     );
     const error = Object.assign(new Error('injected release failure'), { code: 'EPERM' });
-    await expect(
-      storeMockUpload(
-        grant,
-        new ReadableStream<Uint8Array>({
+    const attempted = await storeMockUpload(
+      grant,
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(PNG_BYTES);
+          controller.close();
+        },
+      }),
+      {
+        renameDirectory: (source, target) => {
+          if (source.endsWith('.store-lock')) return Promise.reject(error);
+          return rename(source, target);
+        },
+      },
+    ).then(
+      () => ({ ok: true as const }),
+      (caught: unknown) => ({ error: caught, ok: false as const }),
+    );
+    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    try {
+      expect(attempted).toMatchObject({
+        ok: false,
+        error: { code: 'LOCK_UNAVAILABLE', outcome: 'UNCERTAIN' },
+      });
+      expect((await readdir(root)).filter((file) => file.startsWith(grant.storageKey))).toEqual([]);
+    } finally {
+      await rm(resolve(root, '.store-lock'), { force: true, recursive: true });
+    }
+  });
+
+  it('recovers a stored receipt after the publish lock release becomes uncertain', async () => {
+    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const grant = verifyMockUploadGrant(
+      createMockUploadGrant(
+        { name: '发布完成.png', size: PNG_BYTES.byteLength, type: 'image/png' },
+        '0198f4d4-21c2-7b7d-8a03-000000001610',
+        ownerId,
+      )
+        .url.split('/')
+        .at(-1) ?? '',
+    );
+    let renameCount = 0;
+    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    try {
+      await expect(
+        storeMockUpload(
+          grant,
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(PNG_BYTES);
+              controller.close();
+            },
+          }),
+          {
+            renameDirectory: async (source, target) => {
+              renameCount += 1;
+              if (renameCount === 4) {
+                throw Object.assign(new Error('release uncertain'), { code: 'EPERM' });
+              }
+              await rename(source, target);
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'LOCK_UNAVAILABLE', outcome: 'UNCERTAIN' });
+      await expect(getStoredMockUploadSha(grant)).resolves.toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      await rm(resolve(root, '.store-lock'), { force: true, recursive: true });
+    }
+  });
+
+  it('rejects a file-handle identity swap between path validation and open', async () => {
+    const key = '0198f4d4-21c2-7b7d-8a03-000000001611';
+    const created = await createUploadSessionAction(
+      { name: '身份校验.png', size: PNG_BYTES.byteLength, type: 'image/png' },
+      key,
+    );
+    if (!created.ok) throw new Error('EXPECTED_UPLOAD_GRANT');
+    const uploaded = await putGrant(created, PNG_BYTES);
+    const receipt = parseUploadReceiptResponse(await uploaded.json());
+    await completeUploadAction(receipt.receipt, key);
+    const metadata = (await listMockObjects(commerceOwnerIdFromPhone(PHONE))).find(
+      (item) => item.assetId === key,
+    );
+    if (!metadata) throw new Error('EXPECTED_METADATA');
+    const alternate = resolve(
+      tmpdir(),
+      'ai-video-user-web-commerce-mock-v1',
+      `.race-${createUuidV7()}.bin`,
+    );
+    await writeFile(alternate, new TextEncoder().encode('private bytes'), { flag: 'wx' });
+    try {
+      await expect(
+        openMockObjectContent(metadata, { openFile: (_path, flags) => open(alternate, flags) }),
+      ).rejects.toMatchObject({ code: 'INVALID', outcome: 'DEFINITIVE_FAILURE' });
+    } finally {
+      await unlink(alternate).catch(() => undefined);
+    }
+  });
+
+  it('returns a typed uncertain response for an unexpected upload stream failure', async () => {
+    const created = await createUploadSessionAction(
+      { name: '流错误.png', size: PNG_BYTES.byteLength, type: 'image/png' },
+      '0198f4d4-21c2-7b7d-8a03-000000001612',
+    );
+    if (!created.ok) throw new Error('EXPECTED_UPLOAD_GRANT');
+    const token = created.data.url.split('/').at(-1) ?? '';
+    const response = await putMockUpload(
+      new Request(`https://app.example${created.data.url}`, {
+        body: new ReadableStream({
           start(controller) {
-            controller.enqueue(PNG_BYTES);
-            controller.close();
+            controller.error(new TypeError('simulated stream failure'));
           },
         }),
-        {
-          renameDirectory: (source, target) => {
-            if (source.endsWith('.store-lock')) return Promise.reject(error);
-            return rename(source, target);
-          },
+        duplex: 'half',
+        headers: {
+          ...created.data.headers,
+          origin: 'https://app.example',
+          'sec-fetch-site': 'same-origin',
         },
-      ),
-    ).rejects.toBe(error);
-    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
-    expect((await readdir(root)).filter((file) => file.startsWith(grant.storageKey))).toEqual([]);
-    await rm(resolve(root, '.store-lock'), { force: true, recursive: true });
+        method: 'PUT',
+      } as RequestInit),
+      { params: Promise.resolve({ token }) },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ outcome: 'UNCERTAIN', code: 'UPLOAD_UNCERTAIN' });
   });
 
   it('cleans stale partial metadata and orphaned content from the fixed mock store', async () => {
@@ -611,7 +733,31 @@ describe('stateless commerce upload boundary', () => {
     const response = await putGrant(created, PNG_BYTES);
     expect(response.status).toBe(200);
     const receipt = parseUploadReceiptResponse(await response.json());
-    const completed = await completeUploadAction(receipt.receipt, KEY);
+    expect(receipt.receipt).toEqual(expect.any(String));
+    const token = created.data.url.split('/').at(-1) ?? '';
+    const stored = await getMockUploadStatus(
+      new Request(`https://app.example${created.data.url}`),
+      {
+        params: Promise.resolve({ token }),
+      },
+    );
+    expect(stored.status).toBe(200);
+    const storedBody: unknown = JSON.parse(await stored.text());
+    if (
+      !storedBody ||
+      typeof storedBody !== 'object' ||
+      !('state' in storedBody) ||
+      storedBody.state !== 'STORED' ||
+      !('receipt' in storedBody) ||
+      typeof storedBody.receipt !== 'string'
+    ) {
+      throw new Error('EXPECTED_STORED_RECEIPT');
+    }
+    expect(storedBody.state).toBe('STORED');
+    expect(parseUploadReceiptResponse({ receipt: storedBody.receipt }).receipt).toBe(
+      storedBody.receipt,
+    );
+    const completed = await completeUploadAction(storedBody.receipt, KEY);
     expect(completed).toMatchObject({
       ok: true,
       data: { name: '真实帧.png', mimeType: 'image/png', sizeBytes: '8' },
@@ -686,6 +832,34 @@ describe('stateless commerce upload boundary', () => {
     expect(screen.getByRole('heading', { name: '真实上传.png' })).toBeVisible();
   });
 
+  it('recovers a lost PUT response through status without creating a second upload', async () => {
+    const xhr = installRouteXhr({ loseFirstResponse: true });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const href =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        const url = new URL(href, 'https://app.example');
+        return getMockUploadStatus(new Request(url), {
+          params: Promise.resolve({ token: url.pathname.split('/').at(-1) ?? '' }),
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    render(<AssetLibrary initial={emptyAssets} />);
+    await user.upload(
+      screen.getByLabelText('上传图片或视频'),
+      new File([PNG_BYTES], '响应丢失.png', { type: 'image/png' }),
+    );
+    expect(await screen.findByText('50%')).toBeVisible();
+    xhr.release();
+    expect(await screen.findByRole('button', { name: '恢复上传' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '恢复上传' }));
+    expect(await screen.findByText('上传完成，可在生成工作台中复用。')).toBeVisible();
+    expect(xhr.state.requests).toBe(1);
+    expect(screen.getByRole('heading', { name: '响应丢失.png' })).toBeVisible();
+  });
+
   it('aborts the production XHR transport immediately', async () => {
     const xhr = installRouteXhr();
     const user = userEvent.setup();
@@ -698,6 +872,24 @@ describe('stateless commerce upload boundary', () => {
     await user.click(screen.getByRole('button', { name: '取消上传' }));
     expect(xhr.state.aborted).toBe(true);
     expect(screen.getByText('上传已取消。')).toBeVisible();
+  });
+
+  it('aborts an active upload on unmount and never finalizes it', async () => {
+    const xhr = installRouteXhr();
+    const user = userEvent.setup();
+    const view = render(<AssetLibrary initial={emptyAssets} />);
+    await user.upload(
+      screen.getByLabelText('上传图片或视频'),
+      new File([PNG_BYTES], '卸载中.png', { type: 'image/png' }),
+    );
+    expect(await screen.findByText('50%')).toBeVisible();
+
+    view.unmount();
+    expect(xhr.state.aborted).toBe(true);
+    xhr.release();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 0));
+    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    expect((await listMockObjects(ownerId)).some((item) => item.name === '卸载中.png')).toBe(false);
   });
 
   it('budgets a 500 MB upload far beyond ten seconds while abort stays immediate', async () => {
@@ -1100,6 +1292,55 @@ describe('stateless commerce upload boundary', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toContain('no-store');
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(expected);
+  });
+
+  it('never resurrects a deleted seed when its command history expires', async () => {
+    const ownerId = commerceOwnerIdFromPhone(PHONE);
+    const assetId = '0198f4d4-21c2-7b7d-8a03-08a0da2a7102';
+    let gateway = (await import('../lib/commerce/gateway')).commerceGateway;
+    const before = (await gateway.listAssets({}, { ownerId })) as {
+      items: Array<{ id: string }>;
+    };
+    expect(before.items).toContainEqual(expect.objectContaining({ id: assetId }));
+    await gateway.deleteAsset(assetId, {
+      ownerId,
+      idempotencyKey: '0198f4d4-21c2-7b7d-8a03-000000008811',
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 25 * 60 * 60_000);
+    vi.resetModules();
+    gateway = (await import('../lib/commerce/gateway')).commerceGateway;
+    const after = (await gateway.listAssets({}, { ownerId })) as {
+      items: Array<{ id: string }>;
+    };
+    expect(after.items).not.toContainEqual(expect.objectContaining({ id: assetId }));
+  });
+
+  it('does not create seed-suppression markers for ordinary upload deletion', async () => {
+    const key = '0198f4d4-21c2-7b7d-8a03-000000008812';
+    const created = await createUploadSessionAction(
+      { name: '普通删除.png', size: PNG_BYTES.byteLength, type: 'image/png' },
+      key,
+    );
+    if (!created.ok) throw new Error('EXPECTED_UPLOAD_GRANT');
+    const uploaded = await putGrant(created, PNG_BYTES);
+    const receipt = parseUploadReceiptResponse(await uploaded.json());
+    await completeUploadAction(receipt.receipt, key);
+    const root = resolve(tmpdir(), 'ai-video-user-web-commerce-mock-v1');
+    const suppressionCount = () =>
+      readdir(root).then(
+        (files) =>
+          files.filter((file) => /^\.asset-suppression-[a-f0-9]{64}\.json$/.test(file)).length,
+      );
+    const before = await suppressionCount();
+    await (
+      await import('../lib/commerce/gateway')
+    ).commerceGateway.deleteAsset(key, {
+      ownerId: commerceOwnerIdFromPhone(PHONE),
+      idempotencyKey: '0198f4d4-21c2-7b7d-8a03-000000008813',
+    });
+    expect(await suppressionCount()).toBe(before);
   });
 
   it('persists rename and removes both stored content and metadata on delete', async () => {

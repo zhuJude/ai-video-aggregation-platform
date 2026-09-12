@@ -1,18 +1,21 @@
 import 'server-only';
 
 import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import {
+  chmod,
+  lstat,
   mkdir,
   open,
-  readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { UuidSchema } from '@repo/contracts/common';
@@ -28,6 +31,7 @@ const UPLOAD_RESERVATION_TTL_MS = 2 * 60 * 60_000 + 5 * 60_000;
 const AUXILIARY_TTL_MS = 10 * 60_000;
 const COMMAND_TTL_MS = 24 * 60 * 60_000;
 const MAX_COMMANDS = 1_000;
+const MAX_SEED_SUPPRESSIONS = 100;
 const MAX_FILES = 100;
 const MAX_TOTAL_BYTES = 1024n * 1024n * 1024n;
 const STORAGE_KEY = /^[a-f0-9]{64}$/;
@@ -53,6 +57,7 @@ export interface MockObjectMetadata {
   readonly expiresAt: string;
   readonly state: MockObjectState;
   readonly kind: 'UPLOAD' | 'RESULT';
+  readonly source: 'UPLOAD' | 'SEED';
 }
 
 export class MockObjectStoreError extends Error {
@@ -84,6 +89,81 @@ function storeRoot(): string {
     throw new MockObjectStoreError('INVALID');
   }
   return root;
+}
+
+function samePath(first: string, second: string): boolean {
+  return process.platform === 'win32'
+    ? first.toLocaleLowerCase('en-US') === second.toLocaleLowerCase('en-US')
+    : first === second;
+}
+
+async function ensureStoreRoot(): Promise<string> {
+  const root = storeRoot();
+  const realTemporaryRoot = await realpath(resolve(tmpdir()));
+  const expected = resolve(realTemporaryRoot, 'ai-video-user-web-commerce-mock-v1');
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const rootStat = await lstat(root);
+  const actual = await realpath(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory() || !samePath(actual, expected)) {
+    throw new MockObjectStoreError('INVALID');
+  }
+  await chmod(root, 0o700).catch(() => undefined);
+  return root;
+}
+
+type FileIdentity = { readonly dev: number; readonly ino: number };
+type OpenFile = (path: string, flags: number) => ReturnType<typeof open>;
+
+function sameFileIdentity(first: FileIdentity, second: FileIdentity): boolean {
+  return (
+    first.ino !== 0 && second.ino !== 0 && first.dev === second.dev && first.ino === second.ino
+  );
+}
+
+async function openVerifiedRegularFile(path: string, openFile: OpenFile = open) {
+  const root = await ensureStoreRoot();
+  if (dirname(path) !== root && dirname(dirname(path)) !== root) {
+    throw new MockObjectStoreError('INVALID');
+  }
+  const rootBefore = await lstat(root);
+  const canonicalRoot = await realpath(root);
+  const before = await lstat(path);
+  if (before.isSymbolicLink() || !before.isFile()) throw new MockObjectStoreError('INVALID');
+  const actual = await realpath(path);
+  const expected = resolve(canonicalRoot, relative(root, path));
+  if (!samePath(actual, expected)) throw new MockObjectStoreError('INVALID');
+  const noFollow = 'O_NOFOLLOW' in fsConstants ? fsConstants.O_NOFOLLOW : 0;
+  const handle = await openFile(path, fsConstants.O_RDONLY | noFollow);
+  try {
+    const opened = await handle.stat();
+    const after = await lstat(path);
+    const rootAfter = await lstat(root);
+    const canonicalRootAfter = await realpath(root);
+    if (
+      !opened.isFile() ||
+      after.isSymbolicLink() ||
+      !after.isFile() ||
+      !sameFileIdentity(before, opened) ||
+      !sameFileIdentity(after, opened) ||
+      !sameFileIdentity(rootBefore, rootAfter) ||
+      !samePath(canonicalRootAfter, canonicalRoot)
+    ) {
+      throw new MockObjectStoreError('INVALID');
+    }
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function readRegularText(path: string): Promise<string> {
+  const handle = await openVerifiedRegularFile(path);
+  try {
+    return await handle.readFile('utf8');
+  } finally {
+    await handle.close();
+  }
 }
 
 function storeAuxiliaryPath(file: string): string {
@@ -157,7 +237,7 @@ function parseLockOwner(value: unknown): StoreLockOwner | undefined {
 
 async function readLockOwner(directory: string): Promise<StoreLockOwner | undefined> {
   try {
-    return parseLockOwner(JSON.parse(await readFile(lockOwnerPath(directory), 'utf8')));
+    return parseLockOwner(JSON.parse(await readRegularText(lockOwnerPath(directory))));
   } catch {
     return undefined;
   }
@@ -345,8 +425,7 @@ async function withStoreLock<T>(
   policy: StoreLockPolicy = {},
   onReleaseFailure?: () => Promise<void>,
 ): Promise<T> {
-  const root = storeRoot();
-  await mkdir(root, { recursive: true });
+  await ensureStoreRoot();
   const lockPath = storeAuxiliaryPath('.store-lock');
   let owner: StoreLockOwner | undefined;
   const attempts = policy.attempts ?? STORE_LOCK_ATTEMPTS;
@@ -371,10 +450,51 @@ async function withStoreLock<T>(
     await releaseStoreLockWith(lockPath, owner, renameDirectory);
   } catch (error) {
     await onReleaseFailure?.().catch(() => undefined);
-    throw error;
+    if (error instanceof MockObjectStoreError) throw error;
+    throw new MockObjectStoreError('LOCK_UNAVAILABLE');
   }
   if (!operationResult.ok) throw operationResult.error;
   return operationResult.value;
+}
+
+export async function transactMockStoreJson<T>(
+  file: string,
+  operation: (current: unknown) =>
+    | Promise<{
+        readonly result: T;
+        readonly next?: unknown;
+      }>
+    | {
+        readonly result: T;
+        readonly next?: unknown;
+      },
+): Promise<T> {
+  return withStoreLock(async () => {
+    const target = storeAuxiliaryPath(file);
+    const current = await readRegularText(target).then(
+      (text) => JSON.parse(text) as unknown,
+      (error: unknown) => {
+        if (hasErrorCode(error, 'ENOENT')) return undefined;
+        throw error;
+      },
+    );
+    const { result, next } = await operation(current);
+    if (next !== undefined) {
+      const temporary = storeAuxiliaryPath(`.auxiliary-${randomUUID()}.tmp`);
+      try {
+        await writeFile(temporary, JSON.stringify(next), {
+          encoding: 'utf8',
+          flag: 'wx',
+          mode: 0o600,
+        });
+        await rename(temporary, target);
+      } catch (error) {
+        await removeIfPresent(temporary).catch(() => undefined);
+        throw error;
+      }
+    }
+    return result;
+  });
 }
 
 export async function writeChunkFully(
@@ -422,6 +542,7 @@ function parseMetadata(value: unknown): MockObjectMetadata {
     'expiresAt',
     'state',
     'kind',
+    'source',
   ];
   if (Object.keys(item).some((key) => !allowed.includes(key))) {
     throw new MockObjectStoreError('INVALID');
@@ -452,6 +573,7 @@ function parseMetadata(value: unknown): MockObjectMetadata {
     typeof item.expiresAt !== 'string' ||
     !Number.isFinite(Date.parse(item.expiresAt)) ||
     (item.kind !== 'UPLOAD' && item.kind !== 'RESULT') ||
+    (item.source !== 'UPLOAD' && item.source !== 'SEED') ||
     (item.state !== 'UPLOADING' && item.state !== 'STORED' && item.state !== 'AVAILABLE')
   ) {
     throw new MockObjectStoreError('INVALID');
@@ -472,7 +594,7 @@ function parseMetadata(value: unknown): MockObjectMetadata {
 
 async function readMetadata(storageKey: string): Promise<MockObjectMetadata | undefined> {
   try {
-    return parseMetadata(JSON.parse(await readFile(objectPath(storageKey, '.json'), 'utf8')));
+    return parseMetadata(JSON.parse(await readRegularText(objectPath(storageKey, '.json'))));
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
     throw error;
@@ -495,6 +617,60 @@ async function writeMetadata(metadata: MockObjectMetadata): Promise<void> {
 async function removeObjectFiles(storageKey: string): Promise<void> {
   await removeIfPresent(objectPath(storageKey, '.bin'));
   await removeIfPresent(objectPath(storageKey, '.json'));
+}
+
+function suppressionPath(ownerId: string, assetId: string): string {
+  const digest = createHash('sha256')
+    .update(`mock-seed-suppression:v1:${ownerId}:${assetId}`, 'utf8')
+    .digest('hex');
+  return storeAuxiliaryPath(`.asset-suppression-${digest}.json`);
+}
+
+async function isSeedSuppressed(ownerId: string, assetId: string): Promise<boolean> {
+  try {
+    const value = JSON.parse(await readRegularText(suppressionPath(ownerId, assetId))) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new MockObjectStoreError('INVALID');
+    }
+    const marker = value as Record<string, unknown>;
+    if (
+      Object.keys(marker).sort().join(',') !== 'assetId,createdAt,ownerId,version' ||
+      marker.version !== 1 ||
+      marker.ownerId !== ownerId ||
+      marker.assetId !== assetId ||
+      typeof marker.createdAt !== 'string' ||
+      !Number.isFinite(Date.parse(marker.createdAt))
+    ) {
+      throw new MockObjectStoreError('INVALID');
+    }
+    return true;
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) return false;
+    throw error;
+  }
+}
+
+async function suppressSeed(ownerId: string, assetId: string): Promise<void> {
+  if (await isSeedSuppressed(ownerId, assetId)) return;
+  const suppressions = (await readdir(storeRoot())).filter((file) =>
+    /^\.asset-suppression-[a-f0-9]{64}\.json$/.test(file),
+  );
+  if (suppressions.length >= MAX_SEED_SUPPRESSIONS) {
+    throw new MockObjectStoreError('CAPACITY');
+  }
+  const target = suppressionPath(ownerId, assetId);
+  const temporary = storeAuxiliaryPath(`.asset-suppression-${randomUUID()}.tmp`);
+  try {
+    await writeFile(
+      temporary,
+      JSON.stringify({ version: 1, ownerId, assetId, createdAt: new Date().toISOString() }),
+      { encoding: 'utf8', flag: 'wx', mode: 0o600 },
+    );
+    await rename(temporary, target);
+  } catch (error) {
+    await removeIfPresent(temporary).catch(() => undefined);
+    throw error;
+  }
 }
 
 type AssetCommandOperation = 'DELETE' | 'RENAME';
@@ -588,7 +764,7 @@ async function readCommand(
 ): Promise<AssetCommandRecord | undefined> {
   try {
     return parseCommand(
-      JSON.parse(await readFile(commandPath(ownerId, operation, idempotencyKey), 'utf8')),
+      JSON.parse(await readRegularText(commandPath(ownerId, operation, idempotencyKey))),
     );
   } catch (error) {
     if (hasErrorCode(error, 'ENOENT')) return undefined;
@@ -616,7 +792,7 @@ async function cleanupCommandsUnlocked(now = Date.now()): Promise<AssetCommandRe
     if (!/^\.asset-command-[a-f0-9]{64}\.json$/.test(file)) continue;
     const target = storeAuxiliaryPath(file);
     try {
-      const command = parseCommand(JSON.parse(await readFile(target, 'utf8')));
+      const command = parseCommand(JSON.parse(await readRegularText(target)));
       if (Date.parse(command.expiresAt) <= now) await removeIfPresent(target);
       else commands.push(command);
     } catch {
@@ -644,10 +820,12 @@ async function cleanupUnlocked(now = Date.now()): Promise<MockObjectMetadata[]> 
         const content =
           item.state === 'UPLOADING'
             ? undefined
-            : await stat(objectPath(storageKey, '.bin')).catch(() => undefined);
+            : await lstat(objectPath(storageKey, '.bin')).catch(() => undefined);
         if (
           item.state !== 'UPLOADING' &&
-          (!content?.isFile() || BigInt(content.size) !== BigInt(item.sizeBytes))
+          (content?.isSymbolicLink() ||
+            !content?.isFile() ||
+            BigInt(content.size) !== BigInt(item.sizeBytes))
         ) {
           await removeObjectFiles(storageKey);
         } else {
@@ -747,6 +925,7 @@ async function reserveMockUploadUnlocked(grant: VerifiedUploadGrant): Promise<vo
     expiresAt: new Date(Date.parse(createdAt) + UPLOAD_RESERVATION_TTL_MS).toISOString(),
     state: 'UPLOADING',
     kind: 'UPLOAD',
+    source: 'UPLOAD',
   });
 }
 
@@ -836,31 +1015,39 @@ export async function storeMockUpload(
     await handle.sync();
     await handle.close();
     const sha256 = hash.digest('hex');
-    return await withStoreLock(async () => {
-      const current = await readMetadata(grant.storageKey);
-      if (!current || !matchesGrant(current, grant)) throw new MockObjectStoreError('NOT_FOUND');
-      if ((current.state === 'STORED' || current.state === 'AVAILABLE') && current.sha256) {
-        const existingContent = await stat(contentPath).catch(() => undefined);
-        if (
-          existingContent?.isFile() &&
-          BigInt(existingContent.size) === BigInt(current.sizeBytes) &&
-          current.sha256 === sha256
-        ) {
-          await removeIfPresent(temporary);
-          return current.sha256;
+    return await withStoreLock(
+      async () => {
+        const current = await readMetadata(grant.storageKey);
+        if (!current || !matchesGrant(current, grant)) throw new MockObjectStoreError('NOT_FOUND');
+        if ((current.state === 'STORED' || current.state === 'AVAILABLE') && current.sha256) {
+          const existingContent = await lstat(contentPath).catch(() => undefined);
+          if (
+            !existingContent?.isSymbolicLink() &&
+            existingContent?.isFile() &&
+            BigInt(existingContent.size) === BigInt(current.sizeBytes) &&
+            current.sha256 === sha256
+          ) {
+            await removeIfPresent(temporary);
+            return current.sha256;
+          }
+          throw new MockObjectStoreError('INVALID');
         }
-        throw new MockObjectStoreError('INVALID');
-      }
-      await rename(temporary, contentPath);
-      publishState.content = true;
-      await writeMetadata({
-        ...current,
-        sha256,
-        expiresAt: new Date(Date.now() + OBJECT_TTL_MS).toISOString(),
-        state: 'STORED',
-      });
-      return sha256;
-    });
+        await rename(temporary, contentPath);
+        publishState.content = true;
+        await writeMetadata({
+          ...current,
+          sha256,
+          expiresAt: new Date(Date.now() + OBJECT_TTL_MS).toISOString(),
+          state: 'STORED',
+        });
+        return sha256;
+      },
+      lockPolicy,
+      () => {
+        releaseState.failed = true;
+        return Promise.resolve();
+      },
+    );
   } catch (error) {
     await reader.cancel().catch(() => undefined);
     await handle?.close().catch(() => undefined);
@@ -881,6 +1068,26 @@ export async function storeMockUpload(
   }
 }
 
+export async function getStoredMockUploadSha(
+  grant: VerifiedUploadGrant,
+): Promise<string | undefined> {
+  // Status recovery is deliberately lock-free: metadata is atomically replaced, and a failed
+  // post-publish lock release must not prevent the signed uploader from learning the durable result.
+  const metadata = await readMetadata(grant.storageKey);
+  if (!metadata || !matchesGrant(metadata, grant)) return undefined;
+  if ((metadata.state !== 'STORED' && metadata.state !== 'AVAILABLE') || !metadata.sha256) {
+    return undefined;
+  }
+  const content = await lstat(objectPath(grant.storageKey, '.bin')).catch(() => undefined);
+  if (
+    content?.isSymbolicLink() ||
+    !content?.isFile() ||
+    BigInt(content.size) !== BigInt(metadata.sizeBytes)
+  )
+    return undefined;
+  return metadata.sha256;
+}
+
 export async function completeMockUpload(receipt: VerifiedUploadReceipt): Promise<AssetListItem> {
   return withStoreLock(async () => {
     const metadata = await readMetadata(receipt.storageKey);
@@ -892,8 +1099,12 @@ export async function completeMockUpload(receipt: VerifiedUploadReceipt): Promis
     ) {
       throw new MockObjectStoreError('NOT_FOUND');
     }
-    const stored = await stat(objectPath(receipt.storageKey, '.bin')).catch(() => undefined);
-    if (!stored?.isFile() || BigInt(stored.size) !== BigInt(receipt.sizeBytes)) {
+    const stored = await lstat(objectPath(receipt.storageKey, '.bin')).catch(() => undefined);
+    if (
+      stored?.isSymbolicLink() ||
+      !stored?.isFile() ||
+      BigInt(stored.size) !== BigInt(receipt.sizeBytes)
+    ) {
       throw new MockObjectStoreError('NOT_FOUND');
     }
     if (metadata.state !== 'AVAILABLE') await writeMetadata({ ...metadata, state: 'AVAILABLE' });
@@ -916,7 +1127,7 @@ export async function ensureMockSeedObjects(
 ): Promise<void> {
   await withStoreLock(async () => {
     const current = await cleanupUnlocked();
-    const commands = await cleanupCommandsUnlocked();
+    await cleanupCommandsUnlocked();
     let total = current.reduce((sum, item) => sum + BigInt(item.sizeBytes), 0n);
     let count = current.length;
     for (const seed of seeds) {
@@ -933,15 +1144,7 @@ export async function ensureMockSeedObjects(
       ) {
         throw new MockObjectStoreError('INVALID');
       }
-      if (
-        commands.some(
-          (command) =>
-            command.operation === 'DELETE' &&
-            command.ownerId === ownerId &&
-            command.assetId === seed.assetId &&
-            command.state === 'COMPLETE',
-        )
-      ) {
+      if (await isSeedSuppressed(ownerId, seed.assetId)) {
         continue;
       }
       const storageKey = createHash('sha256')
@@ -972,6 +1175,7 @@ export async function ensureMockSeedObjects(
           expiresAt: new Date(Date.now() + OBJECT_TTL_MS).toISOString(),
           state: 'AVAILABLE',
           kind: seed.kind,
+          source: 'SEED',
         });
         total += size;
         count += 1;
@@ -1083,7 +1287,12 @@ export async function deleteMockObject(
         (item) =>
           item.assetId === assetId && item.ownerId === ownerId && item.state === 'AVAILABLE',
       );
-      if (pendingAsset) await removeObjectFiles(pendingAsset.storageKey);
+      if (pendingAsset) {
+        if (pendingAsset.source === 'SEED') {
+          await suppressSeed(ownerId, assetId);
+        }
+        await removeObjectFiles(pendingAsset.storageKey);
+      }
       await writeCommand({ ...existing, state: 'COMPLETE' });
       return true;
     }
@@ -1115,6 +1324,7 @@ export async function deleteMockObject(
       expiresAt: new Date(Date.parse(createdAt) + COMMAND_TTL_MS).toISOString(),
     };
     await writeCommand(command);
+    if (metadata.source === 'SEED') await suppressSeed(ownerId, assetId);
     await removeObjectFiles(metadata.storageKey);
     await writeCommand({ ...command, state: 'COMPLETE' });
     return true;
@@ -1123,4 +1333,18 @@ export async function deleteMockObject(
 
 export function mockObjectContentPath(metadata: MockObjectMetadata): string {
   return objectPath(metadata.storageKey, '.bin');
+}
+
+export async function openMockObjectContent(
+  metadata: MockObjectMetadata,
+  policy: { readonly openFile?: OpenFile } = {},
+) {
+  const path = objectPath(metadata.storageKey, '.bin');
+  const handle = await openVerifiedRegularFile(path, policy.openFile);
+  const opened = await handle.stat();
+  if (!opened.isFile() || BigInt(opened.size) !== BigInt(metadata.sizeBytes)) {
+    await handle.close();
+    throw new MockObjectStoreError('INVALID');
+  }
+  return { handle, size: opened.size };
 }

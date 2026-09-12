@@ -1,5 +1,7 @@
 'use server';
 
+import { UuidSchema } from '@repo/contracts/common';
+
 import {
   AuthenticationRequiredError,
   requireMutableAuthenticatedServerSession,
@@ -7,6 +9,7 @@ import {
 } from '../lib/auth/server-session';
 import { commerceGateway } from '../lib/commerce/gateway';
 import { commerceOwnerIdFromPhone } from '../lib/commerce/identity';
+import { isUuidV7 } from '../lib/tasks/identifiers';
 import {
   createMockUploadGrant,
   verifyMockUploadReceipt,
@@ -151,6 +154,8 @@ export async function createInvoiceAction(
       Object.keys(value).sort().join(',') !== 'id,status' ||
       !('id' in value) ||
       typeof value.id !== 'string' ||
+      !UuidSchema.safeParse(value.id).success ||
+      !isUuidV7(value.id) ||
       !('status' in value) ||
       value.status !== 'SUBMITTED'
     ) {

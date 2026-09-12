@@ -7,6 +7,12 @@ import { commerceOwnerIdFromPhone } from './identity';
 import { createMockAssetAccess } from './mock-upload-boundary';
 import { requireMockCommerce } from './mock-config';
 import {
+  MockFinanceStoreError,
+  readMockFinanceState,
+  runMockFinanceCommand,
+  type MockFinanceState,
+} from './mock-finance-store';
+import {
   completeMockUpload,
   deleteMockObject,
   ensureMockSeedObjects,
@@ -15,13 +21,7 @@ import {
   MockObjectStoreError,
   renameMockObject,
 } from './mock-object-store';
-import type {
-  AssetFilters,
-  CommerceGateway,
-  InvoiceHistoryItem,
-  LedgerTransaction,
-  RechargeOrderView,
-} from './types';
+import type { AssetFilters, CommerceGateway, InvoiceHistoryItem, RechargeOrderView } from './types';
 
 export class CommerceCommandError extends Error {
   readonly outcome = 'DEFINITIVE_FAILURE' as const;
@@ -32,8 +32,6 @@ const ASSET_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7101';
 const IMAGE_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7102';
 const PAID_ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7201';
 const PENDING_ORDER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a7202';
-
-type Owned<T> = T & { readonly ownerId: string };
 
 function fixtureOwnerId(): string {
   return commerceOwnerIdFromPhone(FIXTURE_PHONE);
@@ -60,11 +58,8 @@ const fixtureAssets = [
   },
 ] as const;
 
-const ledger: readonly Owned<LedgerTransaction>[] = [
+const fixtureLedger = [
   {
-    get ownerId() {
-      return fixtureOwnerId();
-    },
     id: 'ledger-recharge-1',
     type: 'CREDIT',
     direction: 'CREDIT',
@@ -74,9 +69,6 @@ const ledger: readonly Owned<LedgerTransaction>[] = [
     reference: { kind: 'ORDER', id: PAID_ORDER_ID, label: '充值订单' },
   },
   {
-    get ownerId() {
-      return fixtureOwnerId();
-    },
     id: 'ledger-reserve-1',
     type: 'RESERVE',
     direction: 'TRANSFER',
@@ -86,9 +78,6 @@ const ledger: readonly Owned<LedgerTransaction>[] = [
     reference: { kind: 'TASK', id: 'task-1', label: '生成任务 T20260831-0001' },
   },
   {
-    get ownerId() {
-      return fixtureOwnerId();
-    },
     id: 'ledger-settle-1',
     type: 'SETTLE',
     direction: 'DEBIT',
@@ -97,13 +86,10 @@ const ledger: readonly Owned<LedgerTransaction>[] = [
     occurredAt: '2026-08-31T11:00:00.000Z',
     reference: { kind: 'TASK', id: 'task-2', label: '生成任务 T20260831-0002' },
   },
-];
+] as const;
 
-const orders: Owned<RechargeOrderView>[] = [
+const fixtureOrders: readonly RechargeOrderView[] = [
   {
-    get ownerId() {
-      return fixtureOwnerId();
-    },
     id: PAID_ORDER_ID,
     amountMinor: '10001',
     currency: 'CNY',
@@ -113,9 +99,6 @@ const orders: Owned<RechargeOrderView>[] = [
     paidAt: '2026-08-31T09:01:00.000Z',
   },
   {
-    get ownerId() {
-      return fixtureOwnerId();
-    },
     id: PENDING_ORDER_ID,
     amountMinor: '9900',
     currency: 'CNY',
@@ -126,19 +109,26 @@ const orders: Owned<RechargeOrderView>[] = [
   },
 ];
 
-const invoices: Owned<InvoiceHistoryItem>[] = [];
-const invoicedOrders = new Set<string>();
-const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000;
-const IDEMPOTENCY_MAX_ENTRIES = 10_000;
-const idempotency = new Map<
-  string,
-  {
-    readonly ownerId: string;
-    readonly fingerprint: string;
-    readonly value: unknown;
-    readonly expiresAt: number;
-  }
->();
+function financeSeed(ownerId: string): MockFinanceState {
+  const isFixtureOwner = ownerId === fixtureOwnerId();
+  return {
+    version: 1,
+    ownerId,
+    balance: isFixtureOwner
+      ? {
+          available: '9007199254740993',
+          frozen: '1200',
+          totalRecharged: '9007199254742193',
+          totalConsumed: '800',
+        }
+      : { available: '0', frozen: '0', totalRecharged: '0', totalConsumed: '0' },
+    ledger: isFixtureOwner ? fixtureLedger : [],
+    orders: isFixtureOwner ? fixtureOrders : [],
+    invoices: [],
+    invoicedOrderIds: [],
+    commands: [],
+  };
+}
 
 function assertOwner(ownerId: string): void {
   requireMockCommerce();
@@ -163,28 +153,17 @@ function translateStoreError(error: unknown): never {
   throw error;
 }
 
-function command<T>(key: string, ownerId: string, fingerprint: string, create: () => T): T {
-  if (!isUuidV7(key)) throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
-  const now = Date.now();
-  for (const [candidateKey, entry] of idempotency) {
-    if (entry.expiresAt <= now) idempotency.delete(candidateKey);
-  }
-  const existing = idempotency.get(key);
-  if (existing) {
-    if (existing.ownerId !== ownerId || existing.fingerprint !== fingerprint)
+function translateFinanceError(error: unknown): never {
+  if (error instanceof MockFinanceStoreError) {
+    if (error.code === 'IDEMPOTENCY_CONFLICT') {
       throw new CommerceCommandError('IDEMPOTENCY_CONFLICT');
-    return structuredClone(existing.value) as T;
+    }
+    if (error.code === 'CAPACITY') {
+      throw new CommerceCommandError('IDEMPOTENCY_CAPACITY_EXCEEDED');
+    }
+    throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
   }
-  if (idempotency.size >= IDEMPOTENCY_MAX_ENTRIES)
-    throw new CommerceCommandError('IDEMPOTENCY_CAPACITY_EXCEEDED');
-  const value = create();
-  idempotency.set(key, {
-    ownerId,
-    fingerprint,
-    value: structuredClone(value),
-    expiresAt: now + IDEMPOTENCY_TTL_MS,
-  });
-  return value;
+  throw error;
 }
 
 function listOffset(cursor: string | undefined): number {
@@ -293,33 +272,25 @@ export const commerceGateway: CommerceGateway = {
 
   async getWallet(filters, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const all = ledger.filter(
-      (transaction) =>
-        transaction.ownerId === context.ownerId &&
-        (!filters.type || transaction.type === filters.type),
+    const state = await readMockFinanceState(context.ownerId, () => financeSeed(context.ownerId));
+    const all = state.ledger.filter(
+      (transaction) => !filters.type || transaction.type === filters.type,
     );
     const offset = listOffset(filters.cursor);
-    return Promise.resolve({
-      balance: {
-        available: context.ownerId === fixtureOwnerId() ? '9007199254740993' : '0',
-        frozen: context.ownerId === fixtureOwnerId() ? '1200' : '0',
-        totalRecharged: context.ownerId === fixtureOwnerId() ? '9007199254742193' : '0',
-        totalConsumed: context.ownerId === fixtureOwnerId() ? '800' : '0',
-      },
-      transactions: all.slice(offset, offset + 2).map(publicValue),
+    return {
+      balance: state.balance,
+      transactions: all.slice(offset, offset + 2),
       pageInfo: {
         ...(offset > 0 ? { previousCursor: 'page-1' } : {}),
         ...(offset + 2 < all.length ? { nextCursor: 'page-2' } : {}),
       },
-    });
+    };
   },
 
   async listOrders(filters, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const all = orders.filter(
-      (order) =>
-        order.ownerId === context.ownerId && (!filters.status || order.status === filters.status),
-    );
+    const state = await readMockFinanceState(context.ownerId, () => financeSeed(context.ownerId));
+    const all = state.orders.filter((order) => !filters.status || order.status === filters.status);
     const offset = listOffset(filters.cursor);
     return Promise.resolve({
       packages: [
@@ -328,7 +299,7 @@ export const commerceGateway: CommerceGateway = {
         { id: 'studio', amountMinor: '89900', currency: 'CNY', points: '100000' },
       ],
       customAmount: { minMinor: '100', maxMinor: '500000', stepMinor: '100' },
-      items: all.slice(offset, offset + 2).map(publicValue),
+      items: all.slice(offset, offset + 2),
       pageInfo: {
         ...(offset > 0 ? { previousCursor: 'page-1' } : {}),
         ...(offset + 2 < all.length ? { nextCursor: 'page-2' } : {}),
@@ -338,52 +309,63 @@ export const commerceGateway: CommerceGateway = {
 
   async createOrder(input, context): Promise<unknown> {
     assertOwner(context.ownerId);
+    if (!isUuidV7(context.idempotencyKey))
+      throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
     const fingerprint = JSON.stringify(input);
-    return Promise.resolve(
-      command(context.idempotencyKey, context.ownerId, `order:${fingerprint}`, () => {
-        const packages = new Map([
-          ['starter', { amountMinor: '9900', points: '10000' }],
-          ['creator', { amountMinor: '29900', points: '32000' }],
-          ['studio', { amountMinor: '89900', points: '100000' }],
-        ]);
-        const selected = input.packageId ? packages.get(input.packageId) : undefined;
-        const custom = input.customAmountMinor;
-        if ((selected ? 1 : 0) + (custom ? 1 : 0) !== 1)
-          throw new CommerceCommandError('INVALID_RECHARGE_SELECTION');
-        const amountMinor = selected?.amountMinor ?? custom ?? '';
-        if (!/^\d+$/.test(amountMinor)) throw new CommerceCommandError('INVALID_RECHARGE_AMOUNT');
-        const amount = BigInt(amountMinor);
-        if (!selected && (amount < 100n || amount > 500000n || amount % 100n !== 0n))
-          throw new CommerceCommandError('INVALID_RECHARGE_AMOUNT');
-        const now = new Date();
-        const order: Owned<RechargeOrderView> = {
-          ownerId: context.ownerId,
-          id: createUuidV7(now.getTime()),
-          amountMinor,
-          currency: 'CNY',
-          points: selected?.points ?? amountMinor,
-          status: 'PENDING',
-          createdAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
-        };
-        orders.unshift(order);
-        return {
-          order: publicValue(order),
-          payment: {
-            environment: 'MOCK',
-            kind: 'DISPLAY_ONLY',
-            expiresAt: order.expiresAt,
-          },
-        };
-      }),
-    );
+    try {
+      return await runMockFinanceCommand(
+        context.ownerId,
+        () => financeSeed(context.ownerId),
+        {
+          key: context.idempotencyKey,
+          fingerprint: `order:${fingerprint}`,
+          kind: 'ORDER',
+        },
+        (state) => {
+          const packages = new Map([
+            ['starter', { amountMinor: '9900', points: '10000' }],
+            ['creator', { amountMinor: '29900', points: '32000' }],
+            ['studio', { amountMinor: '89900', points: '100000' }],
+          ]);
+          const selected = input.packageId ? packages.get(input.packageId) : undefined;
+          const custom = input.customAmountMinor;
+          if ((selected ? 1 : 0) + (custom ? 1 : 0) !== 1)
+            throw new CommerceCommandError('INVALID_RECHARGE_SELECTION');
+          const amountMinor = selected?.amountMinor ?? custom ?? '';
+          if (!/^\d+$/.test(amountMinor)) throw new CommerceCommandError('INVALID_RECHARGE_AMOUNT');
+          const amount = BigInt(amountMinor);
+          if (!selected && (amount < 100n || amount > 500000n || amount % 100n !== 0n))
+            throw new CommerceCommandError('INVALID_RECHARGE_AMOUNT');
+          const now = new Date();
+          const order: RechargeOrderView = {
+            id: createUuidV7(now.getTime()),
+            amountMinor,
+            currency: 'CNY',
+            points: selected?.points ?? amountMinor,
+            status: 'PENDING',
+            createdAt: now.toISOString(),
+            expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
+          };
+          state.orders.unshift(order);
+          return {
+            order,
+            payment: {
+              environment: 'MOCK',
+              kind: 'DISPLAY_ONLY',
+              expiresAt: order.expiresAt,
+            },
+          };
+        },
+      );
+    } catch (error) {
+      translateFinanceError(error);
+    }
   },
 
   async requestOrderPayment(orderId, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const order = orders.find(
-      (candidate) => candidate.id === orderId && candidate.ownerId === context.ownerId,
-    );
+    const state = await readMockFinanceState(context.ownerId, () => financeSeed(context.ownerId));
+    const order = state.orders.find((candidate) => candidate.id === orderId);
     if (
       !order ||
       order.status !== 'PENDING' ||
@@ -392,26 +374,24 @@ export const commerceGateway: CommerceGateway = {
     ) {
       throw new CommerceCommandError('ORDER_NOT_PAYABLE');
     }
-    return Promise.resolve({
-      order: publicValue(order),
+    return {
+      order,
       payment: {
         environment: 'MOCK',
         kind: 'DISPLAY_ONLY',
         expiresAt: order.expiresAt,
       },
-    });
+    };
   },
 
   async listInvoiceCandidates(context): Promise<unknown> {
     assertOwner(context.ownerId);
-    return Promise.resolve({
-      items: orders
+    const state = await readMockFinanceState(context.ownerId, () => financeSeed(context.ownerId));
+    return {
+      items: state.orders
         .filter(
           (order) =>
-            order.ownerId === context.ownerId &&
-            order.status === 'PAID' &&
-            order.paidAt &&
-            !invoicedOrders.has(`${context.ownerId}:${order.id}`),
+            order.status === 'PAID' && order.paidAt && !state.invoicedOrderIds.includes(order.id),
         )
         .map((order) => ({
           orderId: order.id,
@@ -420,52 +400,63 @@ export const commerceGateway: CommerceGateway = {
           currency: order.currency,
           points: order.points,
         })),
-      history: invoices.filter((invoice) => invoice.ownerId === context.ownerId).map(publicValue),
-    });
+      history: state.invoices,
+    };
   },
 
   async createInvoice(input, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    return Promise.resolve(
-      command(context.idempotencyKey, context.ownerId, `invoice:${JSON.stringify(input)}`, () => {
-        const uniqueOrderIds = [...new Set(input.orderIds)];
-        if (uniqueOrderIds.length === 0 || uniqueOrderIds.length !== input.orderIds.length)
-          throw new CommerceCommandError('INVALID_INVOICE_ORDERS');
-        if (uniqueOrderIds.some((orderId) => invoicedOrders.has(`${context.ownerId}:${orderId}`)))
-          throw new CommerceCommandError('ORDER_NOT_INVOICE_ELIGIBLE');
-        const eligible = uniqueOrderIds.map((id) =>
-          orders.find(
-            (order) =>
-              order.id === id && order.ownerId === context.ownerId && order.status === 'PAID',
-          ),
-        );
-        if (eligible.some((order) => !order))
-          throw new CommerceCommandError('ORDER_NOT_INVOICE_ELIGIBLE');
-        if (input.title.trim().length < 2 || input.title.length > 100)
-          throw new CommerceCommandError('INVALID_INVOICE_TITLE');
-        if (!/^[0-9A-Z]{15,20}$/.test(input.taxNumber))
-          throw new CommerceCommandError('INVALID_TAX_NUMBER');
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email) || input.email.length > 254)
-          throw new CommerceCommandError('INVALID_INVOICE_EMAIL');
-        const now = new Date().toISOString();
-        const invoice: Owned<InvoiceHistoryItem> = {
-          ownerId: context.ownerId,
-          id: createUuidV7(),
-          amountMinor: eligible
-            .reduce((total, order) => total + BigInt(order?.amountMinor ?? '0'), 0n)
-            .toString(),
-          currency: 'CNY',
-          title: input.title.trim(),
-          status: 'SUBMITTED',
-          updatedAt: now,
-          statusHistory: [{ status: 'SUBMITTED', occurredAt: now }],
-        };
-        invoices.unshift(invoice);
-        for (const orderId of uniqueOrderIds) {
-          invoicedOrders.add(`${context.ownerId}:${orderId}`);
-        }
-        return { id: invoice.id, status: invoice.status };
-      }),
-    );
+    if (!isUuidV7(context.idempotencyKey))
+      throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
+    try {
+      return await runMockFinanceCommand(
+        context.ownerId,
+        () => financeSeed(context.ownerId),
+        {
+          key: context.idempotencyKey,
+          fingerprint: `invoice:${JSON.stringify(input)}`,
+          kind: 'INVOICE',
+        },
+        (state) => {
+          const uniqueOrderIds = [...new Set(input.orderIds)];
+          if (uniqueOrderIds.length === 0 || uniqueOrderIds.length !== input.orderIds.length)
+            throw new CommerceCommandError('INVALID_INVOICE_ORDERS');
+          if (uniqueOrderIds.some((orderId) => state.invoicedOrderIds.includes(orderId)))
+            throw new CommerceCommandError('ORDER_NOT_INVOICE_ELIGIBLE');
+          const eligible = uniqueOrderIds.map((id) =>
+            state.orders.find(
+              (order) => order.id === id && order.status === 'PAID' && Boolean(order.paidAt),
+            ),
+          );
+          if (eligible.some((order) => !order))
+            throw new CommerceCommandError('ORDER_NOT_INVOICE_ELIGIBLE');
+          if (input.title.trim().length < 2 || input.title.length > 100)
+            throw new CommerceCommandError('INVALID_INVOICE_TITLE');
+          if (!/^[0-9A-Z]{15,20}$/.test(input.taxNumber))
+            throw new CommerceCommandError('INVALID_TAX_NUMBER');
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email) || input.email.length > 254)
+            throw new CommerceCommandError('INVALID_INVOICE_EMAIL');
+          const now = new Date().toISOString();
+          const invoice: InvoiceHistoryItem = {
+            id: createUuidV7(),
+            amountMinor: eligible
+              .reduce((total, order) => total + BigInt(order?.amountMinor ?? '0'), 0n)
+              .toString(),
+            currency: 'CNY',
+            title: input.title.trim(),
+            status: 'SUBMITTED',
+            updatedAt: now,
+            statusHistory: [{ status: 'SUBMITTED', occurredAt: now }],
+          };
+          state.invoices.unshift(invoice);
+          for (const orderId of uniqueOrderIds) {
+            state.invoicedOrderIds.push(orderId);
+          }
+          return { id: invoice.id, status: invoice.status };
+        },
+      );
+    } catch (error) {
+      translateFinanceError(error);
+    }
   },
 };
