@@ -1,5 +1,6 @@
 import {
   AuthenticationRequiredError,
+  SessionRefreshRequiredError,
   authenticatedGatewayFetch,
 } from '../../../../../lib/auth/server-session';
 import { isTaskEventCursor } from '../../../../../lib/tasks/identifiers';
@@ -23,6 +24,7 @@ export async function GET(
       if (value) headers.set(name, value);
     }
     const upstream = await authenticatedGatewayFetch(`/v1/tasks/${encodeURIComponent(id)}/events`, {
+      handshakeTimeoutMs: 10_000,
       headers,
       signal: request.signal,
     });
@@ -43,6 +45,9 @@ export async function GET(
     }
     return new Response(upstream.body, { headers: responseHeaders });
   } catch (error) {
+    if (error instanceof SessionRefreshRequiredError) {
+      return Response.json({ code: 'SESSION_REFRESH_REQUIRED' }, { status: 401 });
+    }
     return new Response(null, { status: error instanceof AuthenticationRequiredError ? 401 : 502 });
   }
 }

@@ -1,6 +1,7 @@
 import { HEADERS } from '@repo/contracts/common';
 
 import { isTaskEventCursor } from './tasks/identifiers';
+import { fetchWithSessionRefresh } from './auth/client-session';
 
 export interface RawTaskStreamEvent {
   readonly data: unknown;
@@ -84,12 +85,14 @@ export async function openTaskEventStream(
   if (isTaskEventCursor(options.lastEventId)) {
     headers.set('Last-Event-ID', options.lastEventId);
   }
-  const response = await fetch(taskBffUrl(`/api/tasks/${encodeURIComponent(taskId)}/events`), {
-    credentials: 'include',
-    headers,
-    method: 'GET',
-    signal: options.signal,
-  });
+  const response = await fetchWithSessionRefresh(() =>
+    fetch(taskBffUrl(`/api/tasks/${encodeURIComponent(taskId)}/events`), {
+      credentials: 'include',
+      headers,
+      method: 'GET',
+      signal: options.signal,
+    }),
+  );
   if (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream')) {
     throw new Error('TASK_EVENT_STREAM_UNAVAILABLE');
   }

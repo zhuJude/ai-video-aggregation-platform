@@ -2,8 +2,7 @@
 
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 
-import { verifyPhoneLoginAction } from '../../app/login/actions';
-import { ApiClientError, apiClient, parseRetryAfter } from '../../lib/api-client';
+import { requestPhoneLoginCodeAction, verifyPhoneLoginAction } from '../../app/login/actions';
 
 const PHONE_PATTERN = /^1\d{10}$/;
 const CODE_PATTERN = /^\d{6}$/;
@@ -29,10 +28,6 @@ interface ActiveRequest {
 
 interface PhoneLoginFormProps {
   onAuthenticated?: (destination: WorkspaceDestination) => void;
-}
-
-function createIdempotencyKey(action: 'request' | 'verify'): string {
-  return `sms-${action}-${crypto.randomUUID()}`;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -163,19 +158,16 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
     const request = beginRequest();
 
     try {
-      const response = await apiClient<unknown>('/v1/auth/sms/request', {
-        method: 'POST',
-        body: { phone },
-        idempotencyKey: createIdempotencyKey('request'),
-        signal: request.controller.signal,
-      });
+      const response = await requestPhoneLoginCodeAction(phone);
       if (!isCurrentRequest(request)) return;
-      setCooldownSeconds(
-        Math.max(
-          DEFAULT_COOLDOWN_SECONDS,
-          parseRetryAfter(response.headers.get('retry-after')) ?? 0,
-        ),
-      );
+      if (!response.ok) {
+        if (response.cooldownSeconds !== undefined) {
+          setCooldownSeconds(Math.max(DEFAULT_COOLDOWN_SECONDS, response.cooldownSeconds));
+        }
+        setError({ field: 'form', kind: 'server', message: REQUEST_ERROR_MESSAGE });
+        return;
+      }
+      setCooldownSeconds(Math.max(DEFAULT_COOLDOWN_SECONDS, response.cooldownSeconds));
       setStatusMessage(REQUEST_MESSAGE);
       queueMicrotask(() => {
         if (mountedRef.current && requestGenerationRef.current === request.generation) {
@@ -184,9 +176,6 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
       });
     } catch (requestError) {
       if (!isCurrentRequest(request) || isAbortError(requestError)) return;
-      if (requestError instanceof ApiClientError && requestError.retryAfterSeconds !== undefined) {
-        setCooldownSeconds(Math.max(DEFAULT_COOLDOWN_SECONDS, requestError.retryAfterSeconds));
-      }
       setError({ field: 'form', kind: 'server', message: REQUEST_ERROR_MESSAGE });
     } finally {
       finishRequest(request);
@@ -227,11 +216,7 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
       }
     } catch (verifyError) {
       if (!isCurrentRequest(request) || isAbortError(verifyError)) return;
-      setError(
-        verifyError instanceof ApiClientError && verifyError.code === 'INVALID_SMS_CODE'
-          ? { field: 'code', kind: 'server', message: '验证码错误' }
-          : { field: 'form', kind: 'server', message: '暂时无法登录，请稍后重试' },
-      );
+      setError({ field: 'form', kind: 'server', message: '暂时无法登录，请稍后重试' });
     } finally {
       finishRequest(request);
     }

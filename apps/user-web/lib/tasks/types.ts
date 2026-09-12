@@ -22,7 +22,14 @@ export type CancelTaskResult =
   | { readonly ok: true; readonly snapshot: TaskStatusSnapshot }
   | {
       readonly ok: false;
-      readonly outcome: 'UNCERTAIN' | 'DEFINITIVE_FAILURE';
+      readonly outcome: 'UNCERTAIN' | 'DEFINITIVE_FAILURE' | 'SESSION_REFRESH_REQUIRED';
+    };
+
+export type RetryDraftActionResult =
+  | { readonly ok: true; readonly draftId: string }
+  | {
+      readonly ok: false;
+      readonly outcome: 'SESSION_REFRESH_REQUIRED' | 'DEFINITIVE_FAILURE';
     };
 
 export type TaskGenerationMode = CapabilityDocument['mode'];

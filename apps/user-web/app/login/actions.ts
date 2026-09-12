@@ -6,10 +6,66 @@ import {
   establishAuthenticatedServerSession,
   refreshTokenFromSetCookie,
 } from '../../lib/auth/server-session';
+import { cookies } from 'next/headers';
+import { randomBytes } from 'node:crypto';
+
+const DEVICE_COOKIE = '__Host-user-device';
+const DEVICE_NAME = 'AI Video Web';
 
 export type VerifyPhoneLoginResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly code: 'INVALID_SMS_CODE' | 'LOGIN_UNAVAILABLE' };
+
+export type RequestPhoneLoginResult =
+  | { readonly ok: true; readonly cooldownSeconds: number }
+  | { readonly ok: false; readonly cooldownSeconds?: number };
+
+async function trustedDeviceId(): Promise<string> {
+  const jar = await cookies();
+  const existing = jar.get(DEVICE_COOKIE)?.value;
+  if (existing && /^[a-f0-9]{32}$/.test(existing)) return existing;
+  const created = randomBytes(16).toString('hex');
+  jar.set(DEVICE_COOKIE, created, {
+    httpOnly: true,
+    maxAge: 365 * 24 * 60 * 60,
+    path: '/',
+    sameSite: 'lax',
+    secure: true,
+  });
+  return created;
+}
+
+function gatewayUrl(path: `/v1/${string}`): URL {
+  const configured = process.env.GATEWAY_URL?.trim();
+  if (!configured) throw new Error('GATEWAY_URL_UNAVAILABLE');
+  return new URL(path, configured);
+}
+
+function authHeaders(): Headers {
+  return new Headers({
+    accept: 'application/json',
+    'content-type': 'application/json',
+    'x-correlation-id': crypto.randomUUID(),
+    'x-trace-id': randomBytes(16).toString('hex'),
+  });
+}
+
+export async function requestPhoneLoginCodeAction(phone: string): Promise<RequestPhoneLoginResult> {
+  if (!/^1\d{10}$/.test(phone)) return { ok: false };
+  try {
+    const response = await fetch(gatewayUrl('/v1/auth/sms/request'), {
+      body: JSON.stringify({ deviceId: await trustedDeviceId(), phone }),
+      headers: authHeaders(),
+      method: 'POST',
+      signal: AbortSignal.timeout(10_000),
+    });
+    const retryAfter = Number(response.headers.get('retry-after'));
+    const cooldownSeconds = Number.isSafeInteger(retryAfter) && retryAfter > 0 ? retryAfter : 60;
+    return response.ok ? { ok: true, cooldownSeconds } : { ok: false, cooldownSeconds };
+  } catch {
+    return { ok: false };
+  }
+}
 
 function parseGatewayLogin(value: unknown): {
   readonly accessToken: string;
@@ -38,12 +94,12 @@ export async function verifyPhoneLoginAction(
     return { ok: false, code: 'INVALID_SMS_CODE' };
   }
   try {
-    const gatewayUrl = process.env.GATEWAY_URL?.trim();
-    if (!gatewayUrl) throw new Error('GATEWAY_URL_UNAVAILABLE');
-    const response = await fetch(new URL('/v1/auth/sms/verify', gatewayUrl), {
-      body: JSON.stringify({ code, deviceName: 'AI Video Web', phone }),
-      headers: { accept: 'application/json', 'content-type': 'application/json' },
+    const deviceId = await trustedDeviceId();
+    const response = await fetch(gatewayUrl('/v1/auth/sms/verify'), {
+      body: JSON.stringify({ code, deviceName: `${DEVICE_NAME} ${deviceId.slice(0, 12)}`, phone }),
+      headers: authHeaders(),
       method: 'POST',
+      signal: AbortSignal.timeout(10_000),
     });
     const payload = (await response.json()) as unknown;
     if (!response.ok) {
@@ -58,6 +114,7 @@ export async function verifyPhoneLoginAction(
       session.accessToken,
       session.sessionId,
       refreshTokenFromSetCookie(response.headers.get('set-cookie')),
+      `+86${phone}`,
     );
     return { ok: true };
   } catch {

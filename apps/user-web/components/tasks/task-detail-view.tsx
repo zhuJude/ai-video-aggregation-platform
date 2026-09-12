@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
 
 import { cancelTaskAction, createRetryDraftAction } from '../../app/tasks/actions';
+import { retryOnceAfterSessionRefresh } from '../../lib/auth/client-session';
 import {
   formatPoints,
   formatTaskDate,
@@ -27,9 +28,20 @@ interface TaskDetailViewProps {
   readonly navigate?: (href: string) => void;
 }
 
-const serverTaskCommands: TaskDetailCommands = {
-  cancelTask: (taskId, options) => cancelTaskAction(taskId, options.idempotencyKey),
-  createRetryDraft: createRetryDraftAction,
+export const serverTaskCommands: TaskDetailCommands = {
+  cancelTask: (taskId, options) =>
+    retryOnceAfterSessionRefresh(
+      () => cancelTaskAction(taskId, options.idempotencyKey),
+      (result) => !result.ok && result.outcome === 'SESSION_REFRESH_REQUIRED',
+    ),
+  createRetryDraft: async (taskId) => {
+    const result = await retryOnceAfterSessionRefresh(
+      () => createRetryDraftAction(taskId),
+      (attempt) => !attempt.ok && attempt.outcome === 'SESSION_REFRESH_REQUIRED',
+    );
+    if (!result.ok) throw new Error(result.outcome);
+    return { draftId: result.draftId };
+  },
 };
 
 export function TaskDetailView({

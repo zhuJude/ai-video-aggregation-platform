@@ -1,16 +1,22 @@
 import { TaskList } from '../../components/tasks/task-list';
-import { requireAuthenticatedServerSession } from '../../lib/auth/server-session';
+import { readAuthenticatedServerSessionState } from '../../lib/auth/server-session';
 import { taskGateway } from '../../lib/tasks/gateway';
 import { parseTaskFilters, parseTaskPage } from '../../lib/tasks/runtime';
+import { redirect } from 'next/navigation';
 
 interface TasksPageProps {
   readonly searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 export default async function TasksPage({ searchParams }: TasksPageProps) {
+  const sessionState = await readAuthenticatedServerSessionState();
+  if (sessionState.kind === 'needs-refresh') {
+    redirect('/auth/session/refresh?returnTo=%2Ftasks');
+  }
   try {
     const filters = parseTaskFilters(await searchParams);
-    const session = await requireAuthenticatedServerSession();
+    if (sessionState.kind !== 'active') throw new Error('AUTHENTICATION_REQUIRED');
+    const session = sessionState.session;
     const page = parseTaskPage(await taskGateway.listTasks(filters, session));
     return <TaskList filters={filters} page={page} />;
   } catch {

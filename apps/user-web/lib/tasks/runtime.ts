@@ -325,7 +325,11 @@ export function parseCancelTaskResult(value: unknown): CancelTaskResult {
   }
   if (result.ok === false) {
     assertOnlyKeys(result, ['ok', 'outcome'], 'UNKNOWN_CANCEL_RESULT_FIELD');
-    if (result.outcome !== 'UNCERTAIN' && result.outcome !== 'DEFINITIVE_FAILURE') {
+    if (
+      result.outcome !== 'UNCERTAIN' &&
+      result.outcome !== 'DEFINITIVE_FAILURE' &&
+      result.outcome !== 'SESSION_REFRESH_REQUIRED'
+    ) {
       throw new Error('INVALID_CANCEL_OUTCOME');
     }
     return { ok: false, outcome: result.outcome };

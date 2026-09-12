@@ -3,7 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { openTaskEventStream, TaskStreamReconnectDirective } from '../../lib/task-event-stream';
-import { parseTaskDetail, parseTaskStreamEvent, reduceStatus } from '../../lib/tasks/runtime';
+import { fetchWithSessionRefresh } from '../../lib/auth/client-session';
+import {
+  parseTaskStatusSnapshot,
+  parseTaskStreamEvent,
+  reduceStatus,
+} from '../../lib/tasks/runtime';
 import type { TaskStatusSnapshot } from '../../lib/tasks/types';
 
 const BACKOFF_MS = [1_000, 2_000] as const;
@@ -68,19 +73,32 @@ export function TaskStatus({ initial, onChange, taskId }: TaskStatusProps) {
     const schedulePoll = () => {
       if (lifetime.signal.aborted || currentRef.current.terminal) return;
       pollTimer = setTimeout(() => {
-        void fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
-          credentials: 'include',
-          headers: {
-            'x-correlation-id': crypto.randomUUID(),
-            'x-trace-id': Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
-              byte.toString(16).padStart(2, '0'),
-            ).join(''),
-          },
-          signal: lifetime.signal,
-        })
+        const headers = {
+          'x-correlation-id': crypto.randomUUID(),
+          'x-trace-id': Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+            byte.toString(16).padStart(2, '0'),
+          ).join(''),
+        };
+        void fetchWithSessionRefresh(() =>
+          fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+            credentials: 'include',
+            headers,
+            signal: lifetime.signal,
+          }),
+        )
           .then(async (response) => {
             if (!response.ok) throw new Error('TASK_POLL_UNAVAILABLE');
-            apply(parseTaskDetail((await response.json()) as unknown).statusSnapshot);
+            const payload = (await response.json()) as unknown;
+            if (
+              typeof payload !== 'object' ||
+              payload === null ||
+              Array.isArray(payload) ||
+              Object.keys(payload).length !== 1 ||
+              !('statusSnapshot' in payload)
+            ) {
+              throw new Error('INVALID_TASK_POLL_RESPONSE');
+            }
+            apply(parseTaskStatusSnapshot(payload.statusSnapshot));
           })
           .catch(() => undefined)
           .finally(schedulePoll);

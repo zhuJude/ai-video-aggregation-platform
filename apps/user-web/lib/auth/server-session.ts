@@ -1,31 +1,41 @@
 import 'server-only';
 
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { UuidSchema } from '@repo/contracts/common';
 import { cookies } from 'next/headers';
 
 const APP_SESSION_COOKIE_NAME = '__Host-user-session';
+const COOKIE_VERSION = 'v1';
+const MAX_COOKIE_BYTES = 3_800;
+const MAX_ACCESS_TOKEN_BYTES = 3_000;
 const MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 15 * 60;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
-const SESSION_CAPACITY = 1_000;
+const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const REFRESH_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const VERIFIED_PHONE_OWNER = /^\+861[3-9]\d{9}$/;
 
-interface AccessTokenClaims {
-  expiresAt: number;
-  readonly ownerId: string;
-  sessionId: string;
+interface AccessTokenMetadata {
+  readonly expiresAt: number;
+  readonly sessionId: string;
 }
 
-interface StoredSession extends AccessTokenClaims {
-  accessToken: string;
-  expiresAtMs: number;
-  refreshToken: string;
-  refreshing?: Promise<boolean>;
+interface StoredSession {
+  readonly accessToken: string;
+  readonly accessExpiresAt: number;
+  readonly expiresAt: number;
+  readonly issuedAt: number;
+  readonly ownerId: string;
+  readonly sessionId: string;
+  readonly version: 1;
 }
 
 export interface AuthenticatedServerSession {
   readonly ownerId: string;
 }
+
+export type AuthenticatedServerSessionState =
+  | { readonly kind: 'active'; readonly session: AuthenticatedServerSession }
+  | { readonly kind: 'needs-refresh' }
+  | { readonly kind: 'invalid' };
 
 export class AuthenticationRequiredError extends Error {
   readonly outcome = 'DEFINITIVE_FAILURE' as const;
@@ -35,19 +45,22 @@ export class AuthenticationRequiredError extends Error {
   }
 }
 
-// Transitional single-process BFF storage until the shared WS09 session store is available.
-// Tokens never enter browser-readable state; a distributed bounded TTL store must replace this
-// before horizontal scaling.
-const sessions = new Map<string, StoredSession>();
-
-function signingKey(): string {
-  const key = process.env.USER_WEB_SESSION_SIGNING_KEY;
-  if (!key || key.length < 32) throw new Error('SESSION_SIGNING_KEY_UNAVAILABLE');
-  return key;
+export class SessionRefreshRequiredError extends Error {
+  constructor() {
+    super('SESSION_REFRESH_REQUIRED');
+  }
 }
 
-function sign(handle: string): string {
-  return createHmac('sha256', signingKey()).update(handle).digest('base64url');
+function encryptionKey(): Buffer {
+  const encoded = process.env.USER_WEB_SESSION_ENCRYPTION_KEY;
+  if (!encoded || !/^[A-Za-z0-9_-]{43}$/.test(encoded)) {
+    throw new Error('SESSION_ENCRYPTION_KEY_UNAVAILABLE');
+  }
+  const key = Buffer.from(encoded, 'base64url');
+  if (key.length !== 32 || key.toString('base64url') !== encoded) {
+    throw new Error('SESSION_ENCRYPTION_KEY_UNAVAILABLE');
+  }
+  return key;
 }
 
 function parseJson(value: string): unknown {
@@ -62,18 +75,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function parseAccessToken(accessToken: string, nowSeconds: number): AccessTokenClaims {
+// The access token is opaque authorization material. Unverified metadata is used only to
+// schedule refresh and cross-check the WS10 response; it never selects the local fixture owner.
+function parseAccessTokenMetadata(accessToken: string, nowSeconds: number): AccessTokenMetadata {
+  if (Buffer.byteLength(accessToken) > MAX_ACCESS_TOKEN_BYTES) {
+    throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  }
   const segments = accessToken.split('.');
   if (segments.length !== 3 || segments.some((segment) => segment.length === 0)) {
     throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
   }
   const payload = parseJson(Buffer.from(segments[1] ?? '', 'base64url').toString('utf8'));
   if (!isRecord(payload)) throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
-  const ownerId = UuidSchema.safeParse(payload.sub);
   const sessionId = UuidSchema.safeParse(payload.sid);
   const expiresAt = payload.exp;
   if (
-    !ownerId.success ||
     !sessionId.success ||
     payload.iss !== 'identity-service' ||
     payload.aud !== 'user-web' ||
@@ -83,12 +99,89 @@ function parseAccessToken(accessToken: string, nowSeconds: number): AccessTokenC
   ) {
     throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
   }
-  return { expiresAt: expiresAt as number, ownerId: ownerId.data, sessionId: sessionId.data };
+  return { expiresAt: expiresAt as number, sessionId: sessionId.data };
 }
 
-function parseRefreshToken(value: string): string {
-  if (!REFRESH_TOKEN.test(value)) throw new Error('INVALID_REFRESH_TOKEN');
+function validateSession(value: unknown, nowSeconds: number): StoredSession | undefined {
+  if (!isRecord(value)) return undefined;
+  const keys = Object.keys(value).sort();
+  if (
+    keys.join(',') !== 'accessExpiresAt,accessToken,expiresAt,issuedAt,ownerId,sessionId,version'
+  ) {
+    return undefined;
+  }
+  const sessionId = UuidSchema.safeParse(value.sessionId);
+  if (
+    value.version !== 1 ||
+    typeof value.accessToken !== 'string' ||
+    Buffer.byteLength(value.accessToken) > MAX_ACCESS_TOKEN_BYTES ||
+    typeof value.ownerId !== 'string' ||
+    !VERIFIED_PHONE_OWNER.test(value.ownerId) ||
+    !sessionId.success ||
+    !Number.isSafeInteger(value.issuedAt) ||
+    !Number.isSafeInteger(value.expiresAt) ||
+    !Number.isSafeInteger(value.accessExpiresAt)
+  ) {
+    return undefined;
+  }
+  const issuedAt = value.issuedAt as number;
+  const expiresAt = value.expiresAt as number;
+  if (
+    issuedAt > nowSeconds + 60 ||
+    expiresAt <= nowSeconds ||
+    expiresAt <= issuedAt ||
+    expiresAt > issuedAt + SESSION_TTL_SECONDS ||
+    (value.accessExpiresAt as number) <= issuedAt ||
+    (value.accessExpiresAt as number) > issuedAt + MAX_ACCESS_TOKEN_LIFETIME_SECONDS ||
+    (value.accessExpiresAt as number) > expiresAt
+  ) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    accessToken: value.accessToken,
+    accessExpiresAt: value.accessExpiresAt as number,
+    expiresAt,
+    issuedAt,
+    ownerId: value.ownerId,
+    sessionId: sessionId.data,
+  };
+}
+
+function encryptSession(session: StoredSession): string {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKey(), nonce);
+  cipher.setAAD(Buffer.from(`${APP_SESSION_COOKIE_NAME}:${COOKIE_VERSION}`));
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(session), 'utf8'),
+    cipher.final(),
+    cipher.getAuthTag(),
+  ]);
+  const value = `${COOKIE_VERSION}.${nonce.toString('base64url')}.${ciphertext.toString('base64url')}`;
+  if (Buffer.byteLength(value) > MAX_COOKIE_BYTES) throw new Error('SESSION_COOKIE_TOO_LARGE');
   return value;
+}
+
+function decryptSession(value: string, nowSeconds: number): StoredSession | undefined {
+  try {
+    if (Buffer.byteLength(value) > MAX_COOKIE_BYTES) return undefined;
+    const [version, encodedNonce, encodedCiphertext, extra] = value.split('.');
+    if (version !== COOKIE_VERSION || !encodedNonce || !encodedCiphertext || extra)
+      return undefined;
+    const nonce = Buffer.from(encodedNonce, 'base64url');
+    const encrypted = Buffer.from(encodedCiphertext, 'base64url');
+    if (nonce.length !== 12 || encrypted.length <= 16) return undefined;
+    const decipher = createDecipheriv('aes-256-gcm', encryptionKey(), nonce);
+    decipher.setAAD(Buffer.from(`${APP_SESSION_COOKIE_NAME}:${COOKIE_VERSION}`));
+    decipher.setAuthTag(encrypted.subarray(encrypted.length - 16));
+    const plaintext = Buffer.concat([
+      decipher.update(encrypted.subarray(0, encrypted.length - 16)),
+      decipher.final(),
+    ]).toString('utf8');
+    return validateSession(parseJson(plaintext), nowSeconds);
+  } catch {
+    return undefined;
+  }
 }
 
 export function refreshTokenFromSetCookie(value: string | null): string {
@@ -105,75 +198,88 @@ export function refreshTokenFromSetCookie(value: string | null): string {
   ) {
     throw new Error('INVALID_REFRESH_COOKIE');
   }
-  return parseRefreshToken(decodeURIComponent(first.slice('refresh_token='.length)));
+  const token = decodeURIComponent(first.slice('refresh_token='.length));
+  if (!REFRESH_TOKEN.test(token)) throw new Error('INVALID_REFRESH_COOKIE');
+  return token;
 }
 
-function prune(now = Date.now()): void {
-  for (const [handle, session] of sessions) {
-    if (session.expiresAtMs <= now) sessions.delete(handle);
-  }
-}
-
-function decodeHandle(value: string): string | undefined {
-  const [handle, signature, extra] = value.split('.');
-  if (!handle || !signature || extra || !/^[A-Za-z0-9_-]{43}$/.test(handle)) return undefined;
-  const expected = Buffer.from(sign(handle));
-  const received = Buffer.from(signature);
-  return expected.length === received.length && timingSafeEqual(expected, received)
-    ? handle
-    : undefined;
-}
-
-async function storedSession(): Promise<{ handle: string; session: StoredSession } | undefined> {
-  prune();
-  const value = (await cookies()).get(APP_SESSION_COOKIE_NAME)?.value;
-  if (!value) return undefined;
-  const handle = decodeHandle(value);
-  const session = handle ? sessions.get(handle) : undefined;
-  return handle && session ? { handle, session } : undefined;
-}
-
-async function clearSession(handle?: string): Promise<void> {
-  if (handle) sessions.delete(handle);
-  (await cookies()).delete(APP_SESSION_COOKIE_NAME);
-}
-
-export async function establishAuthenticatedServerSession(
-  accessToken: string,
-  expectedSessionId: string | undefined,
-  refreshToken: string,
-): Promise<void> {
-  const nowSeconds = Math.floor(Date.now() / 1_000);
-  const claims = parseAccessToken(accessToken, nowSeconds);
-  if (expectedSessionId !== undefined && claims.sessionId !== expectedSessionId) {
-    throw new Error('GATEWAY_SESSION_MISMATCH');
-  }
-  prune();
-  const currentCookie = (await cookies()).get(APP_SESSION_COOKIE_NAME)?.value;
-  const currentHandle = currentCookie ? decodeHandle(currentCookie) : undefined;
-  if (currentHandle) sessions.delete(currentHandle);
-  if (sessions.size >= SESSION_CAPACITY) throw new Error('SESSION_CAPACITY_REACHED');
-  const handle = randomBytes(32).toString('base64url');
-  sessions.set(handle, {
-    ...claims,
-    accessToken,
-    expiresAtMs: Date.now() + SESSION_TTL_MS,
-    refreshToken: parseRefreshToken(refreshToken),
-  });
-  (await cookies()).set(APP_SESSION_COOKIE_NAME, `${handle}.${sign(handle)}`, {
+async function writeSession(session: StoredSession): Promise<void> {
+  (await cookies()).set(APP_SESSION_COOKIE_NAME, encryptSession(session), {
     httpOnly: true,
-    maxAge: SESSION_TTL_MS / 1_000,
+    maxAge: Math.max(0, session.expiresAt - Math.floor(Date.now() / 1_000)),
     path: '/',
     sameSite: 'lax',
     secure: true,
   });
 }
 
+async function writeRefreshToken(refreshToken: string): Promise<void> {
+  if (!REFRESH_TOKEN.test(refreshToken)) throw new Error('INVALID_REFRESH_TOKEN');
+  (await cookies()).set('refresh_token', refreshToken, {
+    httpOnly: true,
+    maxAge: SESSION_TTL_SECONDS,
+    path: '/auth/refresh',
+    sameSite: 'lax',
+    secure: true,
+  });
+}
+
+async function clearSession(): Promise<void> {
+  const jar = await cookies();
+  jar.delete(APP_SESSION_COOKIE_NAME);
+  // Cookie deletion must repeat the original Path or the scoped credential survives.
+  jar.set('refresh_token', '', {
+    httpOnly: true,
+    maxAge: 0,
+    path: '/auth/refresh',
+    sameSite: 'lax',
+    secure: true,
+  });
+}
+
+async function storedSession(): Promise<StoredSession | undefined> {
+  const value = (await cookies()).get(APP_SESSION_COOKIE_NAME)?.value;
+  return value ? decryptSession(value, Math.floor(Date.now() / 1_000)) : undefined;
+}
+
+export async function establishAuthenticatedServerSession(
+  accessToken: string,
+  expectedSessionId: string,
+  refreshToken: string,
+  verifiedPhoneOwner: string,
+): Promise<void> {
+  if (!VERIFIED_PHONE_OWNER.test(verifiedPhoneOwner)) throw new Error('INVALID_VERIFIED_OWNER');
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const metadata = parseAccessTokenMetadata(accessToken, nowSeconds);
+  if (metadata.sessionId !== expectedSessionId) throw new Error('GATEWAY_SESSION_MISMATCH');
+  if (!REFRESH_TOKEN.test(refreshToken)) throw new Error('INVALID_REFRESH_TOKEN');
+  await writeSession({
+    version: 1,
+    accessToken,
+    accessExpiresAt: metadata.expiresAt,
+    expiresAt: nowSeconds + SESSION_TTL_SECONDS,
+    issuedAt: nowSeconds,
+    ownerId: verifiedPhoneOwner,
+    sessionId: metadata.sessionId,
+  });
+  await writeRefreshToken(refreshToken);
+}
+
+// RSC callers use this read-only path. They never rotate or mutate cookies during render.
 export async function readAuthenticatedServerSession(): Promise<
   AuthenticatedServerSession | undefined
 > {
-  const stored = await freshStoredSession();
-  return stored ? { ownerId: stored.session.ownerId } : undefined;
+  const state = await readAuthenticatedServerSessionState();
+  return state.kind === 'active' ? state.session : undefined;
+}
+
+export async function readAuthenticatedServerSessionState(): Promise<AuthenticatedServerSessionState> {
+  const session = await storedSession();
+  if (!session) return { kind: 'invalid' };
+  if (session.accessExpiresAt <= Math.floor(Date.now() / 1_000)) {
+    return { kind: 'needs-refresh' };
+  }
+  return { kind: 'active', session: { ownerId: session.ownerId } };
 }
 
 export async function requireAuthenticatedServerSession(): Promise<AuthenticatedServerSession> {
@@ -182,88 +288,128 @@ export async function requireAuthenticatedServerSession(): Promise<Authenticated
   return session;
 }
 
-function baseUrl(environmentName: 'GATEWAY_URL' | 'IDENTITY_SERVICE_URL'): URL {
+function baseUrl(environmentName: 'GATEWAY_URL'): URL {
   const configured = process.env[environmentName]?.trim();
   if (!configured) throw new Error(`${environmentName}_UNAVAILABLE`);
   return new URL(configured);
 }
 
-async function rotate(handle: string, session: StoredSession): Promise<boolean> {
-  if (session.refreshing) return session.refreshing;
-  session.refreshing = (async () => {
-    try {
-      const response = await fetch(new URL('/v1/auth/refresh', baseUrl('IDENTITY_SERVICE_URL')), {
-        headers: {
-          accept: 'application/json',
-          cookie: `refresh_token=${encodeURIComponent(session.refreshToken)}`,
-        },
-        method: 'POST',
-      });
-      if (!response.ok) return false;
-      const body = (await response.json()) as unknown;
-      if (!isRecord(body) || typeof body.accessToken !== 'string') return false;
-      const responseSessionId = UuidSchema.safeParse(body.sessionId);
-      if (!responseSessionId.success) return false;
-      const claims = parseAccessToken(body.accessToken, Math.floor(Date.now() / 1_000));
-      if (claims.ownerId !== session.ownerId || claims.sessionId !== responseSessionId.data) {
-        return false;
-      }
-      const refreshToken = refreshTokenFromSetCookie(response.headers.get('set-cookie'));
-      session.accessToken = body.accessToken;
-      session.refreshToken = refreshToken;
-      session.expiresAt = claims.expiresAt;
-      session.sessionId = claims.sessionId;
-      session.expiresAtMs = Date.now() + SESSION_TTL_MS;
-      return true;
-    } catch {
-      return false;
-    } finally {
-      delete session.refreshing;
-    }
-  })();
-  const succeeded = await session.refreshing;
-  if (!succeeded) await clearSession(handle);
-  return succeeded;
+function gatewayMetadataHeaders(input?: HeadersInit): Headers {
+  const headers = new Headers(input);
+  if (!headers.has('x-correlation-id')) headers.set('x-correlation-id', crypto.randomUUID());
+  if (!headers.has('x-trace-id')) headers.set('x-trace-id', randomBytes(16).toString('hex'));
+  return headers;
 }
 
-async function freshStoredSession(): Promise<
-  { handle: string; session: StoredSession } | undefined
-> {
-  const stored = await storedSession();
-  if (!stored) return undefined;
-  if (
-    stored.session.expiresAt <= Math.floor(Date.now() / 1_000) &&
-    !(await rotate(stored.handle, stored.session))
-  ) {
+async function rotate(session: StoredSession): Promise<StoredSession | undefined> {
+  try {
+    const refreshToken = (await cookies()).get('refresh_token')?.value;
+    if (!refreshToken || !REFRESH_TOKEN.test(refreshToken)) return undefined;
+    const headers = gatewayMetadataHeaders();
+    headers.set('accept', 'application/json');
+    headers.set('cookie', `refresh_token=${encodeURIComponent(refreshToken)}`);
+    const response = await fetch(new URL('/v1/auth/refresh', baseUrl('GATEWAY_URL')), {
+      headers,
+      method: 'POST',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as unknown;
+    if (!isRecord(body) || typeof body.accessToken !== 'string') return undefined;
+    const responseSessionId = UuidSchema.safeParse(body.sessionId);
+    if (!responseSessionId.success) return undefined;
+    const nowSeconds = Math.floor(Date.now() / 1_000);
+    const metadata = parseAccessTokenMetadata(body.accessToken, nowSeconds);
+    if (metadata.sessionId !== responseSessionId.data) return undefined;
+    const rotated: StoredSession = {
+      version: 1,
+      accessToken: body.accessToken,
+      accessExpiresAt: metadata.expiresAt,
+      expiresAt: nowSeconds + SESSION_TTL_SECONDS,
+      issuedAt: nowSeconds,
+      ownerId: session.ownerId,
+      sessionId: metadata.sessionId,
+    };
+    await writeSession(rotated);
+    await writeRefreshToken(refreshTokenFromSetCookie(response.headers.get('set-cookie')));
+    return rotated;
+  } catch {
     return undefined;
   }
-  return stored;
+}
+
+async function mutableFreshSession(): Promise<StoredSession | undefined> {
+  const session = await storedSession();
+  if (!session) return undefined;
+  return session.accessExpiresAt > Math.floor(Date.now() / 1_000) ? session : undefined;
+}
+
+export async function requireMutableAuthenticatedServerSession(): Promise<AuthenticatedServerSession> {
+  const session = await mutableFreshSession();
+  if (!session) {
+    const state = await readAuthenticatedServerSessionState();
+    if (state.kind === 'needs-refresh') throw new SessionRefreshRequiredError();
+    throw new AuthenticationRequiredError();
+  }
+  return { ownerId: session.ownerId };
+}
+
+export async function refreshAuthenticatedServerSession(): Promise<boolean> {
+  const session = await storedSession();
+  if (!session) return false;
+  if (session.accessExpiresAt > Math.floor(Date.now() / 1_000)) return true;
+  const refreshed = await rotate(session);
+  if (refreshed) return true;
+  await clearSession();
+  return false;
 }
 
 export async function authenticatedGatewayFetch(
   path: `/v1/${string}`,
-  init: { readonly headers?: HeadersInit; readonly signal?: AbortSignal } = {},
+  init: {
+    readonly handshakeTimeoutMs?: number;
+    readonly headers?: HeadersInit;
+    readonly signal?: AbortSignal;
+  } = {},
 ): Promise<Response> {
-  const stored = await freshStoredSession();
-  if (!stored) throw new AuthenticationRequiredError();
-  const request = (token: string) => {
-    const headers = new Headers(init.headers);
-    headers.delete('authorization');
-    headers.set('authorization', `Bearer ${token}`);
-    return fetch(new URL(path, baseUrl('GATEWAY_URL')), {
-      headers,
-      method: 'GET',
-      ...(init.signal ? { signal: init.signal } : {}),
-    });
-  };
-  const usedToken = stored.session.accessToken;
-  let response = await request(usedToken);
-  if (response.status !== 401) return response;
-  response.body?.cancel().catch(() => undefined);
-  if (stored.session.accessToken === usedToken && !(await rotate(stored.handle, stored.session))) {
+  const session = await mutableFreshSession();
+  if (!session) {
+    const state = await readAuthenticatedServerSessionState();
+    if (state.kind === 'needs-refresh') throw new SessionRefreshRequiredError();
     throw new AuthenticationRequiredError();
   }
-  response = await request(stored.session.accessToken);
-  if (response.status === 401) await clearSession(stored.handle);
-  return response;
+  const logicalHeaders = gatewayMetadataHeaders(init.headers);
+  const request = async (token: string) => {
+    const headers = new Headers(logicalHeaders);
+    headers.delete('authorization');
+    headers.set('authorization', `Bearer ${token}`);
+    if (init.handshakeTimeoutMs === undefined) {
+      return fetch(new URL(path, baseUrl('GATEWAY_URL')), {
+        headers,
+        method: 'GET',
+        ...(init.signal ? { signal: init.signal } : {}),
+      });
+    }
+    const controller = new AbortController();
+    const relayAbort = () => {
+      controller.abort(init.signal?.reason);
+    };
+    init.signal?.addEventListener('abort', relayAbort, { once: true });
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, init.handshakeTimeoutMs);
+    try {
+      return await fetch(new URL(path, baseUrl('GATEWAY_URL')), {
+        headers,
+        method: 'GET',
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const response = await request(session.accessToken);
+  if (response.status !== 401) return response;
+  response.body?.cancel().catch(() => undefined);
+  throw new SessionRefreshRequiredError();
 }

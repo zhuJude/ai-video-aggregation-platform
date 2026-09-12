@@ -32,13 +32,13 @@ import {
 } from '../lib/tasks/runtime';
 import type { TaskDetail, TaskStatusSnapshot } from '../lib/tasks/types';
 
-const OWNER_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a6101';
-const OWNER_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a6102';
+const OWNER_A = '+8613800138000';
+const OWNER_B = '+8613900139000';
 const SESSION_ID_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a6111';
 const SESSION_ID_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a6112';
 const TEST_REFRESH_TOKEN = 'R'.repeat(43);
 const TASK_CONTEXT_A = { ownerId: OWNER_A } as const;
-process.env.USER_WEB_SESSION_SIGNING_KEY = 'test-only-session-signing-key-32-bytes-minimum';
+process.env.USER_WEB_SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64url');
 const accessToken = (ownerId: string, sessionId: string) => {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   return `${encode({ alg: 'ES256', typ: 'JWT' })}.${encode({
@@ -56,6 +56,11 @@ const clientTaskGateway: TaskDetailCommands = {
 };
 
 const routerPush = vi.hoisted(() => vi.fn());
+const redirectTo = vi.hoisted(() =>
+  vi.fn(() => {
+    throw new Error('NEXT_REDIRECT');
+  }),
+);
 const fixtureSessionCookies = vi.hoisted(() => new Map<string, string>());
 vi.mock('server-only', () => ({}));
 vi.mock('next/headers', () => ({
@@ -68,9 +73,11 @@ vi.mock('next/headers', () => ({
       set: (name: string, value: string) => {
         fixtureSessionCookies.set(name, value);
       },
+      delete: (name: string) => fixtureSessionCookies.delete(name),
     }),
 }));
 vi.mock('next/navigation', () => ({
+  redirect: redirectTo,
   useRouter: () => ({ push: routerPush }),
 }));
 
@@ -105,11 +112,13 @@ const runningEvent: TaskStatusSnapshot = {
 };
 
 beforeEach(async () => {
+  redirectTo.mockClear();
   fixtureSessionCookies.clear();
   await establishAuthenticatedServerSession(
     accessToken(OWNER_A, SESSION_ID_A),
     SESSION_ID_A,
     TEST_REFRESH_TOKEN,
+    OWNER_A,
   );
 });
 
@@ -128,12 +137,7 @@ it('reconnects with Last-Event-ID and falls back to polling', async () => {
     .mockRejectedValueOnce(new Error('stream-1'))
     .mockRejectedValueOnce(new Error('stream-2'))
     .mockRejectedValueOnce(new Error('stream-3'))
-    .mockResolvedValueOnce(
-      Response.json({
-        ...detailFixture,
-        statusSnapshot: queuedTask,
-      }),
-    );
+    .mockResolvedValueOnce(Response.json({ statusSnapshot: queuedTask }));
   vi.stubGlobal('fetch', mockFetch);
 
   render(<TaskStatus taskId="task-1" initial={queuedTask} />);
@@ -183,6 +187,19 @@ it('opens the real task detail page fixture with a WS13-compatible cursor', asyn
     /^(0|[1-9]\d*):[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
   view.unmount();
+});
+
+it('redirects an expired RSC session to the refresh trampoline without mutating cookies', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.now() + 901_000);
+  const cookieBefore = new Map(fixtureSessionCookies);
+
+  await expect(TaskDetailPage({ params: Promise.resolve({ id: 'task-1' }) })).rejects.toThrow(
+    'NEXT_REDIRECT',
+  );
+
+  expect(redirectTo).toHaveBeenCalledWith('/auth/session/refresh?returnTo=%2Ftasks%2Ftask-1');
+  expect(fixtureSessionCookies).toEqual(cookieBefore);
 });
 
 it('omits Last-Event-ID when an initial snapshot does not contain a WS13 cursor', async () => {
@@ -270,7 +287,6 @@ it('falls back after three stream failures then polls the Gateway every five sec
     .mockRejectedValueOnce(new Error('stream-3'))
     .mockResolvedValue(
       Response.json({
-        ...detailFixture,
         statusSnapshot: {
           ...queuedTask,
           eventId: 'event-2',
@@ -1071,6 +1087,7 @@ it('signs an app session only from the trusted Gateway login result', async () =
     accessToken(OWNER_B, SESSION_ID_B),
     SESSION_ID_B,
     TEST_REFRESH_TOKEN,
+    OWNER_B,
   );
   await expect(readAuthenticatedServerSession()).resolves.toEqual({ ownerId: OWNER_B });
   const cookieName = [...fixtureSessionCookies.keys()][0];
@@ -1108,12 +1125,30 @@ it('fails closed without revealing task existence to unauthenticated or cross-ow
     accessToken(OWNER_B, SESSION_ID_B),
     SESSION_ID_B,
     TEST_REFRESH_TOKEN,
+    OWNER_B,
   );
   const denied = await cancelTaskAction('task-1', '0198f4d4-21c2-7b7d-8a03-08a0da2a6203');
   const missing = await cancelTaskAction('missing-task', '0198f4d4-21c2-7b7d-8a03-08a0da2a6204');
   expect(denied).toEqual({ ok: false, outcome: 'DEFINITIVE_FAILURE' });
   expect(missing).toEqual(denied);
   await expect(createRetryDraftAction('task-1')).rejects.toThrow('TASK_NOT_FOUND');
+});
+
+it('returns an explicit refresh requirement from task actions without performing the mutation', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.now() + 901_000);
+  const cancelSpy = vi.spyOn(taskGateway, 'cancelTask');
+  const retrySpy = vi.spyOn(taskGateway, 'createRetryDraft');
+
+  await expect(cancelTaskAction('task-1', '0198f4d4-21c2-7b7d-8a03-08a0da2a6205')).resolves.toEqual(
+    { ok: false, outcome: 'SESSION_REFRESH_REQUIRED' },
+  );
+  await expect(createRetryDraftAction('task-1')).resolves.toEqual({
+    ok: false,
+    outcome: 'SESSION_REFRESH_REQUIRED',
+  });
+  expect(cancelSpy).not.toHaveBeenCalled();
+  expect(retrySpy).not.toHaveBeenCalled();
 });
 
 it.each([

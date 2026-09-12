@@ -10,7 +10,7 @@ import { cancelTaskAction } from '../app/tasks/actions';
 
 const LOGIN_OWNER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6101';
 const LOGIN_SESSION_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a6111';
-process.env.USER_WEB_SESSION_SIGNING_KEY = 'test-only-session-signing-key-32-bytes-minimum';
+process.env.USER_WEB_SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64url');
 const encodeJwtSegment = (value: unknown) =>
   Buffer.from(JSON.stringify(value)).toString('base64url');
 const loginAccessToken = () =>
@@ -37,6 +37,7 @@ vi.mock('next/headers', () => ({
         loginCookies.set(name, value);
         loginCookieWrites.push({ name, options });
       },
+      delete: (name: string) => loginCookies.delete(name),
     }),
 }));
 
@@ -425,19 +426,40 @@ describe('PhoneLoginForm', () => {
     await user.type(screen.getByLabelText('短信验证码'), '123456');
     await user.click(screen.getByRole('button', { name: '登录' }));
 
-    expect(loginCookies.get('__Host-user-session')).toMatch(/^[^.]+\.[A-Za-z0-9_-]+$/);
-    expect(loginCookieWrites.at(-1)).toMatchObject({
+    expect(loginCookies.get('__Host-user-session')).toMatch(/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(loginCookieWrites.find((write) => write.name === '__Host-user-session')).toMatchObject({
       name: '__Host-user-session',
       options: { httpOnly: true, path: '/', sameSite: 'lax', secure: true },
+    });
+    expect(loginCookieWrites.find((write) => write.name === 'refresh_token')).toMatchObject({
+      name: 'refresh_token',
+      options: { httpOnly: true, path: '/auth/refresh', sameSite: 'lax', secure: true },
     });
     const verifyRequest = gatewayRequests.find(
       (request) => new URL(request.url).pathname === '/v1/auth/sms/verify',
     );
-    await expect(verifyRequest?.clone().json()).resolves.toEqual({
-      code: '123456',
-      deviceName: 'AI Video Web',
+    const smsRequest = gatewayRequests.find(
+      (request) => new URL(request.url).pathname === '/v1/auth/sms/request',
+    );
+    const deviceId = loginCookies.get('__Host-user-device');
+    expect(deviceId).toMatch(/^[a-f0-9]{32}$/);
+    if (!deviceId) throw new Error('MISSING_DEVICE_ID');
+    await expect(smsRequest?.clone().json()).resolves.toEqual({
+      deviceId,
       phone: '13800138000',
     });
+    await expect(verifyRequest?.clone().json()).resolves.toEqual({
+      code: '123456',
+      deviceName: `AI Video Web ${deviceId.slice(0, 12)}`,
+      phone: '13800138000',
+    });
+    for (const request of [smsRequest, verifyRequest]) {
+      expect(request?.headers.get('x-trace-id')).toMatch(/^[0-9a-f]{32}$/);
+      expect(request?.headers.get('x-correlation-id')).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      expect(request?.headers.has('idempotency-key')).toBe(false);
+    }
     expect(loginCookies.get('__Host-user-session')).not.toContain(loginAccessToken());
     expect(loginCookies.get('__Host-user-session')).not.toContain('refresh_token');
     await expect(
