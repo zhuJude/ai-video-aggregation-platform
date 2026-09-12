@@ -1,10 +1,17 @@
 import 'server-only';
 
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createPublicKey,
+  randomBytes,
+  verify,
+} from 'node:crypto';
 import { UuidSchema } from '@repo/contracts/common';
 import { cookies } from 'next/headers';
 
 import {
+  resolveCurrentVerifiedPhoneForMockSubject,
   resolveExistingMockSubjectForVerifiedPhone,
   resolveOrCreateMockSubjectForVerifiedPhone,
 } from './mock-subject-store';
@@ -13,9 +20,10 @@ import {
   rotateAccountSession,
   validateAccountSession,
 } from '../account/mock-store';
+import { isUuidV7 } from '../tasks/identifiers';
 
 const APP_SESSION_COOKIE_NAME = '__Host-user-session';
-const COOKIE_VERSION = 'v2';
+const COOKIE_VERSION = 'v3';
 const MAX_COOKIE_BYTES = 3_800;
 const MAX_ACCESS_TOKEN_BYTES = 3_000;
 const MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 15 * 60;
@@ -28,15 +36,19 @@ interface AccessTokenMetadata {
   readonly sessionId: string;
 }
 
+interface VerifiedAccessTokenMetadata extends AccessTokenMetadata {
+  readonly ownerId: string;
+}
+
 interface StoredSession {
   readonly accessToken: string;
   readonly accessExpiresAt: number;
   readonly expiresAt: number;
   readonly issuedAt: number;
-  readonly mockSubjectId: string;
+  readonly ownerId: string;
   readonly sessionId: string;
   readonly verifiedPhone: string;
-  readonly version: 2;
+  readonly version: 3;
 }
 
 export interface AuthenticatedServerSession {
@@ -118,21 +130,123 @@ function parseAccessTokenMetadata(accessToken: string, nowSeconds: number): Acce
   return { expiresAt: expiresAt as number, sessionId: sessionId.data };
 }
 
+function decodeBase64Url(segment: string): Buffer {
+  if (!/^[A-Za-z0-9_-]+$/.test(segment)) throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  const decoded = Buffer.from(segment, 'base64url');
+  if (decoded.toString('base64url') !== segment) throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  return decoded;
+}
+
+function verificationKey(keyId: string) {
+  const configured = process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON;
+  if (!configured || Buffer.byteLength(configured) > 16_384)
+    throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+  const parsed = parseJson(configured);
+  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 5)
+    throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+  const seen = new Set<string>();
+  let encodedKey: string | undefined;
+  for (const raw of parsed) {
+    if (!isRecord(raw) || Object.keys(raw).sort().join(',') !== 'kid,spki')
+      throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+    if (
+      typeof raw.kid !== 'string' ||
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(raw.kid) ||
+      seen.has(raw.kid) ||
+      typeof raw.spki !== 'string' ||
+      raw.spki.length > 2_048
+    )
+      throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+    seen.add(raw.kid);
+    if (raw.kid === keyId) encodedKey = raw.spki;
+  }
+  if (!encodedKey) throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  try {
+    const der = decodeBase64Url(encodedKey);
+    const key = createPublicKey({ key: der, format: 'der', type: 'spki' });
+    if (key.asymmetricKeyType !== 'ed25519') throw new Error('INVALID_KEY_TYPE');
+    return key;
+  } catch {
+    throw new Error('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+  }
+}
+
+// WS10 signs access tokens with an Ed25519 KMS key. Deployments provide this web
+// process only the matching public SPKI keyring; no private or mock identity key is used.
+function verifyAccessTokenMetadata(
+  accessToken: string,
+  nowSeconds: number,
+): VerifiedAccessTokenMetadata {
+  if (Buffer.byteLength(accessToken) > MAX_ACCESS_TOKEN_BYTES)
+    throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  const [encodedHeader, encodedPayload, encodedSignature, extra] = accessToken.split('.');
+  if (!encodedHeader || !encodedPayload || !encodedSignature || extra)
+    throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  const header = parseJson(decodeBase64Url(encodedHeader).toString('utf8'));
+  const payload = parseJson(decodeBase64Url(encodedPayload).toString('utf8'));
+  if (!isRecord(header) || !isRecord(payload)) throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  if (
+    Object.keys(header).sort().join(',') !== 'alg,kid,typ' ||
+    header.alg !== 'EdDSA' ||
+    header.typ !== 'JWT' ||
+    typeof header.kid !== 'string' ||
+    !/^[A-Za-z0-9._:-]{1,128}$/.test(header.kid)
+  )
+    throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  const allowedClaims = new Set(['aud', 'exp', 'iat', 'iss', 'nbf', 'sid', 'sub']);
+  if (Object.keys(payload).some((claim) => !allowedClaims.has(claim)))
+    throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  const signature = decodeBase64Url(encodedSignature);
+  if (
+    signature.length !== 64 ||
+    !verify(
+      null,
+      Buffer.from(`${encodedHeader}.${encodedPayload}`),
+      verificationKey(header.kid),
+      signature,
+    )
+  )
+    throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  const expiresAt = payload.exp;
+  const issuedAt = payload.iat;
+  const notBefore = payload.nbf;
+  if (
+    payload.iss !== 'identity-service' ||
+    payload.aud !== 'user-web' ||
+    !isUuidV7(payload.sub) ||
+    !isUuidV7(payload.sid) ||
+    !Number.isSafeInteger(issuedAt) ||
+    !Number.isSafeInteger(expiresAt) ||
+    (issuedAt as number) > nowSeconds + 30 ||
+    (expiresAt as number) <= nowSeconds ||
+    (expiresAt as number) <= (issuedAt as number) ||
+    (expiresAt as number) - (issuedAt as number) > MAX_ACCESS_TOKEN_LIFETIME_SECONDS ||
+    (notBefore !== undefined &&
+      (!Number.isSafeInteger(notBefore) || (notBefore as number) > nowSeconds))
+  )
+    throw new Error('INVALID_GATEWAY_ACCESS_TOKEN');
+  return {
+    expiresAt: expiresAt as number,
+    sessionId: payload.sid,
+    ownerId: payload.sub,
+  };
+}
+
 function validateSession(value: unknown, nowSeconds: number): StoredSession | undefined {
   if (!isRecord(value)) return undefined;
   const keys = Object.keys(value).sort();
   if (
     keys.join(',') !==
-    'accessExpiresAt,accessToken,expiresAt,issuedAt,mockSubjectId,sessionId,verifiedPhone,version'
+    'accessExpiresAt,accessToken,expiresAt,issuedAt,ownerId,sessionId,verifiedPhone,version'
   ) {
     return undefined;
   }
   const sessionId = UuidSchema.safeParse(value.sessionId);
   if (
-    value.version !== 2 ||
+    value.version !== 3 ||
     typeof value.accessToken !== 'string' ||
     Buffer.byteLength(value.accessToken) > MAX_ACCESS_TOKEN_BYTES ||
-    !UuidSchema.safeParse(value.mockSubjectId).success ||
+    !isUuidV7(value.ownerId) ||
     typeof value.verifiedPhone !== 'string' ||
     !VERIFIED_PHONE_OWNER.test(value.verifiedPhone) ||
     !sessionId.success ||
@@ -156,12 +270,12 @@ function validateSession(value: unknown, nowSeconds: number): StoredSession | un
     return undefined;
   }
   return {
-    version: 2,
+    version: 3,
     accessToken: value.accessToken,
     accessExpiresAt: value.accessExpiresAt as number,
     expiresAt,
     issuedAt,
-    mockSubjectId: value.mockSubjectId as string,
+    ownerId: value.ownerId,
     sessionId: sessionId.data,
     verifiedPhone: value.verifiedPhone,
   };
@@ -277,11 +391,26 @@ async function validateLiveSession(session: StoredSession): Promise<boolean> {
       return false;
     }
     const body = (await response.json()) as unknown;
-    if (!isRecord(body) || !Array.isArray(body.sessions)) return false;
-    return body.sessions.some((raw) => {
-      if (!isRecord(raw)) return false;
-      return raw.id === session.sessionId && raw.current === true;
+    if (!Array.isArray(body) || body.length > 100) return false;
+    const sessions = body.map((raw) => {
+      if (
+        !isRecord(raw) ||
+        Object.keys(raw).sort().join(',') !== 'createdAt,deviceName,expiresAt,id' ||
+        !isUuidV7(raw.id) ||
+        typeof raw.deviceName !== 'string' ||
+        !raw.deviceName.trim() ||
+        raw.deviceName.length > 120 ||
+        typeof raw.createdAt !== 'string' ||
+        typeof raw.expiresAt !== 'string' ||
+        !Number.isFinite(Date.parse(raw.createdAt)) ||
+        !Number.isFinite(Date.parse(raw.expiresAt))
+      )
+        throw new Error('INVALID_LIVE_SESSION_LIST');
+      return { id: raw.id, expiresAt: raw.expiresAt };
     });
+    return sessions.some(
+      ({ id, expiresAt }) => id === session.sessionId && Date.parse(expiresAt) > Date.now(),
+    );
   } catch {
     return false;
   }
@@ -296,9 +425,10 @@ async function durableSessionIdentity(
       : undefined;
   }
   try {
-    const account = await validateAccountSession(session.mockSubjectId, session.sessionId);
-    const mappedSubject = await resolveExistingMockSubjectForVerifiedPhone(account.verifiedPhone);
-    return mappedSubject === session.mockSubjectId ? account : undefined;
+    await validateAccountSession(session.ownerId, session.sessionId);
+    const verifiedPhone = await resolveCurrentVerifiedPhoneForMockSubject(session.ownerId);
+    const mappedSubject = await resolveExistingMockSubjectForVerifiedPhone(verifiedPhone);
+    return mappedSubject === session.ownerId ? { verifiedPhone } : undefined;
   } catch {
     return undefined;
   }
@@ -312,20 +442,25 @@ export async function establishAuthenticatedServerSession(
 ): Promise<void> {
   if (!VERIFIED_PHONE_OWNER.test(verifiedPhoneOwner)) throw new Error('INVALID_VERIFIED_OWNER');
   const nowSeconds = Math.floor(Date.now() / 1_000);
-  const metadata = parseAccessTokenMetadata(accessToken, nowSeconds);
+  const mockMode = process.env.USER_WEB_SUPPORT_MODE === 'mock';
+  const metadata = mockMode
+    ? parseAccessTokenMetadata(accessToken, nowSeconds)
+    : verifyAccessTokenMetadata(accessToken, nowSeconds);
   if (metadata.sessionId !== expectedSessionId) throw new Error('GATEWAY_SESSION_MISMATCH');
   if (!REFRESH_TOKEN.test(refreshToken)) throw new Error('INVALID_REFRESH_TOKEN');
-  const mockSubjectId = await resolveOrCreateMockSubjectForVerifiedPhone(verifiedPhoneOwner);
-  if (process.env.USER_WEB_SUPPORT_MODE === 'mock') {
-    await registerAccountSession(mockSubjectId, metadata.sessionId, verifiedPhoneOwner);
+  const ownerId = mockMode
+    ? await resolveOrCreateMockSubjectForVerifiedPhone(verifiedPhoneOwner)
+    : (metadata as VerifiedAccessTokenMetadata).ownerId;
+  if (mockMode) {
+    await registerAccountSession(ownerId, metadata.sessionId, verifiedPhoneOwner);
   }
   await writeSession({
-    version: 2,
+    version: 3,
     accessToken,
     accessExpiresAt: metadata.expiresAt,
     expiresAt: nowSeconds + SESSION_TTL_SECONDS,
     issuedAt: nowSeconds,
-    mockSubjectId,
+    ownerId,
     sessionId: metadata.sessionId,
     verifiedPhone: verifiedPhoneOwner,
   });
@@ -351,7 +486,7 @@ export async function readAuthenticatedServerSessionState(): Promise<Authenticat
     return { kind: 'needs-refresh' };
   }
   if (!(await durableSessionIdentity(session))) return { kind: 'invalid' };
-  return { kind: 'active', session: { ownerId: session.mockSubjectId } };
+  return { kind: 'active', session: { ownerId: session.ownerId } };
 }
 
 export async function requireAuthenticatedServerSession(): Promise<AuthenticatedServerSession> {
@@ -375,8 +510,9 @@ function gatewayMetadataHeaders(input?: HeadersInit): Headers {
 
 async function rotate(session: StoredSession): Promise<StoredSession | undefined> {
   try {
+    const nowBeforeRefresh = Math.floor(Date.now() / 1_000);
     const durableBefore =
-      process.env.USER_WEB_SUPPORT_MODE === 'mock'
+      process.env.USER_WEB_SUPPORT_MODE === 'mock' || session.accessExpiresAt > nowBeforeRefresh
         ? await durableSessionIdentity(session)
         : { verifiedPhone: session.verifiedPhone };
     if (!durableBefore) return undefined;
@@ -399,14 +535,22 @@ async function rotate(session: StoredSession): Promise<StoredSession | undefined
     const responseSessionId = UuidSchema.safeParse(body.sessionId);
     if (!responseSessionId.success) return undefined;
     const nowSeconds = Math.floor(Date.now() / 1_000);
-    const metadata = parseAccessTokenMetadata(body.accessToken, nowSeconds);
+    const metadata =
+      process.env.USER_WEB_SUPPORT_MODE === 'mock'
+        ? parseAccessTokenMetadata(body.accessToken, nowSeconds)
+        : verifyAccessTokenMetadata(body.accessToken, nowSeconds);
     if (metadata.sessionId !== responseSessionId.data) return undefined;
+    if (
+      process.env.USER_WEB_SUPPORT_MODE !== 'mock' &&
+      (metadata as VerifiedAccessTokenMetadata).ownerId !== session.ownerId
+    )
+      return undefined;
     let verifiedPhone = durableBefore.verifiedPhone;
     if (process.env.USER_WEB_SUPPORT_MODE === 'mock') {
       // This transaction is the second authorization check: a concurrent revoke/close
       // between the upstream refresh and this point cannot resurrect the session.
       verifiedPhone = (
-        await rotateAccountSession(session.mockSubjectId, session.sessionId, metadata.sessionId)
+        await rotateAccountSession(session.ownerId, session.sessionId, metadata.sessionId)
       ).verifiedPhone;
     } else {
       const liveCandidate: StoredSession = {
@@ -418,12 +562,12 @@ async function rotate(session: StoredSession): Promise<StoredSession | undefined
       if (!(await validateLiveSession(liveCandidate))) return undefined;
     }
     const rotated: StoredSession = {
-      version: 2,
+      version: 3,
       accessToken: body.accessToken,
       accessExpiresAt: metadata.expiresAt,
       expiresAt: nowSeconds + SESSION_TTL_SECONDS,
       issuedAt: nowSeconds,
-      mockSubjectId: session.mockSubjectId,
+      ownerId: session.ownerId,
       sessionId: metadata.sessionId,
       verifiedPhone,
     };
@@ -449,7 +593,7 @@ export async function requireMutableAuthenticatedServerSession(): Promise<Authen
     if (state.kind === 'needs-refresh') throw new SessionRefreshRequiredError();
     throw new AuthenticationRequiredError();
   }
-  return { ownerId: session.mockSubjectId };
+  return { ownerId: session.ownerId };
 }
 
 export async function requireMutableAuthenticatedServerSessionIdentity(): Promise<AuthenticatedServerSessionIdentity> {
@@ -462,7 +606,7 @@ export async function requireMutableAuthenticatedServerSessionIdentity(): Promis
   const durable = await durableSessionIdentity(session);
   if (!durable) throw new AuthenticationRequiredError();
   return {
-    ownerId: session.mockSubjectId,
+    ownerId: session.ownerId,
     sessionId: session.sessionId,
     verifiedPhone: durable.verifiedPhone,
   };
@@ -479,7 +623,7 @@ export async function replaceAuthenticatedServerSessionPhone(
     throw new Error('INVALID_SESSION_PHONE_REPLACEMENT');
   }
   const session = await mutableFreshSession();
-  if (!session || session.mockSubjectId !== expectedSubjectId) {
+  if (!session || session.ownerId !== expectedSubjectId) {
     throw new AuthenticationRequiredError();
   }
   await writeSession({ ...session, verifiedPhone });

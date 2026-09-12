@@ -269,11 +269,67 @@ describe('ticket center', () => {
       const input = {
         kind,
         body: `${kind} 的公开反馈内容。`,
-        ...(kind === 'PRODUCT_SUGGESTION' ? {} : { referenceId: createUuidV7() }),
+        ...(kind === 'FAILED_TASK' ? { referenceId: 'task-1' } : {}),
       };
       const first = await gateway.submitFeedback(input, context);
       await expect(gateway.submitFeedback(input, context)).resolves.toEqual(first);
     }
+  });
+
+  it('recomputes reopen capability and hides reply controls after the seven-day window', async () => {
+    const ownerId = createUuidV7();
+    await primeTicket(
+      ownerId,
+      'RESOLVED',
+      new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString(),
+    );
+    const listed = (await supportGateway.listTickets({}, { ownerId })) as TicketPage;
+    const stale = listed.items[0];
+    expect(stale?.canReopen).toBe(false);
+
+    render(<TicketCenter initial={listed} />);
+    expect(screen.queryByRole('button', { name: '重新打开' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '发送回复' })).toBeNull();
+  });
+
+  it('closes and locks feedback after success while associating field errors explicitly', async () => {
+    const user = userEvent.setup();
+    const submit = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, outcome: 'DEFINITIVE_FAILURE' })
+      .mockResolvedValue({
+        ok: true,
+        data: {
+          id: createUuidV7(),
+          kind: 'FAILED_TASK',
+          body: '任务结果一直无法正常打开。',
+          referenceId: 'task-1',
+          createdAt: new Date().toISOString(),
+        },
+      });
+    render(<TicketCenter initial={{ items: [], pageInfo: {} }} onSubmitFeedback={submit} />);
+    await user.click(screen.getByRole('button', { name: '提交产品反馈' }));
+    await user.selectOptions(screen.getByLabelText('反馈类型'), 'FAILED_TASK');
+    await user.type(screen.getByLabelText('关联任务或模型标识（可选）'), 'bad handle!');
+    await user.click(screen.getByRole('button', { name: '提交反馈' }));
+    expect(screen.getByLabelText('关联任务或模型标识（可选）')).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
+    expect(screen.getByLabelText('反馈内容')).toHaveAttribute('aria-invalid', 'true');
+
+    await user.clear(screen.getByLabelText('关联任务或模型标识（可选）'));
+    await user.type(screen.getByLabelText('关联任务或模型标识（可选）'), 'task-1');
+    await user.type(screen.getByLabelText('反馈内容'), '任务结果一直无法正常打开。');
+    await user.click(screen.getByRole('button', { name: '提交反馈' }));
+    expect(screen.getByText('反馈未提交，请检查内容。')).toHaveAttribute('role', 'alert');
+    await user.click(screen.getByRole('button', { name: '提交反馈' }));
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(submit.mock.calls[0]?.[1]).toBe(submit.mock.calls[1]?.[1]);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button', { name: '反馈已提交' })).toBeDisabled();
+    expect(screen.getByText('反馈已提交，感谢你的建议。')).toHaveAttribute('role', 'status');
   });
 
   it('renders satisfaction and typed feedback entry points', () => {

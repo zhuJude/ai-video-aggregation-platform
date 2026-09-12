@@ -25,6 +25,7 @@ export function MessageCenter({
   const [unreadCount, setUnreadCount] = useState(initial.unreadCount);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const pageUnreadCount = items.filter(({ readAt }) => !readAt).length;
 
   const mark = async (ids: readonly string[]) => {
     if (pending || ids.length === 0) return;
@@ -65,7 +66,7 @@ export function MessageCenter({
         </div>
         <button
           type="button"
-          disabled={pending || unreadCount === 0}
+          disabled={pending || pageUnreadCount === 0}
           onClick={() => void mark(items.filter(({ readAt }) => !readAt).map(({ id }) => id))}
         >
           将本页标为已读

@@ -18,6 +18,7 @@ import { formatSupportDate } from '../../lib/support/runtime';
 import { createUuidV7 } from '../../lib/tasks/identifiers';
 import type {
   FeedbackKind,
+  FeedbackView,
   SupportActionResult,
   TicketPage,
   TicketView,
@@ -43,6 +44,7 @@ const categoryLabel: Record<TicketView['category'], string> = {
 export function TicketCenter({
   initial,
   onCreateTicket,
+  onSubmitFeedback,
 }: {
   readonly initial: TicketPage;
   readonly onCreateTicket?: (
@@ -54,6 +56,10 @@ export function TicketCenter({
     },
     key: string,
   ) => Promise<SupportActionResult<TicketView>>;
+  readonly onSubmitFeedback?: (
+    input: { readonly kind: FeedbackKind; readonly body: string; readonly referenceId?: string },
+    key: string,
+  ) => Promise<SupportActionResult<FeedbackView>>;
 }) {
   const [items, setItems] = useState(initial.items);
   const [open, setOpen] = useState(false);
@@ -65,6 +71,8 @@ export function TicketCenter({
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState<string>();
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackOutcome, setFeedbackOutcome] = useState<'submitted' | 'uncertain'>();
+  const [feedbackNotice, setFeedbackNotice] = useState<string>();
 
   const create = async () => {
     if (pending || uncertain) return;
@@ -123,11 +131,16 @@ export function TicketCenter({
         </button>
         <button
           type="button"
+          disabled={feedbackOutcome !== undefined}
           onClick={() => {
             setFeedbackOpen(true);
           }}
         >
-          提交产品反馈
+          {feedbackOutcome === 'submitted'
+            ? '反馈已提交'
+            : feedbackOutcome === 'uncertain'
+              ? '反馈待确认'
+              : '提交产品反馈'}
         </button>
       </div>
       {items.length === 0 ? (
@@ -227,10 +240,23 @@ export function TicketCenter({
       ) : null}
       {feedbackOpen ? (
         <FeedbackDialog
+          {...(onSubmitFeedback ? { onSubmit: onSubmitFeedback } : {})}
+          onSaved={() => {
+            setFeedbackOutcome('submitted');
+            setFeedbackNotice('反馈已提交，感谢你的建议。');
+            setFeedbackOpen(false);
+          }}
+          onUncertain={() => {
+            setFeedbackOutcome('uncertain');
+            setFeedbackNotice('反馈结果待确认，请刷新工单页核对，勿重复提交。');
+          }}
           onClose={() => {
             setFeedbackOpen(false);
           }}
         />
+      ) : null}
+      {feedbackNotice ? (
+        <p role={feedbackOutcome === 'submitted' ? 'status' : 'alert'}>{feedbackNotice}</p>
       ) : null}
     </section>
   );
@@ -299,7 +325,9 @@ function TicketCard({
           </article>
         ))}
       </div>
-      {ticket.status !== 'CLOSED' ? (
+      {ticket.status === 'OPEN' ||
+      ticket.status === 'IN_PROGRESS' ||
+      (ticket.status === 'RESOLVED' && ticket.canReopen) ? (
         <div className="settings-form">
           <label htmlFor={`reply-${ticket.id}`}>公开回复</label>
           <textarea
@@ -466,34 +494,76 @@ function SatisfactionDialog({
   );
 }
 
-function FeedbackDialog({ onClose }: { readonly onClose: () => void }) {
+function FeedbackDialog({
+  onClose,
+  onSaved,
+  onUncertain,
+  onSubmit,
+}: {
+  readonly onClose: () => void;
+  readonly onSaved: () => void;
+  readonly onUncertain: () => void;
+  readonly onSubmit?: (
+    input: { readonly kind: FeedbackKind; readonly body: string; readonly referenceId?: string },
+    key: string,
+  ) => Promise<SupportActionResult<FeedbackView>>;
+}) {
   const [kind, setKind] = useState<FeedbackKind>('PRODUCT_SUGGESTION');
   const [referenceId, setReferenceId] = useState('');
   const [body, setBody] = useState('');
   const [pending, setPending] = useState(false);
-  const [status, setStatus] = useState<string>();
+  const [locked, setLocked] = useState(false);
+  const [operationKey] = useState(() => createUuidV7());
+  const [result, setResult] = useState<
+    { readonly kind: 'error' | 'success'; readonly message: string } | undefined
+  >();
+  const [referenceError, setReferenceError] = useState<string>();
+  const [bodyError, setBodyError] = useState<string>();
   const submit = async () => {
-    if (body.trim().length < 10 || pending) return;
+    if (pending || locked) return;
+    const normalizedReference = referenceId.trim();
+    const normalizedBody = body.trim();
+    const nextReferenceError =
+      normalizedReference && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalizedReference)
+        ? '标识仅支持字母、数字、点、下划线、冒号和连字符，最长 128 字。'
+        : undefined;
+    const nextBodyError =
+      normalizedBody.length < 10 || normalizedBody.length > 2_000
+        ? '反馈内容须为 10–2000 字。'
+        : undefined;
+    setReferenceError(nextReferenceError);
+    setBodyError(nextBodyError);
+    if (nextReferenceError || nextBodyError) return;
     setPending(true);
-    const key = createUuidV7();
-    const result = await runSupportActionWithRefresh(key, (sameKey) =>
-      submitFeedbackAction(
-        {
-          kind,
-          body: body.trim(),
-          ...(kind !== 'PRODUCT_SUGGESTION' ? { referenceId: referenceId.trim() } : {}),
-        },
-        sameKey,
-      ),
-    );
+    setResult(undefined);
+    const input = {
+      kind,
+      body: normalizedBody,
+      ...(normalizedReference ? { referenceId: normalizedReference } : {}),
+    };
+    const actionResult = onSubmit
+      ? await onSubmit(input, operationKey)
+      : await runSupportActionWithRefresh(operationKey, (sameKey) =>
+          submitFeedbackAction(input, sameKey),
+        );
     setPending(false);
-    if (result.ok) setStatus('反馈已提交，感谢你的建议。');
-    else
-      setStatus(
-        result.outcome === 'UNCERTAIN'
+    if (actionResult.ok) {
+      setResult({ kind: 'success', message: '反馈已提交，感谢你的建议。' });
+      setLocked(true);
+      onSaved();
+      return;
+    }
+    if (actionResult.outcome === 'UNCERTAIN') {
+      setLocked(true);
+      onUncertain();
+    }
+    setResult({
+      kind: 'error',
+      message:
+        actionResult.outcome === 'UNCERTAIN'
           ? '反馈结果待确认，请勿重复提交。'
           : '反馈未提交，请检查内容。',
-      );
+    });
   };
   return (
     <AccessibleDialog labelledBy="feedback-title" onClose={onClose} busy={pending}>
@@ -511,17 +581,22 @@ function FeedbackDialog({ onClose }: { readonly onClose: () => void }) {
           <option value="MODEL_RESULT">模型效果</option>
           <option value="FAILED_TASK">失败任务</option>
         </select>
-        {kind !== 'PRODUCT_SUGGESTION' ? (
-          <>
-            <label htmlFor="feedback-reference">关联任务编号</label>
-            <input
-              id="feedback-reference"
-              value={referenceId}
-              onChange={(event) => {
-                setReferenceId(event.target.value);
-              }}
-            />
-          </>
+        <label htmlFor="feedback-reference">关联任务或模型标识（可选）</label>
+        <input
+          id="feedback-reference"
+          value={referenceId}
+          maxLength={128}
+          aria-invalid={referenceError ? true : undefined}
+          aria-describedby={referenceError ? 'feedback-reference-error' : undefined}
+          onChange={(event) => {
+            setReferenceId(event.target.value);
+            setReferenceError(undefined);
+          }}
+        />
+        {referenceError ? (
+          <small id="feedback-reference-error" role="alert">
+            {referenceError}
+          </small>
         ) : null}
         <label htmlFor="feedback-body">反馈内容</label>
         <textarea
@@ -529,18 +604,24 @@ function FeedbackDialog({ onClose }: { readonly onClose: () => void }) {
           minLength={10}
           maxLength={2_000}
           value={body}
+          aria-invalid={bodyError ? true : undefined}
+          aria-describedby={bodyError ? 'feedback-body-error' : undefined}
           onChange={(event) => {
             setBody(event.target.value);
+            setBodyError(undefined);
           }}
         />
+        {bodyError ? (
+          <small id="feedback-body-error" role="alert">
+            {bodyError}
+          </small>
+        ) : null}
       </div>
-      {status ? <p role={status.includes('感谢') ? 'status' : 'alert'}>{status}</p> : null}
+      {result ? (
+        <p role={result.kind === 'success' ? 'status' : 'alert'}>{result.message}</p>
+      ) : null}
       <div className="dialog-actions">
-        <button
-          type="button"
-          disabled={pending || body.trim().length < 10}
-          onClick={() => void submit()}
-        >
+        <button type="button" disabled={pending || locked} onClick={() => void submit()}>
           提交反馈
         </button>
         <button type="button" disabled={pending} onClick={onClose}>

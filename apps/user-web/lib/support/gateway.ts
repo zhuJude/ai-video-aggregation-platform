@@ -153,7 +153,10 @@ export const supportGateway: SupportGateway = {
     const start = offset(filters.cursor);
     // internalNotes deliberately never cross this boundary.
     return {
-      items: matches.slice(start, start + PAGE_SIZE),
+      items: matches.slice(start, start + PAGE_SIZE).map((ticket) => ({
+        ...ticket,
+        canReopen: mayReopen(ticket),
+      })),
       pageInfo: pageInfo(start, matches.length),
     };
   },
@@ -322,8 +325,8 @@ export const supportGateway: SupportGateway = {
       throw new SupportGatewayError('INVALID_FEEDBACK');
     const body = requireBody(input.body, 10, 2_000, 'INVALID_FEEDBACK');
     if (
-      (input.kind === 'PRODUCT_SUGGESTION' && input.referenceId !== undefined) ||
-      (input.kind !== 'PRODUCT_SUGGESTION' && !isUuidV7(input.referenceId))
+      input.referenceId !== undefined &&
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.referenceId)
     )
       throw new SupportGatewayError('INVALID_FEEDBACK_REFERENCE');
     const normalized = {

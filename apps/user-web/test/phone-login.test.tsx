@@ -194,6 +194,7 @@ beforeEach(() => {
   process.env.USER_WEB_MOCK_IDENTITY_KEY = Buffer.alloc(32, 23).toString('base64url');
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
   process.env.USER_WEB_SUPPORT_MODE = 'mock';
+  process.env.USER_WEB_STUDIO_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 29).toString('base64url');
   loginCookies.clear();
   loginCookieWrites.length = 0;
@@ -222,6 +223,7 @@ afterEach(() => {
   delete process.env.USER_WEB_MOCK_IDENTITY_KEY;
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_SUPPORT_MODE;
+  delete process.env.USER_WEB_STUDIO_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
 });
 
@@ -445,7 +447,7 @@ describe('PhoneLoginForm', () => {
 
     await waitFor(() => {
       expect(loginCookies.get('__Host-user-session')).toMatch(
-        /^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+        /^v3\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
       );
     });
     expect(loginCookieWrites.find((write) => write.name === '__Host-user-session')).toMatchObject({

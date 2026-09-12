@@ -24,6 +24,7 @@ beforeEach(() => {
   mockStoreScope.install();
   process.env.USER_WEB_COMMERCE_MODE = 'mock';
   process.env.USER_WEB_SUPPORT_MODE = 'mock';
+  process.env.USER_WEB_STUDIO_MODE = 'mock';
   process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY = Buffer.alloc(32, 17).toString('base64url');
   process.env.USER_WEB_COMMERCE_IDENTITY_KEY = randomBytes(32).toString('base64url');
   process.env.USER_WEB_MOCK_IDENTITY_KEY = randomBytes(32).toString('base64url');
@@ -32,6 +33,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_SUPPORT_MODE;
+  delete process.env.USER_WEB_STUDIO_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
   delete process.env.USER_WEB_COMMERCE_IDENTITY_KEY;
   delete process.env.USER_WEB_MOCK_IDENTITY_KEY;

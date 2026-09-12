@@ -29,6 +29,7 @@ interface PhoneChangeState {
 }
 
 interface DeletionChallengeState {
+  readonly attempts: number;
   readonly requestedAt: string;
   readonly cooldownUntil: string;
   readonly expiresAt: string;
@@ -139,7 +140,11 @@ function parseState(value: unknown, ownerId: string): AccountState {
       : (state.deletionChallenge as Record<string, unknown>);
   if (
     deletionChallenge &&
-    (Object.keys(deletionChallenge).sort().join(',') !== 'cooldownUntil,expiresAt,requestedAt' ||
+    (Object.keys(deletionChallenge).sort().join(',') !==
+      'attempts,cooldownUntil,expiresAt,requestedAt' ||
+      !Number.isSafeInteger(deletionChallenge.attempts) ||
+      (deletionChallenge.attempts as number) < 0 ||
+      (deletionChallenge.attempts as number) > 5 ||
       !['requestedAt', 'cooldownUntil', 'expiresAt'].every(
         (key) =>
           typeof deletionChallenge[key] === 'string' &&
@@ -259,7 +264,24 @@ export async function readAccountState(
     if (raw === undefined) throw new AccountStoreError('SESSION_NOT_FOUND');
     const current = requireCurrent(parseState(raw, ownerId), currentSessionId);
     const commands = current.commands.filter(({ expiresAt }) => Date.parse(expiresAt) > now);
-    const next = commands.length !== current.commands.length ? { ...current, commands } : undefined;
+    const phoneChanged = current.verifiedPhone !== verifiedPhone;
+    const next =
+      commands.length !== current.commands.length || phoneChanged
+        ? {
+            ...current,
+            commands,
+            ...(phoneChanged
+              ? {
+                  verifiedPhone,
+                  profile: {
+                    ...current.profile,
+                    phoneMasked: maskPhone(verifiedPhone),
+                    updatedAt: new Date(now).toISOString(),
+                  },
+                }
+              : {}),
+          }
+        : undefined;
     return { result: next ? parseState(next, ownerId) : current, ...(next ? { next } : {}) };
   });
 }
@@ -275,14 +297,30 @@ export async function registerAccountSession(
   await transactMockStoreJson(fileName(ownerId), (raw) => {
     const state = parseState(raw ?? seed(ownerId, sessionId, verifiedPhone), ownerId);
     if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
-    if (state.verifiedPhone !== verifiedPhone)
-      throw new AccountStoreError('SUBJECT_BINDING_NOT_FOUND');
+    const synchronized =
+      state.verifiedPhone === verifiedPhone
+        ? state
+        : parseState(
+            {
+              ...state,
+              verifiedPhone,
+              profile: {
+                ...state.profile,
+                phoneMasked: maskPhone(verifiedPhone),
+                updatedAt: new Date().toISOString(),
+              },
+            },
+            ownerId,
+          );
     if (state.sessions.some(({ id }) => id === sessionId))
-      return { result: undefined, ...(raw === undefined ? { next: state } : {}) };
+      return {
+        result: undefined,
+        ...(raw === undefined || synchronized !== state ? { next: synchronized } : {}),
+      };
     const now = Date.now();
     const next = parseState(
       {
-        ...state,
+        ...synchronized,
         sessions: [
           {
             id: sessionId,
@@ -292,7 +330,7 @@ export async function registerAccountSession(
             lastSeenAt: new Date(now).toISOString(),
             expiresAt: new Date(now + 30 * 24 * 60 * 60_000).toISOString(),
           },
-          ...state.sessions,
+          ...synchronized.sessions,
         ],
       },
       ownerId,

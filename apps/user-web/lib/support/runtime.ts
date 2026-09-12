@@ -297,7 +297,7 @@ export function parseFeedback(value: unknown): FeedbackView {
   if (
     feedback.referenceId !== undefined &&
     (typeof feedback.referenceId !== 'string' ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(feedback.referenceId))
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(feedback.referenceId))
   )
     throw new Error('INVALID_FEEDBACK');
   return {

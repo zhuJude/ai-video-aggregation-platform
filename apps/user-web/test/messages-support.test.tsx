@@ -84,4 +84,19 @@ describe('message center', () => {
     expect(screen.getByText('8 条未读')).toBeVisible();
     expect(markRead).toHaveBeenCalledWith([page.items[0]?.id], expect.any(String));
   });
+
+  it('disables page marking when the current page has no unread items even if the global total is nonzero', () => {
+    render(
+      <MessageCenter
+        initial={{
+          ...page,
+          unreadCount: 9,
+          items: page.items.map((item) => ({ ...item, readAt: '2026-08-31T03:00:00.000Z' })),
+        }}
+        onMarkRead={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '将本页标为已读' })).toBeDisabled();
+  });
 });

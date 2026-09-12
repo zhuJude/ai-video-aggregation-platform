@@ -216,16 +216,27 @@ export const accountGateway: AccountGateway = {
       throw new AccountGatewayError('PHONE_VERIFICATION_FAILED');
     }
     await rebindMockSubjectPhone(context.ownerId, context.verifiedPhone, newPhoneE164);
-    return runAccountCommand(context, command, (state) => {
-      state.verifiedPhone = newPhoneE164;
-      state.profile = {
-        ...state.profile,
-        phoneMasked: maskPhone(newPhoneE164),
-        updatedAt: new Date().toISOString(),
-      };
-      delete state.phoneChange;
-      return { changed: true, verifiedPhone: newPhoneE164 } as const;
-    });
+    try {
+      return await runAccountCommand(context, command, (state) => {
+        state.verifiedPhone = newPhoneE164;
+        state.profile = {
+          ...state.profile,
+          phoneMasked: maskPhone(newPhoneE164),
+          updatedAt: new Date().toISOString(),
+        };
+        delete state.phoneChange;
+        return { changed: true, verifiedPhone: newPhoneE164 } as const;
+      });
+    } catch (error) {
+      try {
+        await rebindMockSubjectPhone(context.ownerId, newPhoneE164, context.verifiedPhone);
+      } catch {
+        // The phone map is the authentication authority and can repair account metadata.
+        // Report uncertainty so a caller never blindly repeats after a double failure.
+        throw new Error('PHONE_CHANGE_UNCERTAIN');
+      }
+      throw error;
+    }
   },
 
   async requestAccountDeletionCode(input, context) {
@@ -240,6 +251,16 @@ export const accountGateway: AccountGateway = {
         fingerprint: `delete-request:${input.deviceId}`,
       },
       (state) => {
+        if (
+          state.deletionChallenge &&
+          state.deletionChallenge.attempts >= 5 &&
+          Date.parse(state.deletionChallenge.expiresAt) > now
+        ) {
+          throw new AccountGatewayError(
+            'CHALLENGE_LOCKED',
+            Math.max(1, Math.ceil((Date.parse(state.deletionChallenge.expiresAt) - now) / 1_000)),
+          );
+        }
         if (state.deletionChallenge && Date.parse(state.deletionChallenge.cooldownUntil) > now) {
           throw new AccountGatewayError(
             'RATE_LIMITED',
@@ -251,6 +272,7 @@ export const accountGateway: AccountGateway = {
         }
         const requestedAt = new Date(now).toISOString();
         state.deletionChallenge = {
+          attempts: 0,
           requestedAt,
           cooldownUntil: new Date(now + 60_000).toISOString(),
           expiresAt: new Date(now + 10 * 60_000).toISOString(),
@@ -261,23 +283,42 @@ export const accountGateway: AccountGateway = {
   },
 
   async closeAccount(input, context) {
-    code(input.code);
+    const deletionCode = code(input.code);
     if (!isUuidV7(input.operationId) || input.operationId !== context.idempotencyKey)
       throw new AccountGatewayError('INVALID_OPERATION_ID');
-    if (input.code !== '123456') throw new AccountGatewayError('PHONE_VERIFICATION_FAILED');
     const result = await runAccountCommand(
       context,
-      { key: context.idempotencyKey, kind: 'DELETE', fingerprint: 'account-delete' },
+      {
+        key: context.idempotencyKey,
+        kind: 'DELETE',
+        fingerprint: `account-delete:${createHmac('sha256', identityKey())
+          .update(`deletion-code:v1:${context.ownerId}:${deletionCode}`)
+          .digest('base64url')}`,
+      },
       (state) => {
         if (!state.deletionChallenge || Date.parse(state.deletionChallenge.expiresAt) <= Date.now())
-          throw new AccountGatewayError('FRESH_CHALLENGE_REQUIRED');
+          return { closed: false, error: 'FRESH_CHALLENGE_REQUIRED' as const };
+        if (state.deletionChallenge.attempts >= 5)
+          return { closed: false, error: 'CHALLENGE_LOCKED' as const };
+        if (deletionCode !== '123456') {
+          const attempts = state.deletionChallenge.attempts + 1;
+          state.deletionChallenge = { ...state.deletionChallenge, attempts };
+          return {
+            closed: false,
+            error:
+              attempts >= 5
+                ? ('CHALLENGE_LOCKED' as const)
+                : ('PHONE_VERIFICATION_FAILED' as const),
+          };
+        }
         state.closed = true;
         state.sessions = [];
         delete state.deletionChallenge;
-        return { closed: true } as const;
+        return { closed: true as const };
       },
     );
+    if (!result.closed) throw new AccountGatewayError(result.error);
     await closeMockSubject(context.ownerId, context.verifiedPhone);
-    return result;
+    return { closed: true } as const;
   },
 };

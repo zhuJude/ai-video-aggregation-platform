@@ -15,8 +15,12 @@ import { ProfileSettings } from '../components/account/profile-settings';
 import { SessionList } from '../components/account/session-list';
 import { runAccountActionWithRefresh } from '../lib/account/client-command';
 import { accountGateway } from '../lib/account/gateway';
+import * as accountStore from '../lib/account/mock-store';
 import { registerAccountSession } from '../lib/account/mock-store';
-import { resolveOrCreateMockSubjectForVerifiedPhone } from '../lib/auth/mock-subject-store';
+import {
+  resolveExistingMockSubjectForVerifiedPhone,
+  resolveOrCreateMockSubjectForVerifiedPhone,
+} from '../lib/auth/mock-subject-store';
 import { ensureMockSeedObjects } from '../lib/commerce/mock-object-store';
 import { createUuidV7 } from '../lib/tasks/identifiers';
 import type { AccountActionResult, SecuritySessionView } from '../lib/account/types';
@@ -327,6 +331,60 @@ describe('security settings', () => {
     ).rejects.toThrow('RATE_LIMITED');
   });
 
+  it('counts deletion-code failures, locks the challenge, and never accepts it after lockout', async () => {
+    const context = {
+      ownerId: createUuidV7(),
+      currentSessionId: createUuidV7(),
+      verifiedPhone: '+8613611133333',
+    };
+    await registerAccountSession(context.ownerId, context.currentSessionId, context.verifiedPhone);
+    await accountGateway.requestAccountDeletionCode(
+      { deviceId: 'delete-attempt-device' },
+      { ...context, idempotencyKey: createUuidV7() },
+    );
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const operationId = createUuidV7();
+      await expect(
+        accountGateway.closeAccount(
+          { code: '000000', operationId },
+          { ...context, idempotencyKey: operationId },
+        ),
+      ).rejects.toThrow(attempt === 4 ? 'CHALLENGE_LOCKED' : 'PHONE_VERIFICATION_FAILED');
+    }
+    const operationId = createUuidV7();
+    await expect(
+      accountGateway.closeAccount(
+        { code: '123456', operationId },
+        { ...context, idempotencyKey: operationId },
+      ),
+    ).rejects.toThrow('CHALLENGE_LOCKED');
+    await expect(
+      accountGateway.requestAccountDeletionCode(
+        { deviceId: 'delete-attempt-device' },
+        { ...context, idempotencyKey: createUuidV7() },
+      ),
+    ).rejects.toThrow('CHALLENGE_LOCKED');
+  });
+
+  it('associates nickname validation errors with the nickname field', async () => {
+    const user = userEvent.setup();
+    render(
+      <ProfileSettings
+        initial={{
+          nickname: '光帧创作者',
+          phoneMasked: '138****8000',
+          avatarPreset: 'AMBER',
+          updatedAt: '2026-08-31T02:00:00.000Z',
+        }}
+        onSave={vi.fn()}
+      />,
+    );
+    await user.clear(screen.getByLabelText('昵称'));
+    await user.click(screen.getByRole('button', { name: '保存资料' }));
+    expect(screen.getByLabelText('昵称')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('昵称')).toHaveAccessibleDescription('昵称须为 1–40 个可见字符。');
+  });
+
   it('rate limits repeated server-side phone change requests without account disclosure', async () => {
     const context = {
       ownerId: createUuidV7(),
@@ -387,6 +445,43 @@ describe('security settings', () => {
         idempotencyKey,
       }),
     ).resolves.toEqual(first);
+  });
+
+  it('compensates the phone binding when the account commit fails', async () => {
+    const oldPhone = '+8613511144444';
+    const newPhone = '+8613411144444';
+    const ownerId = await resolveOrCreateMockSubjectForVerifiedPhone(oldPhone);
+    const context = {
+      ownerId,
+      currentSessionId: createUuidV7(),
+      verifiedPhone: oldPhone,
+    };
+    await registerAccountSession(ownerId, context.currentSessionId, oldPhone);
+    await accountGateway.requestPhoneChangeCodes(
+      { newPhoneE164: newPhone, deviceId: 'rebind-failure-device' },
+      { ...context, idempotencyKey: createUuidV7() },
+    );
+    const operationId = createUuidV7();
+    const originalRun = accountStore.runAccountCommand;
+    const failure = vi.spyOn(accountStore, 'runAccountCommand').mockImplementationOnce(() => {
+      throw new Error('ACCOUNT_COMMIT_FAILED');
+    });
+
+    await expect(
+      accountGateway.verifyPhoneChange(
+        {
+          currentPhoneCode: '123456',
+          newPhoneE164: newPhone,
+          newPhoneCode: '123456',
+          operationId,
+        },
+        { ...context, idempotencyKey: operationId },
+      ),
+    ).rejects.toThrow('ACCOUNT_COMMIT_FAILED');
+    failure.mockRestore();
+    expect(accountStore.runAccountCommand).toBe(originalRun);
+    await expect(resolveExistingMockSubjectForVerifiedPhone(oldPhone)).resolves.toBe(ownerId);
+    await expect(resolveExistingMockSubjectForVerifiedPhone(newPhone)).resolves.toBeUndefined();
   });
 
   it('requires the exact deletion phrase before the second confirmation', async () => {

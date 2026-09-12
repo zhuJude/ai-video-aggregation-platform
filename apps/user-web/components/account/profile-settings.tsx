@@ -39,6 +39,7 @@ export function ProfileSettings({
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<string>();
   const [error, setError] = useState<string>();
+  const [nicknameError, setNicknameError] = useState<string>();
   const uploadAvatar = async (file: File | undefined) => {
     if (!file || pending) return;
     if (
@@ -100,7 +101,7 @@ export function ProfileSettings({
         return code < 32 || code === 127;
       })
     ) {
-      setError('昵称须为 1–40 个可见字符。');
+      setNicknameError('昵称须为 1–40 个可见字符。');
       return;
     }
     const previous = saved;
@@ -112,6 +113,7 @@ export function ProfileSettings({
     });
     setPending(true);
     setError(undefined);
+    setNicknameError(undefined);
     setFeedback('正在保存…');
     const key = createUuidV7();
     const input = {
@@ -157,12 +159,19 @@ export function ProfileSettings({
           id="nickname"
           value={nickname}
           maxLength={40}
-          aria-describedby="nickname-help"
+          aria-invalid={nicknameError ? true : undefined}
+          aria-describedby={nicknameError ? 'nickname-error' : 'nickname-help'}
           onChange={(event) => {
             setNickname(event.target.value);
+            setNicknameError(undefined);
           }}
         />
         <small id="nickname-help">1–40 个字符。</small>
+        {nicknameError ? (
+          <small id="nickname-error" role="alert">
+            {nicknameError}
+          </small>
+        ) : null}
         <label htmlFor="avatar-upload">上传头像图片</label>
         <input
           id="avatar-upload"

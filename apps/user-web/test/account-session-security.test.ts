@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sessionCookies = vi.hoisted(() => new Map<string, string>());
@@ -42,6 +42,28 @@ function accessToken(sessionId: string): string {
   return `${encode({ alg: 'ES256', typ: 'JWT' })}.${encode({ aud: 'user-web', exp: Math.floor(Date.now() / 1_000) + 900, iss: 'identity-service', sid: sessionId, sub: 'untrusted-jwt-subject' })}.gateway-signature`;
 }
 
+function signedAccessToken(
+  ownerId: string,
+  sessionId: string,
+  privateKey: ReturnType<typeof generateKeyPairSync>['privateKey'],
+): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const now = Math.floor(Date.now() / 1_000);
+  const protectedHeader = encode({ alg: 'EdDSA', kid: 'identity-primary', typ: 'JWT' });
+  const payload = encode({
+    aud: 'user-web',
+    exp: now + 900,
+    iat: now,
+    iss: 'identity-service',
+    nbf: now - 1,
+    sid: sessionId,
+    sub: ownerId,
+  });
+  const signingInput = `${protectedHeader}.${payload}`;
+  const signature = sign(null, Buffer.from(signingInput), privateKey).toString('base64url');
+  return `${signingInput}.${signature}`;
+}
+
 beforeEach(() => {
   mockStoreScope.install();
   sessionCookies.clear();
@@ -61,6 +83,8 @@ afterEach(() => {
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
   delete process.env.USER_WEB_COMMERCE_MOCK_TEST_NAMESPACE;
+  delete process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON;
+  delete process.env.GATEWAY_URL;
 });
 
 afterAll(async () => {
@@ -68,6 +92,106 @@ afterAll(async () => {
 });
 
 describe('account session security', () => {
+  it('establishes a live session from a verified WS10 EdDSA subject and accepts the bare session array', async () => {
+    delete process.env.USER_WEB_SUPPORT_MODE;
+    delete process.env.USER_WEB_MOCK_IDENTITY_KEY;
+    process.env.GATEWAY_URL = 'https://gateway.example.test';
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON = JSON.stringify([
+      {
+        kid: 'identity-primary',
+        spki: publicKey.export({ format: 'der', type: 'spki' }).toString('base64url'),
+      },
+    ]);
+    const ownerId = createUuidV7();
+    const sessionId = createUuidV7();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json([
+          {
+            id: sessionId,
+            deviceName: 'Chrome on Windows',
+            createdAt: new Date(Date.now() - 60_000).toISOString(),
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        ]),
+      ),
+    );
+
+    await expect(
+      establishAuthenticatedServerSession(
+        signedAccessToken(ownerId, sessionId, privateKey),
+        sessionId,
+        refreshToken,
+        '+8618811122222',
+      ),
+    ).resolves.toBeUndefined();
+    await expect(readAuthenticatedServerSession()).resolves.toEqual({ ownerId });
+  });
+
+  it('fails closed when a live token subject is not signed by the configured WS10 key', async () => {
+    delete process.env.USER_WEB_SUPPORT_MODE;
+    delete process.env.USER_WEB_MOCK_IDENTITY_KEY;
+    const configured = generateKeyPairSync('ed25519');
+    const attacker = generateKeyPairSync('ed25519');
+    process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON = JSON.stringify([
+      {
+        kid: 'identity-primary',
+        spki: configured.publicKey.export({ format: 'der', type: 'spki' }).toString('base64url'),
+      },
+    ]);
+    const sessionId = createUuidV7();
+
+    await expect(
+      establishAuthenticatedServerSession(
+        signedAccessToken(createUuidV7(), sessionId, attacker.privateKey),
+        sessionId,
+        refreshToken,
+        '+8618811122222',
+      ),
+    ).rejects.toThrow('INVALID_GATEWAY_ACCESS_TOKEN');
+  });
+
+  it('fails closed for a missing, duplicate, oversized, or non-Ed25519 live keyring', async () => {
+    delete process.env.USER_WEB_SUPPORT_MODE;
+    delete process.env.USER_WEB_MOCK_IDENTITY_KEY;
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const sessionId = createUuidV7();
+    const token = signedAccessToken(createUuidV7(), sessionId, privateKey);
+    const spki = publicKey.export({ format: 'der', type: 'spki' }).toString('base64url');
+
+    delete process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON;
+    await expect(
+      establishAuthenticatedServerSession(token, sessionId, refreshToken, '+8618811122222'),
+    ).rejects.toThrow('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+
+    process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON = JSON.stringify([
+      { kid: 'identity-primary', spki },
+      { kid: 'identity-primary', spki },
+    ]);
+    await expect(
+      establishAuthenticatedServerSession(token, sessionId, refreshToken, '+8618811122222'),
+    ).rejects.toThrow('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+
+    process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON = JSON.stringify(
+      Array.from({ length: 6 }, (_, index) => ({ kid: `key-${String(index)}`, spki })),
+    );
+    await expect(
+      establishAuthenticatedServerSession(token, sessionId, refreshToken, '+8618811122222'),
+    ).rejects.toThrow('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+
+    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey;
+    process.env.USER_WEB_IDENTITY_VERIFY_KEYS_JSON = JSON.stringify([
+      {
+        kid: 'identity-primary',
+        spki: rsa.export({ format: 'der', type: 'spki' }).toString('base64url'),
+      },
+    ]);
+    await expect(
+      establishAuthenticatedServerSession(token, sessionId, refreshToken, '+8618811122222'),
+    ).rejects.toThrow('IDENTITY_VERIFY_KEYS_UNAVAILABLE');
+  });
   it('fails closed for an unauthenticated security action', async () => {
     await expect(listSecuritySessionsAction()).resolves.toEqual({
       ok: false,

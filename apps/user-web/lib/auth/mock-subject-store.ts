@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { createHmac } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import { UuidSchema } from '@repo/contracts/common';
 
 import { transactMockStoreJson } from '../commerce/mock-object-store';
@@ -13,10 +13,48 @@ const DEMO_SUBJECTS: Readonly<Record<string, string>> = {
 };
 
 interface SubjectBinding {
+  readonly encryptedPhone?: string;
   readonly phoneDigest: string;
   readonly subjectId: string;
   readonly state: 'ACTIVE' | 'REBOUND' | 'CLOSED';
   readonly updatedAt: string;
+}
+
+function encryptPhone(phone: string, subjectId: string, phoneDigest: string): string {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', identityKey(), nonce);
+  cipher.setAAD(Buffer.from(`mock-subject-phone:v1:${subjectId}:${phoneDigest}`));
+  const encrypted = Buffer.concat([
+    cipher.update(phone, 'utf8'),
+    cipher.final(),
+    cipher.getAuthTag(),
+  ]);
+  return `${nonce.toString('base64url')}.${encrypted.toString('base64url')}`;
+}
+
+function decryptPhone(binding: SubjectBinding): string {
+  if (!binding.encryptedPhone) throw new Error('SUBJECT_PHONE_UNAVAILABLE');
+  try {
+    const [encodedNonce, encodedPayload, extra] = binding.encryptedPhone.split('.');
+    if (!encodedNonce || !encodedPayload || extra) throw new Error('INVALID_PHONE_CIPHERTEXT');
+    const nonce = Buffer.from(encodedNonce, 'base64url');
+    const payload = Buffer.from(encodedPayload, 'base64url');
+    if (nonce.length !== 12 || payload.length <= 16) throw new Error('INVALID_PHONE_CIPHERTEXT');
+    const decipher = createDecipheriv('aes-256-gcm', identityKey(), nonce);
+    decipher.setAAD(
+      Buffer.from(`mock-subject-phone:v1:${binding.subjectId}:${binding.phoneDigest}`),
+    );
+    decipher.setAuthTag(payload.subarray(payload.length - 16));
+    const phone = Buffer.concat([
+      decipher.update(payload.subarray(0, payload.length - 16)),
+      decipher.final(),
+    ]).toString('utf8');
+    if (!VERIFIED_PHONE.test(phone) || digestPhone(phone) !== binding.phoneDigest)
+      throw new Error('INVALID_PHONE_CIPHERTEXT');
+    return phone;
+  } catch {
+    throw new Error('SUBJECT_PHONE_UNAVAILABLE');
+  }
 }
 
 interface SubjectMap {
@@ -65,11 +103,16 @@ function parseMap(value: unknown): SubjectMap {
       throw new Error('INVALID_SUBJECT_MAP');
     const binding = raw as Record<string, unknown>;
     if (
-      Object.keys(binding).sort().join(',') !== 'phoneDigest,state,subjectId,updatedAt' ||
+      ![
+        'encryptedPhone,phoneDigest,state,subjectId,updatedAt',
+        'phoneDigest,state,subjectId,updatedAt',
+      ].includes(Object.keys(binding).sort().join(',')) ||
       typeof binding.phoneDigest !== 'string' ||
       !/^[a-f0-9]{64}$/.test(binding.phoneDigest) ||
       !UuidSchema.safeParse(binding.subjectId).success ||
       !['ACTIVE', 'REBOUND', 'CLOSED'].includes(binding.state as string) ||
+      (binding.encryptedPhone !== undefined &&
+        (typeof binding.encryptedPhone !== 'string' || binding.encryptedPhone.length > 256)) ||
       typeof binding.updatedAt !== 'string' ||
       !Number.isFinite(Date.parse(binding.updatedAt))
     ) {
@@ -77,6 +120,7 @@ function parseMap(value: unknown): SubjectMap {
     }
     return {
       phoneDigest: binding.phoneDigest,
+      ...(binding.encryptedPhone ? { encryptedPhone: binding.encryptedPhone } : {}),
       subjectId: binding.subjectId as string,
       state: binding.state as SubjectBinding['state'],
       updatedAt: binding.updatedAt,
@@ -120,11 +164,22 @@ export async function resolveOrCreateMockSubjectForVerifiedPhone(
   const digest = digestPhone(verifiedPhone);
   return transact((bindings) => {
     const existing = bindings.find((binding) => binding.phoneDigest === digest);
-    if (existing?.state === 'ACTIVE') return { result: existing.subjectId };
+    if (existing?.state === 'ACTIVE') {
+      if (existing.encryptedPhone) return { result: existing.subjectId };
+      return {
+        result: existing.subjectId,
+        bindings: bindings.map((binding) =>
+          binding.phoneDigest === digest
+            ? { ...binding, encryptedPhone: encryptPhone(verifiedPhone, binding.subjectId, digest) }
+            : binding,
+        ),
+      };
+    }
     if (existing?.state === 'CLOSED') throw new Error('ACCOUNT_CLOSED');
     const subjectId = (!existing ? DEMO_SUBJECTS[verifiedPhone] : undefined) ?? createUuidV7();
     const created: SubjectBinding = {
       phoneDigest: digest,
+      encryptedPhone: encryptPhone(verifiedPhone, subjectId, digest),
       subjectId,
       state: 'ACTIVE',
       updatedAt: new Date().toISOString(),
@@ -135,6 +190,19 @@ export async function resolveOrCreateMockSubjectForVerifiedPhone(
         ? bindings.map((binding) => (binding.phoneDigest === digest ? created : binding))
         : [...bindings, created],
     };
+  });
+}
+
+export async function resolveCurrentVerifiedPhoneForMockSubject(
+  subjectId: string,
+): Promise<string> {
+  if (!UuidSchema.safeParse(subjectId).success) throw new Error('INVALID_SUBJECT');
+  return transact((bindings) => {
+    const active = bindings.filter(
+      (binding) => binding.subjectId === subjectId && binding.state === 'ACTIVE',
+    );
+    if (active.length !== 1) throw new Error('SUBJECT_BINDING_NOT_FOUND');
+    return { result: decryptPhone(active[0] as SubjectBinding) };
   });
 }
 
@@ -175,7 +243,13 @@ export async function rebindMockSubjectPhone(
             ? { ...binding, state: 'REBOUND' as const, updatedAt: now }
             : binding,
         ),
-        { phoneDigest: newDigest, subjectId, state: 'ACTIVE', updatedAt: now },
+        {
+          phoneDigest: newDigest,
+          encryptedPhone: encryptPhone(newVerifiedPhone, subjectId, newDigest),
+          subjectId,
+          state: 'ACTIVE',
+          updatedAt: now,
+        },
       ],
     };
   });
