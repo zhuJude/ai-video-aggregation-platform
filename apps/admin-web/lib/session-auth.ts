@@ -1,4 +1,5 @@
 import { isValidAdminPermissions, type AdminSubject } from './permissions';
+import { normalizeAdminLoginReturnTarget } from './admin-return-target';
 import { isUuidV7 } from './uuid-v7';
 import { decodeCanonicalBase64Url, encodeCanonicalBase64Url } from './canonical-base64url';
 
@@ -24,6 +25,7 @@ type AdminMfaChallengeBaseClaims = Readonly<{
   correlationId: string;
   expiresAt: number;
   identifierBinding: string;
+  redirectTo?: string;
   seed: string;
   version: typeof ADMIN_MFA_VERSION;
 }>;
@@ -116,18 +118,30 @@ function isAdminMfaChallengeClaims(
   }
 
   const candidate = value as Partial<AdminMfaChallengeClaims>;
-  const baseKeys = 'audience,correlationId,expiresAt,identifierBinding,seed,stage,version';
-  const exactKeys = candidate.stage === 'PASSWORD'
-    ? baseKeys
-    : candidate.stage === 'TOTP'
-      ? 'audience,challengeId,correlationId,expiresAt,identifierBinding,seed,stage,version'
-      : '';
+  const baseKeys = [
+    'audience',
+    'correlationId',
+    'expiresAt',
+    'identifierBinding',
+    'seed',
+    'stage',
+    'version',
+  ];
+  const redirectKey = candidate.redirectTo === undefined ? [] : ['redirectTo'];
+  const exactKeys =
+    candidate.stage === 'PASSWORD'
+      ? [...baseKeys, ...redirectKey].sort().join(',')
+      : candidate.stage === 'TOTP'
+        ? [...baseKeys, 'challengeId', ...redirectKey].sort().join(',')
+        : '';
   return (
     Object.keys(value).sort().join(',') === exactKeys &&
     candidate.audience === ADMIN_MFA_AUDIENCE &&
     isUuidV7(candidate.correlationId) &&
     isValidAdminMfaChallengeId(candidate.identifierBinding) &&
     isValidAdminMfaChallengeId(candidate.seed) &&
+    (candidate.redirectTo === undefined ||
+      normalizeAdminLoginReturnTarget(candidate.redirectTo) === candidate.redirectTo) &&
     (candidate.stage === 'PASSWORD' ||
       (candidate.stage === 'TOTP' && isValidAdminMfaChallengeId(candidate.challengeId))) &&
     candidate.version === ADMIN_MFA_VERSION &&

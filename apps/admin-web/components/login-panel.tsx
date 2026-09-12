@@ -190,6 +190,12 @@ export function LoginPanel({
   }, [totpState]);
 
   useEffect(() => {
+    if (totpState?.status === 'AUTHENTICATED') {
+      window.location.assign(totpState.redirectTo);
+    }
+  }, [totpState]);
+
+  useEffect(() => {
     if (!passwordState?.requiresPreflight) return;
     generationRef.current += 1;
     queuedGenerationRef.current = pendingRef.current ? generationRef.current : null;

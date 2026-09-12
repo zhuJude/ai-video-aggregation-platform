@@ -1,7 +1,6 @@
 'use server';
 
 import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
 
 import {
   type ServerCookiePort,
@@ -23,7 +22,7 @@ function recordUnclassifiedActionFailure(error: unknown): void {
   recordSafeTelemetry(defaultSafeTelemetry, createSafeTelemetryEvent('login.action', 'ACTION_FAILURE'));
 }
 
-async function createHandlers() {
+async function createHandlers(redirectTo?: string) {
   const cookieStore = await cookies();
   const cookiePort: ServerCookiePort = {
     get(name) {
@@ -43,6 +42,7 @@ async function createHandlers() {
     challengeSigningKey: process.env.ADMIN_MFA_CHALLENGE_SIGNING_KEY ?? '',
     sessionSigningKey: process.env.ADMIN_SESSION_SIGNING_KEY ?? '',
     requirePreflight: true,
+    ...(redirectTo === undefined ? {} : { redirectTo }),
   });
 }
 
@@ -56,11 +56,12 @@ export async function preparePasswordAction(identifier: string): Promise<Readonl
 }
 
 export async function submitPasswordAction(
+  redirectTo: string,
   _previousState: PasswordStepResult | null,
   formData: FormData,
 ): Promise<PasswordStepResult> {
   try {
-    const handlers = await createHandlers();
+    const handlers = await createHandlers(redirectTo);
     return await handlers.submitPassword(formData);
   } catch (error) {
     recordUnclassifiedActionFailure(error);
@@ -84,9 +85,5 @@ export async function submitTotpAction(
       cooldownSeconds: 0,
     };
   }
-  if (result.status === 'AUTHENTICATED') {
-    redirect(result.redirectTo);
-  }
-
   return result;
 }

@@ -52,6 +52,7 @@ import {
   createLoginActionHandlers,
 } from '../lib/admin-auth-actions';
 import { createHttpAdminAuthPort } from '../lib/http-admin-auth-port';
+import { normalizeAdminLoginReturnTarget } from '../lib/admin-return-target';
 import {
   ADMIN_MFA_CHALLENGE_COOKIE,
   ADMIN_MFA_CHALLENGE_TTL_MS,
@@ -197,6 +198,18 @@ describe('AdminShell', () => {
 });
 
 describe('MFA login', () => {
+  it('accepts only local non-sensitive admin return targets', () => {
+    expect(
+      normalizeAdminLoginReturnTarget(
+        '/tasks?cursor=next_1&query=failed-job&status=FAILED',
+      ),
+    ).toBe('/tasks?cursor=next_1&query=failed-job&status=FAILED');
+    expect(normalizeAdminLoginReturnTarget('https://evil.example/tasks')).toBeUndefined();
+    expect(normalizeAdminLoginReturnTarget('//evil.example/tasks')).toBeUndefined();
+    expect(normalizeAdminLoginReturnTarget('/tasks?query=13800138000')).toBeUndefined();
+    expect(normalizeAdminLoginReturnTarget('/login')).toBeUndefined();
+  });
+
   it('delivers a server preflight cookie before enabling the credential POST', async () => {
     let release: (() => void) | undefined;
     const preflightAction = vi.fn(() => new Promise<{ status: 'READY' }>((resolve) => { release = () => { resolve({ status: 'READY' }); }; }));
@@ -708,6 +721,7 @@ describe('server-backed MFA actions', () => {
       'correlationId',
       'expiresAt',
       'identifierBinding',
+      'redirectTo',
       'seed',
       'stage',
       'version',
@@ -717,6 +731,7 @@ describe('server-backed MFA actions', () => {
       'correlationId',
       'expiresAt',
       'identifierBinding',
+      'redirectTo',
       'seed',
       'stage',
       'version',
@@ -802,6 +817,7 @@ describe('server-backed MFA actions', () => {
 
   it('issues only an HttpOnly session cookie and clears challenge state on success', async () => {
     const cookies = createCookiePort();
+    const redirectTo = '/tasks?cursor=next_1&query=failed-job&status=FAILED';
     const authPort: AdminAuthPort = {
       async beginPasswordChallenge() {
         return {
@@ -828,12 +844,13 @@ describe('server-backed MFA actions', () => {
       sessionSigningKey,
       now: () => now,
       createSessionInstanceId: () => '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
+      redirectTo,
     });
     await actions.submitPassword(passwordForm());
 
     const result = await actions.submitTotp(totpForm('042731'));
 
-    expect(result).toEqual({ status: 'AUTHENTICATED', redirectTo: '/overview' });
+    expect(result).toEqual({ status: 'AUTHENTICATED', redirectTo });
     expect(result).not.toHaveProperty('sessionToken');
     expect(cookies.get(ADMIN_MFA_CHALLENGE_COOKIE)).toBeUndefined();
     expect(cookies.writes.at(-1)).toMatchObject({

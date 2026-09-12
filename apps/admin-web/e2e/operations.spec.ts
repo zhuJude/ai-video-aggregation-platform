@@ -3,8 +3,13 @@ import { mkdir } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { IDS } from './support/platform-fixture.mjs';
 
-async function login(page, identifier = 'admin@example.com') {
-  await page.goto('/login');
+async function login(
+  page,
+  identifier = 'admin@example.com',
+  startPath = '/login',
+  expectedPath = /\/overview$/u,
+) {
+  await page.goto(startPath);
   await page.getByLabel('管理员账号').fill(identifier);
   await page.getByLabel('密码').fill('correct horse battery staple');
   await page.getByRole('button', { name: '准备安全登录' }).click();
@@ -12,7 +17,7 @@ async function login(page, identifier = 'admin@example.com') {
   await expect(page.getByText('双因素验证', { exact: true })).toBeVisible();
   await page.getByLabel('六位验证码').fill('123456');
   await page.getByRole('button', { name: '验证并登录' }).click();
-  await expect(page).toHaveURL(/\/overview$/u);
+  await expect(page).toHaveURL(expectedPath);
 }
 
 async function fixtureState(context) {
@@ -24,6 +29,16 @@ async function fixtureState(context) {
 async function expectFixtureMutation(context, stateKey) {
   await expect.poll(async () => Boolean((await fixtureState(context)).state[stateKey])).toBe(true);
 }
+
+test('MFA returns to the protected filtered list that initiated login', async ({ page }) => {
+  await login(
+    page,
+    'admin@example.com',
+    '/tasks?cursor=next_1&query=failed-job&status=FAILED',
+    /\/tasks\?cursor=next_1&query=failed-job&status=FAILED$/u,
+  );
+  await expect(page.getByRole('heading', { name: '任务运营' })).toBeVisible();
+});
 
 test('operator completes MFA and the audited operations flow', async ({ browser }) => {
   test.setTimeout(180_000);

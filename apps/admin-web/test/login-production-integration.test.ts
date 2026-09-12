@@ -12,8 +12,6 @@ vi.mock('next/headers', () => ({
     set(name: string, value: string) { if (cookieOperationFailure) throw cookieOperationFailure; responseWrites.set(name, value); },
   }),
 }));
-vi.mock('next/navigation', () => ({ redirect: vi.fn() }));
-
 import { preparePasswordAction, submitPasswordAction, submitTotpAction } from '../app/login/actions';
 import { ADMIN_MFA_CHALLENGE_COOKIE, ADMIN_SESSION_COOKIE, verifyAdminMfaChallenge } from '../lib/session-auth';
 
@@ -56,7 +54,7 @@ describe('production MFA preflight and delivered cookie boundary', () => {
       requests.push(new Headers(init?.headers));
       return Promise.resolve(Response.json({ challengeId: 'A'.repeat(43), expiresInSeconds: 600 }));
     }));
-    await expect(submitPasswordAction(null, passwordForm())).resolves.toEqual({ step: 'password', message: '无法建立安全登录，请重试', requiresPreflight: true });
+    await expect(submitPasswordAction('/overview', null, passwordForm())).resolves.toEqual({ step: 'password', message: '无法建立安全登录，请重试', requiresPreflight: true });
     expect(requests).toHaveLength(0);
 
     await expect(preparePasswordAction('operator@example.invalid')).resolves.toEqual({ status: 'READY' });
@@ -66,9 +64,9 @@ describe('production MFA preflight and delivered cookie boundary', () => {
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, delivered as string);
 
     responseWrites = new Map();
-    await submitPasswordAction(null, passwordForm());
+    await submitPasswordAction('/overview', null, passwordForm());
     responseWrites = new Map(); // browser discards the first password response and its Set-Cookie
-    await submitPasswordAction(null, passwordForm());
+    await submitPasswordAction('/overview', null, passwordForm());
     expect(requests).toHaveLength(2);
     expect(requests[1]?.get('Idempotency-Key')).toBe(requests[0]?.get('Idempotency-Key'));
     expect(requests[1]?.get('X-Correlation-Id')).toBe(requests[0]?.get('X-Correlation-Id'));
@@ -86,7 +84,7 @@ describe('production MFA preflight and delivered cookie boundary', () => {
     await preparePasswordAction('operator@example.invalid');
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
-    await submitPasswordAction(null, passwordForm());
+    await submitPasswordAction('/overview', null, passwordForm());
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
     await submitTotpAction(null, totpForm('111111'));
@@ -110,7 +108,7 @@ describe('production MFA preflight and delivered cookie boundary', () => {
     await preparePasswordAction('operator@example.invalid');
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
-    await submitPasswordAction(null, passwordForm());
+    await submitPasswordAction('/overview', null, passwordForm());
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
 
@@ -137,7 +135,7 @@ describe('production MFA preflight and delivered cookie boundary', () => {
     await preparePasswordAction('operator@example.invalid');
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
-    await submitPasswordAction(null, passwordForm());
+    await submitPasswordAction('/overview', null, passwordForm());
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
     await expect(submitTotpAction(null, totpForm('111111'))).resolves.toMatchObject({ status: 'INVALID_TOTP' });
@@ -155,7 +153,7 @@ describe('production MFA preflight and delivered cookie boundary', () => {
     await preparePasswordAction('operator@example.invalid');
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
-    await submitPasswordAction(null, passwordForm());
+    await submitPasswordAction('/overview', null, passwordForm());
     const events = warnings.mock.calls.map((call) => JSON.parse(String(call[1])) as unknown);
     expect(events).toEqual([expect.objectContaining({
       correlationId: requestHeaders?.get('X-Correlation-Id'),
@@ -181,7 +179,7 @@ describe('production MFA preflight and delivered cookie boundary', () => {
     await preparePasswordAction('operator@example.invalid');
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
-    await submitPasswordAction(null, passwordForm());
+    await submitPasswordAction('/overview', null, passwordForm());
     requestJar.set(ADMIN_MFA_CHALLENGE_COOKIE, responseWrites.get(ADMIN_MFA_CHALLENGE_COOKIE) as string);
     responseWrites = new Map();
     await submitTotpAction(null, totpForm('111111'));

@@ -24,6 +24,7 @@ import {
   recordTechnicalFailure,
 } from './safe-telemetry';
 import { createUuidV7, isUuidV7 } from './uuid-v7';
+import { normalizeAdminLoginReturnTarget } from './admin-return-target';
 
 export type PasswordChallengeResult = Readonly<{
   challengeId: string;
@@ -88,7 +89,7 @@ export type TotpActionResult =
       message: string;
       cooldownSeconds: number;
     }>
-  | Readonly<{ status: 'AUTHENTICATED'; redirectTo: '/overview' }>;
+  | Readonly<{ status: 'AUTHENTICATED'; redirectTo: string }>;
 
 type LoginActionDependencies = Readonly<{
   authPort: AdminAuthPort;
@@ -100,6 +101,7 @@ type LoginActionDependencies = Readonly<{
   createSessionInstanceId?: () => string;
   telemetry?: SafeTelemetryPort;
   requirePreflight?: boolean;
+  redirectTo?: string;
 }>;
 
 const genericTotpFailure: TotpActionResult = {
@@ -160,7 +162,9 @@ export function createLoginActionHandlers({
   sessionSigningKey,
   telemetry = defaultSafeTelemetry,
   requirePreflight = false,
+  redirectTo,
 }: LoginActionDependencies) {
+  const loginRedirectTo = normalizeAdminLoginReturnTarget(redirectTo) ?? '/overview';
   if (
     !isValidAdminSigningKey(challengeSigningKey) ||
     !isValidAdminSigningKey(sessionSigningKey)
@@ -188,12 +192,18 @@ export function createLoginActionHandlers({
     recordSafeTelemetry(telemetry, createSafeTelemetryEvent(operation, reason));
   }
 
-  async function passwordFlow(identifier: string, currentTime: number): Promise<Extract<AdminMfaChallengeClaims, { stage: 'PASSWORD' }>> {
+  async function passwordFlow(
+    identifier: string,
+    currentTime: number,
+  ): Promise<
+    Extract<AdminMfaChallengeClaims, { stage: 'PASSWORD' }> & Readonly<{ redirectTo: string }>
+  > {
     return {
       audience: ADMIN_MFA_AUDIENCE,
       correlationId: createFlowId(),
       expiresAt: currentTime + ADMIN_MFA_CHALLENGE_TTL_MS,
       identifierBinding: await createAdminMfaIdentifierBinding(identifier, challengeSigningKey),
+      redirectTo: loginRedirectTo,
       seed: createRandomAdminMfaChallengeId(),
       stage: 'PASSWORD',
       version: ADMIN_MFA_VERSION,
@@ -216,7 +226,10 @@ export function createLoginActionHandlers({
       if (!identifier || !password) return publicPasswordStepResult();
       const existing = await verifyAdminMfaChallenge(cookies.get(ADMIN_MFA_CHALLENGE_COOKIE), challengeSigningKey, currentTime);
       const expectedBinding = await createAdminMfaIdentifierBinding(identifier, challengeSigningKey);
-      let flow = existing?.stage === 'PASSWORD' && existing.identifierBinding === expectedBinding ? existing : null;
+      let flow =
+        existing?.stage === 'PASSWORD' && existing.identifierBinding === expectedBinding
+          ? { ...existing, redirectTo: loginRedirectTo }
+          : null;
       if (!flow && !requirePreflight) flow = await passwordFlow(identifier, currentTime);
       if (!flow) {
         recordSafeTelemetry(telemetry, createSafeTelemetryEvent('login.password', 'CHALLENGE_INVALID'));
@@ -312,7 +325,11 @@ export function createLoginActionHandlers({
             cookieOptions(result.expiresAt),
           );
           cookies.delete(ADMIN_MFA_CHALLENGE_COOKIE);
-          return { status: 'AUTHENTICATED', redirectTo: '/overview' };
+          return {
+            status: 'AUTHENTICATED',
+            redirectTo:
+              normalizeAdminLoginReturnTarget(challenge.redirectTo) ?? '/overview',
+          };
         }
 
         if (result.kind === 'CONSUMED') {
