@@ -28,10 +28,13 @@ export async function GET(
       headers,
       signal: request.signal,
     });
-    if (!upstream.ok) return new Response(null, { status: upstream.status });
+    if (!upstream.ok) {
+      await upstream.body?.cancel().catch(() => undefined);
+      return new Response(null, { status: upstream.status });
+    }
     const contentType = upstream.headers.get('content-type');
     if (!contentType?.includes('text/event-stream') || !upstream.body) {
-      upstream.body?.cancel().catch(() => undefined);
+      await upstream.body?.cancel().catch(() => undefined);
       return new Response(null, { status: 502 });
     }
     const responseHeaders = new Headers({

@@ -357,7 +357,8 @@ export async function requireMutableAuthenticatedServerSession(): Promise<Authen
 export async function refreshAuthenticatedServerSession(): Promise<boolean> {
   const session = await storedSession();
   if (!session) return false;
-  if (session.accessExpiresAt > Math.floor(Date.now() / 1_000)) return true;
+  // This mutation endpoint is reached after an explicit Gateway/RSC refresh decision.
+  // Local JWT metadata is advisory and must not override a Gateway 401.
   const refreshed = await rotate(session);
   if (refreshed) return true;
   await clearSession();
@@ -410,6 +411,6 @@ export async function authenticatedGatewayFetch(
   };
   const response = await request(session.accessToken);
   if (response.status !== 401) return response;
-  response.body?.cancel().catch(() => undefined);
+  await response.body?.cancel().catch(() => undefined);
   throw new SessionRefreshRequiredError();
 }

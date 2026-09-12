@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET as pollTask } from '../app/api/tasks/[id]/route';
 import { GET as streamTask } from '../app/api/tasks/[id]/events/route';
-import { POST as refreshSession } from '../app/auth/refresh/route';
+import { GET as readRefreshSessionStatus, POST as refreshSession } from '../app/auth/refresh/route';
 import {
   establishAuthenticatedServerSession,
   readAuthenticatedServerSession,
@@ -113,7 +113,8 @@ describe('authenticated task BFF', () => {
     expect(FORGED_OWNER_ID).not.toBe(VERIFIED_PHONE_OWNER);
   });
   it('adds Bearer auth, forwards a valid cursor and streams without buffering', async () => {
-    const upstreamBody = new ReadableStream<Uint8Array>();
+    const cancelUpstream = vi.fn();
+    const upstreamBody = new ReadableStream<Uint8Array>({ cancel: cancelUpstream });
     const upstreamFetch = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(upstreamBody, {
         headers: {
@@ -139,12 +140,16 @@ describe('authenticated task BFF', () => {
     expect(forwarded.headers.get('last-event-id')).toBe(cursor);
     expect(response.body).toBe(upstreamBody);
     expect(response.headers.get('x-accel-buffering')).toBe('no');
+    expect(cancelUpstream).not.toHaveBeenCalled();
   });
 
   it('returns a typed refresh requirement without rotating on an upstream 401', async () => {
+    const cancelUpstream = vi.fn();
     const upstreamFetch = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(new Response(null, { status: 401 }));
+      .mockResolvedValue(
+        new Response(new ReadableStream<Uint8Array>({ cancel: cancelUpstream }), { status: 401 }),
+      );
     vi.stubGlobal('fetch', upstreamFetch);
     const response = await pollTask(new Request('https://app.example/api/tasks/task-1'), {
       params: Promise.resolve({ id: 'task-1' }),
@@ -152,7 +157,107 @@ describe('authenticated task BFF', () => {
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ code: 'SESSION_REFRESH_REQUIRED' });
     expect(upstreamFetch).toHaveBeenCalledTimes(1);
+    expect(cancelUpstream).toHaveBeenCalledTimes(1);
     expect(deletedCookies).toEqual([]);
+  });
+
+  it('rotates an apparently active local session after a Gateway 401 and retries successfully', async () => {
+    let lockTail = Promise.resolve();
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request<T>(_name: string, callback: () => Promise<T>): Promise<T> {
+          const result = lockTail.then(callback);
+          lockTail = result.then(
+            () => undefined,
+            () => undefined,
+          );
+          return result;
+        },
+      },
+    });
+    const task = await taskGateway.getTask('task-1', { ownerId: VERIFIED_PHONE_OWNER });
+    const oldCookie = cookies.get('__Host-user-session');
+    let refreshed = false;
+    let gatewayRefreshes = 0;
+    let taskRequests = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url === '/auth/refresh') {
+          return refreshSession(
+            new Request('https://app.example/auth/refresh', {
+              headers: { origin: 'https://app.example', 'sec-fetch-site': 'same-origin' },
+              method: 'POST',
+            }),
+          );
+        }
+        if (url === 'https://gateway.internal/v1/auth/refresh') {
+          gatewayRefreshes += 1;
+          refreshed = true;
+          return Response.json(
+            {
+              accessToken: accessToken('gateway-401-refresh', ROTATED_SESSION_ID),
+              sessionId: ROTATED_SESSION_ID,
+            },
+            {
+              headers: {
+                'Set-Cookie': `refresh_token=${REFRESH_B}; Path=/auth/refresh; HttpOnly; Secure; SameSite=Lax`,
+              },
+            },
+          );
+        }
+        if (url === 'https://gateway.internal/v1/tasks/task-1') {
+          taskRequests += 1;
+          return refreshed ? Response.json(task) : new Response(null, { status: 401 });
+        }
+        throw new Error('UNEXPECTED_FETCH');
+      }),
+    );
+    vi.resetModules();
+    const client = await import('../lib/auth/client-session');
+
+    const response = await client.fetchWithSessionRefresh(() =>
+      pollTask(new Request('https://app.example/api/tasks/task-1'), {
+        params: Promise.resolve({ id: 'task-1' }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(gatewayRefreshes).toBe(1);
+    expect(taskRequests).toBe(3);
+    expect(cookies.get('__Host-user-session')).not.toBe(oldCookie);
+  });
+
+  it('cancels upstream bodies when poll or stream errors are replaced', async () => {
+    const cancelPoll = vi.fn();
+    const cancelStream = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(new ReadableStream<Uint8Array>({ cancel: cancelPoll }), { status: 503 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(new ReadableStream<Uint8Array>({ cancel: cancelStream }), { status: 429 }),
+        ),
+    );
+
+    const pollResponse = await pollTask(new Request('https://app.example/api/tasks/task-1'), {
+      params: Promise.resolve({ id: 'task-1' }),
+    });
+    const streamResponse = await streamTask(
+      new Request('https://app.example/api/tasks/task-1/events'),
+      { params: Promise.resolve({ id: 'task-1' }) },
+    );
+
+    expect(pollResponse.status).toBe(503);
+    expect(streamResponse.status).toBe(429);
+    expect(cancelPoll).toHaveBeenCalledTimes(1);
+    expect(cancelStream).toHaveBeenCalledTimes(1);
   });
 
   it('returns only a minimal validated status envelope from polling', async () => {
@@ -214,6 +319,35 @@ describe('authenticated task BFF', () => {
       kind: 'needs-refresh',
     });
     expect(refreshFetch).not.toHaveBeenCalled();
+    expect(deletedCookies).toEqual([]);
+  });
+
+  it('reports same-origin session status without exposing data or mutating cookies', async () => {
+    const writesBefore = cookieWrites.length;
+    const active = await readRefreshSessionStatus(
+      new Request('https://app.example/auth/refresh', {
+        headers: { 'sec-fetch-site': 'same-origin' },
+      }),
+    );
+    expect(active.status).toBe(204);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 901_000);
+    const expired = await readRefreshSessionStatus(
+      new Request('https://app.example/auth/refresh', {
+        headers: { 'sec-fetch-site': 'same-origin' },
+      }),
+    );
+    expect(expired.status).toBe(401);
+    await expect(expired.json()).resolves.toEqual({ code: 'SESSION_REFRESH_REQUIRED' });
+
+    const crossSite = await readRefreshSessionStatus(
+      new Request('https://app.example/auth/refresh', {
+        headers: { 'sec-fetch-site': 'cross-site' },
+      }),
+    );
+    expect(crossSite.status).toBe(403);
+    expect(cookieWrites).toHaveLength(writesBefore);
     expect(deletedCookies).toEqual([]);
   });
 
@@ -357,7 +491,7 @@ describe('authenticated task BFF', () => {
     await expect(isolatedClient.coordinateSessionRefresh()).resolves.toBe(false);
   });
 
-  it('serializes two isolated tab refreshes and rotates the one-time token once', async () => {
+  it('deduplicates two expired RSC trampoline refreshes across isolated tabs', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + 901_000);
     let lockTail = Promise.resolve();
@@ -377,16 +511,17 @@ describe('authenticated task BFF', () => {
     let gatewayRefreshes = 0;
     vi.stubGlobal(
       'fetch',
-      vi.fn((input: string | URL | Request) => {
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
         if (url === '/auth/refresh') {
-          return refreshSession(
-            new Request('https://app.example/auth/refresh', {
-              headers: { origin: 'https://app.example', 'sec-fetch-site': 'same-origin' },
-              method: 'POST',
-            }),
-          );
+          const request = new Request('https://app.example/auth/refresh', {
+            headers: { origin: 'https://app.example', 'sec-fetch-site': 'same-origin' },
+            method: init?.method ?? 'GET',
+          });
+          return init?.method === 'POST'
+            ? refreshSession(request)
+            : readRefreshSessionStatus(request);
         }
         gatewayRefreshes += 1;
         return Response.json(
@@ -445,19 +580,21 @@ describe('authenticated task BFF', () => {
     const tabA = await import('../lib/auth/client-session');
     vi.resetModules();
     const tabB = await import('../lib/auth/client-session');
+    const discardedBodies: Array<ReturnType<typeof vi.fn>> = [];
+    const refreshRequiredResponse = () => {
+      const response = Response.json({ code: 'SESSION_REFRESH_REQUIRED' }, { status: 401 });
+      if (!response.body) throw new Error('MISSING_RESPONSE_BODY');
+      const body = response.body;
+      Object.defineProperty(response, 'body', { value: body });
+      const cancel = vi.spyOn(body, 'cancel');
+      discardedBodies.push(cancel);
+      return response;
+    };
     const requestA = vi.fn(() =>
-      Promise.resolve(
-        refreshed
-          ? new Response(null, { status: 200 })
-          : Response.json({ code: 'SESSION_REFRESH_REQUIRED' }, { status: 401 }),
-      ),
+      Promise.resolve(refreshed ? new Response(null, { status: 200 }) : refreshRequiredResponse()),
     );
     const requestB = vi.fn(() =>
-      Promise.resolve(
-        refreshed
-          ? new Response(null, { status: 200 })
-          : Response.json({ code: 'SESSION_REFRESH_REQUIRED' }, { status: 401 }),
-      ),
+      Promise.resolve(refreshed ? new Response(null, { status: 200 }) : refreshRequiredResponse()),
     );
 
     const [responseA, responseB] = await Promise.all([
@@ -471,6 +608,8 @@ describe('authenticated task BFF', () => {
     // The first caller performs one lock-protected preflight and one post-rotation retry.
     expect(requestA).toHaveBeenCalledTimes(3);
     expect(requestB).toHaveBeenCalledTimes(2);
+    expect(discardedBodies).toHaveLength(3);
+    expect(discardedBodies.map((cancel) => cancel.mock.calls.length)).toEqual([1, 1, 1]);
   });
 
   it('fails closed without attempting a refresh when Web Locks are unavailable', async () => {

@@ -22,7 +22,10 @@ export async function GET(
       headers,
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
     });
-    if (!upstream.ok) return new Response(null, { status: upstream.status });
+    if (!upstream.ok) {
+      await upstream.body?.cancel().catch(() => undefined);
+      return new Response(null, { status: upstream.status });
+    }
     const detail = parseTaskDetail((await upstream.json()) as unknown);
     return Response.json({ statusSnapshot: detail.statusSnapshot });
   } catch (error) {
