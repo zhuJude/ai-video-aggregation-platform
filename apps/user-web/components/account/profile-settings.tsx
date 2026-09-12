@@ -40,6 +40,7 @@ export function ProfileSettings({
   const [feedback, setFeedback] = useState<string>();
   const [error, setError] = useState<string>();
   const [nicknameError, setNicknameError] = useState<string>();
+  const [avatarError, setAvatarError] = useState<string>();
   const uploadAvatar = async (file: File | undefined) => {
     if (!file || pending) return;
     if (
@@ -47,11 +48,12 @@ export function ProfileSettings({
       file.size <= 0 ||
       file.size > 5 * 1024 * 1024
     ) {
-      setError('头像仅支持 JPG、PNG、WebP，且不超过 5 MB。');
+      setAvatarError('头像仅支持 JPG、PNG、WebP，且不超过 5 MB。');
       return;
     }
     setPending(true);
     setError(undefined);
+    setAvatarError(undefined);
     const key = createUuidV7();
     try {
       let uploaded: { readonly assetId: string; readonly previewUrl: string };
@@ -82,7 +84,7 @@ export function ProfileSettings({
       setAvatarUrl(uploaded.previewUrl);
       setFeedback('头像已上传，保存资料后生效。');
     } catch (caught) {
-      setError(
+      setAvatarError(
         caught instanceof Error && caught.message === 'UNCERTAIN'
           ? '头像上传结果待确认，请到素材页核对。'
           : '头像上传失败，请检查图片后重试。',
@@ -178,12 +180,19 @@ export function ProfileSettings({
           type="file"
           accept="image/jpeg,image/png,image/webp"
           disabled={pending}
+          aria-invalid={avatarError ? true : undefined}
+          aria-describedby={avatarError ? 'avatar-upload-error' : undefined}
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
             void uploadAvatar(file);
           }}
         />
+        {avatarError ? (
+          <small id="avatar-upload-error" role="alert">
+            {avatarError}
+          </small>
+        ) : null}
         <label htmlFor="avatar-preset">头像配色</label>
         <select
           id="avatar-preset"

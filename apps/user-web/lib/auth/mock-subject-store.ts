@@ -212,11 +212,17 @@ export async function rebindMockSubjectPhone(
   newVerifiedPhone: string,
 ): Promise<void> {
   const parsedSubject = UuidSchema.safeParse(subjectId);
-  if (!parsedSubject.success || currentVerifiedPhone === newVerifiedPhone)
-    throw new Error('INVALID_PHONE_REBIND');
+  if (!parsedSubject.success) throw new Error('INVALID_PHONE_REBIND');
   const currentDigest = digestPhone(currentVerifiedPhone);
   const newDigest = digestPhone(newVerifiedPhone);
   await transact((bindings) => {
+    if (currentDigest === newDigest) {
+      const active = bindings.find(
+        (binding) => binding.phoneDigest === newDigest && binding.state === 'ACTIVE',
+      );
+      if (active?.subjectId !== subjectId) throw new Error('SUBJECT_BINDING_NOT_FOUND');
+      return { result: undefined };
+    }
     const current = bindings.find((binding) => binding.phoneDigest === currentDigest);
     const destination = bindings.find((binding) => binding.phoneDigest === newDigest);
     if (
@@ -260,6 +266,9 @@ export async function closeMockSubject(subjectId: string, verifiedPhone: string)
   if (!parsedSubject.success) throw new Error('INVALID_SUBJECT');
   const digest = digestPhone(verifiedPhone);
   await transact((bindings) => {
+    if (bindings.some((binding) => binding.subjectId === subjectId && binding.state === 'CLOSED')) {
+      return { result: undefined };
+    }
     const current = bindings.find((binding) => binding.phoneDigest === digest);
     if (current?.state === 'CLOSED' && current.subjectId === subjectId) {
       return { result: undefined };

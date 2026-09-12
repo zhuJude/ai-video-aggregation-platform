@@ -257,6 +257,29 @@ describe('security settings', () => {
     );
   });
 
+  it('associates an invalid avatar file error with the file input', async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    render(
+      <ProfileSettings
+        initial={{
+          nickname: '光帧创作者',
+          phoneMasked: '138****8000',
+          avatarPreset: 'AMBER',
+          updatedAt: '2026-08-31T02:00:00.000Z',
+        }}
+        onSave={vi.fn()}
+      />,
+    );
+    await user.upload(
+      screen.getByLabelText('上传头像图片'),
+      new File(['plain text'], 'avatar.txt', { type: 'text/plain' }),
+    );
+    expect(screen.getByLabelText('上传头像图片')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('上传头像图片')).toHaveAccessibleDescription(
+      '头像仅支持 JPG、PNG、WebP，且不超过 5 MB。',
+    );
+  });
+
   it('accepts only an available image avatar owned by the current subject', async () => {
     const ownerId = createUuidV7();
     const assetId = createUuidV7();
@@ -447,7 +470,7 @@ describe('security settings', () => {
     ).resolves.toEqual(first);
   });
 
-  it('compensates the phone binding when the account commit fails', async () => {
+  it('keeps the authoritative phone rebind when the non-authoritative account cache fails', async () => {
     const oldPhone = '+8613511144444';
     const newPhone = '+8613411144444';
     const ownerId = await resolveOrCreateMockSubjectForVerifiedPhone(oldPhone);
@@ -477,11 +500,49 @@ describe('security settings', () => {
         },
         { ...context, idempotencyKey: operationId },
       ),
-    ).rejects.toThrow('ACCOUNT_COMMIT_FAILED');
+    ).resolves.toEqual({ changed: true, verifiedPhone: newPhone });
     failure.mockRestore();
     expect(accountStore.runAccountCommand).toBe(originalRun);
-    await expect(resolveExistingMockSubjectForVerifiedPhone(oldPhone)).resolves.toBe(ownerId);
-    await expect(resolveExistingMockSubjectForVerifiedPhone(newPhone)).resolves.toBeUndefined();
+    await expect(resolveExistingMockSubjectForVerifiedPhone(oldPhone)).resolves.toBeUndefined();
+    await expect(resolveExistingMockSubjectForVerifiedPhone(newPhone)).resolves.toBe(ownerId);
+  });
+
+  it('serializes concurrent close and phone rebind into one authoritative terminal state', async () => {
+    const oldPhone = '+8613511155555';
+    const newPhone = '+8613411155555';
+    const ownerId = await resolveOrCreateMockSubjectForVerifiedPhone(oldPhone);
+    const context = { ownerId, currentSessionId: createUuidV7(), verifiedPhone: oldPhone };
+    await registerAccountSession(ownerId, context.currentSessionId, oldPhone);
+    await accountGateway.requestPhoneChangeCodes(
+      { newPhoneE164: newPhone, deviceId: 'concurrent-state-device' },
+      { ...context, idempotencyKey: createUuidV7() },
+    );
+    await accountGateway.requestAccountDeletionCode(
+      { deviceId: 'concurrent-state-device' },
+      { ...context, idempotencyKey: createUuidV7() },
+    );
+    const phoneOperation = createUuidV7();
+    const closeOperation = createUuidV7();
+    const outcomes = await Promise.allSettled([
+      accountGateway.verifyPhoneChange(
+        {
+          currentPhoneCode: '123456',
+          newPhoneE164: newPhone,
+          newPhoneCode: '123456',
+          operationId: phoneOperation,
+        },
+        { ...context, idempotencyKey: phoneOperation },
+      ),
+      accountGateway.closeAccount(
+        { code: '123456', operationId: closeOperation },
+        { ...context, idempotencyKey: closeOperation },
+      ),
+    ]);
+    expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    const oldSubject = await resolveExistingMockSubjectForVerifiedPhone(oldPhone);
+    const newSubject = await resolveExistingMockSubjectForVerifiedPhone(newPhone);
+    expect(oldSubject).toBeUndefined();
+    if (newSubject) expect(newSubject).toBe(ownerId);
   });
 
   it('requires the exact deletion phrase before the second confirmation', async () => {

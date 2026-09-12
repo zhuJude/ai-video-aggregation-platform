@@ -245,7 +245,6 @@ function seed(ownerId: string, currentSessionId: string, verifiedPhone: string):
 }
 
 function requireCurrent(state: AccountState, currentSessionId: string): AccountState {
-  if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
   const current = state.sessions.find(({ id }) => id === currentSessionId);
   if (!current || Date.parse(current.expiresAt) <= Date.now())
     throw new AccountStoreError('SESSION_NOT_FOUND');
@@ -265,10 +264,12 @@ export async function readAccountState(
     const current = requireCurrent(parseState(raw, ownerId), currentSessionId);
     const commands = current.commands.filter(({ expiresAt }) => Date.parse(expiresAt) > now);
     const phoneChanged = current.verifiedPhone !== verifiedPhone;
+    const cacheNeedsRepair = phoneChanged || current.closed;
     const next =
-      commands.length !== current.commands.length || phoneChanged
+      commands.length !== current.commands.length || cacheNeedsRepair
         ? {
             ...current,
+            closed: false,
             commands,
             ...(phoneChanged
               ? {
@@ -296,13 +297,13 @@ export async function registerAccountSession(
     throw new AccountStoreError('INVALID_CONTEXT');
   await transactMockStoreJson(fileName(ownerId), (raw) => {
     const state = parseState(raw ?? seed(ownerId, sessionId, verifiedPhone), ownerId);
-    if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
     const synchronized =
-      state.verifiedPhone === verifiedPhone
+      state.verifiedPhone === verifiedPhone && !state.closed
         ? state
         : parseState(
             {
               ...state,
+              closed: false,
               verifiedPhone,
               profile: {
                 ...state.profile,
@@ -339,7 +340,7 @@ export async function registerAccountSession(
   });
 }
 
-/** Read-only authorization check. Missing, revoked, expired, closed, or unreadable state denies access. */
+/** Read-only session check. Missing, revoked, expired, or unreadable cache state denies access. */
 export async function validateAccountSession(
   ownerId: string,
   sessionId: string,
@@ -348,7 +349,6 @@ export async function validateAccountSession(
   return transactMockStoreJson(fileName(ownerId), (raw) => {
     if (raw === undefined) throw new AccountStoreError('SESSION_NOT_FOUND');
     const state = parseState(raw, ownerId);
-    if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
     const active = state.sessions.find(({ id }) => id === sessionId);
     if (!active || Date.parse(active.expiresAt) <= Date.now())
       throw new AccountStoreError('SESSION_NOT_FOUND');
@@ -367,7 +367,6 @@ export async function rotateAccountSession(
   return transactMockStoreJson(fileName(ownerId), (raw) => {
     if (raw === undefined) throw new AccountStoreError('SESSION_NOT_FOUND');
     const state = parseState(raw, ownerId);
-    if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
     const old = state.sessions.find(({ id }) => id === oldSessionId);
     if (!old || Date.parse(old.expiresAt) <= Date.now())
       throw new AccountStoreError('SESSION_NOT_FOUND');
@@ -417,10 +416,9 @@ export async function runAccountCommand<T>(
         throw new AccountStoreError('IDEMPOTENCY_CONFLICT');
       return { result: structuredClone(existing.result) as T };
     }
-    if (state.closed) throw new AccountStoreError('ACCOUNT_CLOSED');
     if (commands.length >= MAX_COMMANDS) throw new AccountStoreError('IDEMPOTENCY_CAPACITY');
     const mutable: MutableAccountState = {
-      closed: state.closed,
+      closed: false,
       verifiedPhone: state.verifiedPhone,
       profile: structuredClone(state.profile),
       sessions: [...structuredClone(state.sessions)],
@@ -433,7 +431,7 @@ export async function runAccountCommand<T>(
     const next = parseState(
       {
         ...state,
-        closed: mutable.closed,
+        closed: false,
         verifiedPhone: mutable.verifiedPhone,
         profile: mutable.profile,
         sessions: mutable.sessions,

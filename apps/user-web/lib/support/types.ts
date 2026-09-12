@@ -76,6 +76,7 @@ export interface TicketView {
   readonly statusHistory: readonly TicketStatusHistoryView[];
   readonly canClose: boolean;
   readonly canReopen: boolean;
+  readonly reopenUntil?: string;
   readonly satisfaction?: TicketSatisfactionView;
 }
 

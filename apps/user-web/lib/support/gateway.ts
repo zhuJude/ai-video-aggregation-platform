@@ -156,6 +156,11 @@ export const supportGateway: SupportGateway = {
       items: matches.slice(start, start + PAGE_SIZE).map((ticket) => ({
         ...ticket,
         canReopen: mayReopen(ticket),
+        ...(ticket.status === 'RESOLVED'
+          ? {
+              reopenUntil: new Date(Date.parse(ticket.updatedAt) + REOPEN_WINDOW_MS).toISOString(),
+            }
+          : {}),
       })),
       pageInfo: pageInfo(start, matches.length),
     };
@@ -219,8 +224,10 @@ export const supportGateway: SupportGateway = {
         throw new SupportGatewayError('TICKET_NOT_REPLYABLE');
       const now = new Date().toISOString();
       const reopens = current.status === 'RESOLVED';
+      const { reopenUntil: _reopenUntil, ...currentWithoutDeadline } = current;
+      void _reopenUntil;
       const next: TicketView = {
-        ...current,
+        ...(reopens ? currentWithoutDeadline : current),
         ...(reopens
           ? {
               status: 'IN_PROGRESS' as const,
@@ -268,8 +275,10 @@ export const supportGateway: SupportGateway = {
         }
         const now = new Date().toISOString();
         const status = action === 'REOPEN' ? ('IN_PROGRESS' as const) : ('CLOSED' as const);
+        const { reopenUntil: _reopenUntil, ...currentWithoutDeadline } = current;
+        void _reopenUntil;
         const next: TicketView = {
-          ...current,
+          ...currentWithoutDeadline,
           status,
           updatedAt: now,
           canClose: false,

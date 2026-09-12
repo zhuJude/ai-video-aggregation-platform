@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import { randomBytes } from 'node:crypto';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -69,6 +69,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   delete process.env.USER_WEB_SUPPORT_MODE;
   delete process.env.USER_WEB_COMMERCE_MODE;
   delete process.env.USER_WEB_COMMERCE_MOCK_SIGNING_KEY;
@@ -292,6 +293,37 @@ describe('ticket center', () => {
     expect(screen.queryByRole('button', { name: '发送回复' })).toBeNull();
   });
 
+  it('expires reopen and reply controls while a resolved ticket remains mounted', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-13T00:00:00.000Z'));
+    const first = page.items[0];
+    if (!first) throw new Error('MISSING_TICKET_FIXTURE');
+    render(
+      <TicketCenter
+        initial={{
+          items: [
+            {
+              ...first,
+              status: 'RESOLVED',
+              canReopen: true,
+              reopenUntil: '2026-09-13T00:00:01.000Z',
+            },
+          ],
+          pageInfo: {},
+        }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '重新打开' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '发送回复' })).toBeVisible();
+
+    await act(() => {
+      vi.advanceTimersByTime(1_001);
+      return Promise.resolve();
+    });
+    expect(screen.queryByRole('button', { name: '重新打开' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '发送回复' })).toBeNull();
+  });
+
   it('closes and locks feedback after success while associating field errors explicitly', async () => {
     const user = userEvent.setup();
     const submit = vi
@@ -328,8 +360,12 @@ describe('ticket center', () => {
     expect(submit).toHaveBeenCalledTimes(2);
     expect(submit.mock.calls[0]?.[1]).toBe(submit.mock.calls[1]?.[1]);
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('button', { name: '反馈已提交' })).toBeDisabled();
+    const nextFeedback = screen.getByRole('button', { name: '提交产品反馈' });
+    expect(nextFeedback).toBeEnabled();
     expect(screen.getByText('反馈已提交，感谢你的建议。')).toHaveAttribute('role', 'status');
+    await user.click(nextFeedback);
+    expect(screen.getByRole('dialog')).toBeVisible();
+    expect(screen.getByLabelText('反馈内容')).toHaveValue('');
   });
 
   it('renders satisfaction and typed feedback entry points', () => {
@@ -388,6 +424,9 @@ async function primeTicket(
         updatedAt,
         canClose: false,
         canReopen: status === 'RESOLVED',
+        ...(status === 'RESOLVED'
+          ? { reopenUntil: new Date(Date.parse(updatedAt) + 7 * 24 * 60 * 60_000).toISOString() }
+          : {}),
       };
       return current.id;
     },

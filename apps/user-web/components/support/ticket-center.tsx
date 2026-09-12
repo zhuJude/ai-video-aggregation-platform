@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { completeUploadAction, createUploadSessionAction } from '../../app/commerce-actions';
 import {
@@ -71,7 +71,7 @@ export function TicketCenter({
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState<string>();
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const [feedbackOutcome, setFeedbackOutcome] = useState<'submitted' | 'uncertain'>();
+  const [feedbackUncertain, setFeedbackUncertain] = useState(false);
   const [feedbackNotice, setFeedbackNotice] = useState<string>();
 
   const create = async () => {
@@ -131,16 +131,12 @@ export function TicketCenter({
         </button>
         <button
           type="button"
-          disabled={feedbackOutcome !== undefined}
+          disabled={feedbackUncertain}
           onClick={() => {
             setFeedbackOpen(true);
           }}
         >
-          {feedbackOutcome === 'submitted'
-            ? '反馈已提交'
-            : feedbackOutcome === 'uncertain'
-              ? '反馈待确认'
-              : '提交产品反馈'}
+          {feedbackUncertain ? '反馈待确认' : '提交产品反馈'}
         </button>
       </div>
       {items.length === 0 ? (
@@ -242,12 +238,12 @@ export function TicketCenter({
         <FeedbackDialog
           {...(onSubmitFeedback ? { onSubmit: onSubmitFeedback } : {})}
           onSaved={() => {
-            setFeedbackOutcome('submitted');
+            setFeedbackUncertain(false);
             setFeedbackNotice('反馈已提交，感谢你的建议。');
             setFeedbackOpen(false);
           }}
           onUncertain={() => {
-            setFeedbackOutcome('uncertain');
+            setFeedbackUncertain(true);
             setFeedbackNotice('反馈结果待确认，请刷新工单页核对，勿重复提交。');
           }}
           onClose={() => {
@@ -256,7 +252,7 @@ export function TicketCenter({
         />
       ) : null}
       {feedbackNotice ? (
-        <p role={feedbackOutcome === 'submitted' ? 'status' : 'alert'}>{feedbackNotice}</p>
+        <p role={feedbackUncertain ? 'alert' : 'status'}>{feedbackNotice}</p>
       ) : null}
     </section>
   );
@@ -274,6 +270,25 @@ function TicketCard({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [ratingOpen, setRatingOpen] = useState(false);
+  const reopenDeadline =
+    ticket.status === 'RESOLVED' && ticket.canReopen ? Date.parse(ticket.reopenUntil ?? '') : 0;
+  const [reopenAvailable, setReopenAvailable] = useState(() => reopenDeadline > Date.now());
+  useEffect(() => {
+    if (!Number.isFinite(reopenDeadline) || reopenDeadline <= Date.now()) {
+      setReopenAvailable(false);
+      return;
+    }
+    setReopenAvailable(true);
+    const timer = window.setTimeout(
+      () => {
+        setReopenAvailable(false);
+      },
+      reopenDeadline - Date.now() + 1,
+    );
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [reopenDeadline]);
   const run = async (operation: (key: string) => Promise<SupportActionResult<TicketView>>) => {
     if (pending) return false;
     setPending(true);
@@ -327,7 +342,7 @@ function TicketCard({
       </div>
       {ticket.status === 'OPEN' ||
       ticket.status === 'IN_PROGRESS' ||
-      (ticket.status === 'RESOLVED' && ticket.canReopen) ? (
+      (ticket.status === 'RESOLVED' && reopenAvailable) ? (
         <div className="settings-form">
           <label htmlFor={`reply-${ticket.id}`}>公开回复</label>
           <textarea
@@ -379,7 +394,7 @@ function TicketCard({
             关闭工单
           </button>
         ) : null}
-        {ticket.canReopen ? (
+        {reopenAvailable ? (
           <button
             type="button"
             disabled={pending}

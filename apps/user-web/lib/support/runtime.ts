@@ -232,6 +232,7 @@ function parseTicket(value: unknown): TicketView {
       'statusHistory',
       'canClose',
       'canReopen',
+      'reopenUntil',
       'satisfaction',
     ],
     'INVALID_TICKET',
@@ -255,11 +256,15 @@ function parseTicket(value: unknown): TicketView {
   }
   const subject = text(ticket.subject, 'INVALID_TICKET', 120);
   if (subject.length < 4) throw new Error('INVALID_TICKET');
+  const status = parseStatus(ticket.status);
+  const reopenUntil =
+    ticket.reopenUntil === undefined ? undefined : instant(ticket.reopenUntil, 'INVALID_TICKET');
+  if ((status === 'RESOLVED') !== Boolean(reopenUntil)) throw new Error('INVALID_TICKET');
   return {
     id: uuid(ticket.id, 'INVALID_TICKET'),
     subject,
     category: ticket.category as TicketView['category'],
-    status: parseStatus(ticket.status),
+    status,
     createdAt: instant(ticket.createdAt, 'INVALID_TICKET'),
     updatedAt: instant(ticket.updatedAt, 'INVALID_TICKET'),
     replies: ticket.replies.map(parseReply),
@@ -274,6 +279,7 @@ function parseTicket(value: unknown): TicketView {
     }),
     canClose: ticket.canClose,
     canReopen: ticket.canReopen,
+    ...(reopenUntil ? { reopenUntil } : {}),
     ...(satisfaction
       ? {
           satisfaction: {

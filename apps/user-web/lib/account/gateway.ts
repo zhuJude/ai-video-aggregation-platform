@@ -217,7 +217,7 @@ export const accountGateway: AccountGateway = {
     }
     await rebindMockSubjectPhone(context.ownerId, context.verifiedPhone, newPhoneE164);
     try {
-      return await runAccountCommand(context, command, (state) => {
+      await runAccountCommand(context, command, (state) => {
         state.verifiedPhone = newPhoneE164;
         state.profile = {
           ...state.profile,
@@ -227,16 +227,11 @@ export const accountGateway: AccountGateway = {
         delete state.phoneChange;
         return { changed: true, verifiedPhone: newPhoneE164 } as const;
       });
-    } catch (error) {
-      try {
-        await rebindMockSubjectPhone(context.ownerId, newPhoneE164, context.verifiedPhone);
-      } catch {
-        // The phone map is the authentication authority and can repair account metadata.
-        // Report uncertainty so a caller never blindly repeats after a double failure.
-        throw new Error('PHONE_CHANGE_UNCERTAIN');
-      }
-      throw error;
+    } catch {
+      // This file is only a derived UI/idempotency cache. The auth subject transaction above
+      // already committed the authoritative phone and must never be rolled back here.
     }
+    return { changed: true, verifiedPhone: newPhoneE164 } as const;
   },
 
   async requestAccountDeletionCode(input, context) {
@@ -311,13 +306,11 @@ export const accountGateway: AccountGateway = {
                 : ('PHONE_VERIFICATION_FAILED' as const),
           };
         }
-        state.closed = true;
-        state.sessions = [];
         delete state.deletionChallenge;
-        return { closed: true as const };
+        return { verified: true as const };
       },
     );
-    if (!result.closed) throw new AccountGatewayError(result.error);
+    if (!('verified' in result)) throw new AccountGatewayError(result.error);
     await closeMockSubject(context.ownerId, context.verifiedPhone);
     return { closed: true } as const;
   },

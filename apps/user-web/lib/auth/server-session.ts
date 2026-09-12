@@ -549,9 +549,11 @@ async function rotate(session: StoredSession): Promise<StoredSession | undefined
     if (process.env.USER_WEB_SUPPORT_MODE === 'mock') {
       // This transaction is the second authorization check: a concurrent revoke/close
       // between the upstream refresh and this point cannot resurrect the session.
-      verifiedPhone = (
-        await rotateAccountSession(session.ownerId, session.sessionId, metadata.sessionId)
-      ).verifiedPhone;
+      await rotateAccountSession(session.ownerId, session.sessionId, metadata.sessionId);
+      // The account file is only a cache. A phone rebind may have committed even if
+      // updating that cache failed, so refresh must always re-read the authoritative
+      // subject binding before minting the replacement cookie.
+      verifiedPhone = await resolveCurrentVerifiedPhoneForMockSubject(session.ownerId);
     } else {
       const liveCandidate: StoredSession = {
         ...session,
