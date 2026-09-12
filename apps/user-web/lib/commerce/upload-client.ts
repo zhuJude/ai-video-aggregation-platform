@@ -38,6 +38,11 @@ function traceId(): string {
   ).join('');
 }
 
+function uploadTimeoutMs(sizeBytes: number): number {
+  const transferBudget = Math.ceil((sizeBytes / (128 * 1024)) * 1_000) + 30_000;
+  return Math.min(2 * 60 * 60_000, Math.max(2 * 60_000, transferBudget));
+}
+
 export function uploadAssetBytes(
   rawGrant: UploadSessionGrant,
   file: File,
@@ -72,7 +77,7 @@ export function uploadAssetBytes(
     };
     xhr.open('PUT', grant.url);
     xhr.withCredentials = true;
-    xhr.timeout = 10_000;
+    xhr.timeout = uploadTimeoutMs(file.size);
     for (const [name, value] of Object.entries(grant.headers)) xhr.setRequestHeader(name, value);
     xhr.setRequestHeader('x-correlation-id', crypto.randomUUID());
     xhr.setRequestHeader('x-trace-id', traceId());
@@ -112,7 +117,11 @@ export function uploadAssetBytes(
         }
         reject(
           new UploadTransportError(
-            xhr.status === 400 || xhr.status === 403 || xhr.status === 404 || xhr.status === 410
+            xhr.status === 400 ||
+              xhr.status === 403 ||
+              xhr.status === 404 ||
+              xhr.status === 410 ||
+              xhr.status === 415
               ? 'DEFINITIVE_FAILURE'
               : 'UNCERTAIN',
           ),

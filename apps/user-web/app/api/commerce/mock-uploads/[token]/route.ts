@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import {
   requireMutableAuthenticatedServerSession,
   SessionRefreshRequiredError,
@@ -10,6 +8,10 @@ import {
   UploadBoundaryError,
   verifyMockUploadGrant,
 } from '../../../../../lib/commerce/mock-upload-boundary';
+import {
+  MockObjectStoreError,
+  storeMockUpload,
+} from '../../../../../lib/commerce/mock-object-store';
 
 const PRIVATE_HEADERS = {
   'cache-control': 'no-store, private',
@@ -41,28 +43,10 @@ export async function PUT(
     ) {
       return new Response(null, { headers: PRIVATE_HEADERS, status: 400 });
     }
-    const expected = BigInt(grant.sizeBytes);
-    const reader = request.body?.getReader();
-    if (!reader) return new Response(null, { headers: PRIVATE_HEADERS, status: 400 });
-    const hash = createHash('sha256');
-    let actual = 0n;
-    let done = false;
-    while (!done) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        done = true;
-        continue;
-      }
-      actual += BigInt(chunk.value.byteLength);
-      if (actual > expected) {
-        await reader.cancel().catch(() => undefined);
-        return new Response(null, { headers: PRIVATE_HEADERS, status: 400 });
-      }
-      hash.update(chunk.value);
-    }
-    if (actual !== expected) return new Response(null, { headers: PRIVATE_HEADERS, status: 400 });
+    if (!request.body) return new Response(null, { headers: PRIVATE_HEADERS, status: 400 });
+    const sha256 = await storeMockUpload(grant, request.body);
     return Response.json(
-      { receipt: createMockUploadReceipt(grant, hash.digest('hex')) },
+      { receipt: createMockUploadReceipt(grant, sha256) },
       { headers: PRIVATE_HEADERS },
     );
   } catch (error) {
@@ -70,6 +54,13 @@ export async function PUT(
       return Response.json(
         { code: 'SESSION_REFRESH_REQUIRED' },
         { headers: PRIVATE_HEADERS, status: 401 },
+      );
+    }
+    if (error instanceof MockObjectStoreError) {
+      const contentMismatch = error.code === 'CONTENT_MISMATCH';
+      return Response.json(
+        { code: contentMismatch ? 'UPLOAD_CONTENT_MISMATCH' : 'UPLOAD_REJECTED' },
+        { headers: PRIVATE_HEADERS, status: contentMismatch ? 415 : 400 },
       );
     }
     const status = error instanceof UploadBoundaryError && error.code === 'EXPIRED' ? 410 : 401;

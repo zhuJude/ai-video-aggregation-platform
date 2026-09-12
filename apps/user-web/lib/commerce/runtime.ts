@@ -124,7 +124,7 @@ function parseAsset(value: unknown): AssetListItem {
   if (asset.kind !== 'UPLOAD' && asset.kind !== 'RESULT') throw new Error('INVALID_ASSET');
   if (
     typeof asset.mimeType !== 'string' ||
-    !/^(?:image\/(?:jpeg|png|webp)|video\/mp4)$/.test(asset.mimeType)
+    !/^(?:image\/(?:jpeg|png|webp)|video\/(?:mp4|webm|quicktime))$/.test(asset.mimeType)
   )
     throw new Error('INVALID_ASSET');
   const sizeBytes = points(asset.sizeBytes, 'INVALID_ASSET');
@@ -165,11 +165,9 @@ export function parseUploadSessionGrant(value: unknown): UploadSessionGrant {
   const size = points(headers['x-upload-content-length'], 'INVALID_UPLOAD_GRANT');
   const url = text(grant.url, 'INVALID_UPLOAD_GRANT', 4_096);
   if (
-    !/^(?:image\/(?:jpeg|png|webp)|video\/mp4)$/.test(contentType) ||
+    !/^(?:image\/(?:jpeg|png|webp)|video\/(?:mp4|webm|quicktime))$/.test(contentType) ||
     BigInt(size) <= 0n ||
-    !url.startsWith('/api/commerce/mock-uploads/') ||
-    url.includes('?') ||
-    url.includes('#')
+    !/^\/api\/commerce\/mock-uploads\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(url)
   ) {
     throw new Error('INVALID_UPLOAD_GRANT');
   }
@@ -194,6 +192,9 @@ export function usableSignedUrl(
   const grant = parseSignedAssetUrl(value);
   const expiresAt = Date.parse(grant.expiresAt);
   if (expiresAt <= now + 5_000 || expiresAt > now + 15 * 60_000) return undefined;
+  if (/^\/api\/commerce\/mock-assets\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(grant.url)) {
+    return grant.url;
+  }
   try {
     const url = new URL(grant.url);
     if (url.protocol !== 'https:' || url.username || url.password || url.hash) return undefined;

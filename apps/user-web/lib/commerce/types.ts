@@ -49,7 +49,10 @@ export interface UploadSessionGrant {
 }
 
 export interface VerifiedUploadGrant {
-  readonly uploadId: string;
+  readonly assetId: string;
+  readonly grantId: string;
+  readonly idempotencyKey: string;
+  readonly storageKey: string;
   readonly ownerId: string;
   readonly name: string;
   readonly mimeType: string;
@@ -58,6 +61,13 @@ export interface VerifiedUploadGrant {
 
 export interface VerifiedUploadReceipt extends VerifiedUploadGrant {
   readonly sha256: string;
+}
+
+export interface VerifiedAssetAccess {
+  readonly assetId: string;
+  readonly ownerId: string;
+  readonly storageKey: string;
+  readonly purpose: 'PREVIEW' | 'DOWNLOAD';
 }
 
 export interface WalletBalanceView {

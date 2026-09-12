@@ -279,6 +279,15 @@ describe('private assets', () => {
         Date.parse('2026-09-12T10:00:00.000Z'),
       ),
     ).toBeUndefined();
+    expect(
+      usableSignedUrl(
+        {
+          url: '/api/commerce/mock-assets/../../auth/refresh',
+          expiresAt: '2026-09-12T10:05:00.000Z',
+        },
+        Date.parse('2026-09-12T10:00:00.000Z'),
+      ),
+    ).toBeUndefined();
   });
 
   it('requires an explicit dialog confirmation before deletion', async () => {
@@ -290,7 +299,7 @@ describe('private assets', () => {
     render(<AssetLibrary initial={assets} gateway={api} ownerId={OWNER} />);
     const deleteTrigger = screen.getByRole('button', { name: '删除海边公路.mp4' });
     await user.click(deleteTrigger);
-    expect(screen.getByRole('dialog')).toHaveTextContent('可在 7 天内恢复');
+    expect(screen.getByRole('dialog')).toHaveTextContent('演示环境中的本机临时副本会同时删除');
     expect(deleteAsset).not.toHaveBeenCalled();
     const cancel = screen.getByRole('button', { name: '保留素材' });
     const confirmDelete = screen.getByRole('button', { name: '确认删除' });

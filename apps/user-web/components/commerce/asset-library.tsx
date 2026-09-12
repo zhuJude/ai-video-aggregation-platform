@@ -27,7 +27,7 @@ import type {
 } from '../../lib/commerce/types';
 import { AccessibleDialog } from './accessible-dialog';
 
-const ALLOWED_UPLOADS = /^(?:image\/(?:jpeg|png|webp)|video\/mp4)$/;
+const ALLOWED_UPLOADS = /^(?:image\/(?:jpeg|png|webp)|video\/(?:mp4|webm|quicktime))$/;
 const IMAGE_LIMIT = 20n * 1024n * 1024n;
 const VIDEO_LIMIT = 500n * 1024n * 1024n;
 
@@ -41,7 +41,7 @@ function formatBytes(value: string): string {
 }
 
 function validateUpload(file: File): string | undefined {
-  if (!ALLOWED_UPLOADS.test(file.type)) return '仅支持 JPG、PNG、WebP 图片或 MP4 视频。';
+  if (!ALLOWED_UPLOADS.test(file.type)) return '仅支持 JPG、PNG、WebP 图片或 MP4、WebM、MOV 视频。';
   const limit = file.type.startsWith('image/') ? IMAGE_LIMIT : VIDEO_LIMIT;
   if (BigInt(file.size) <= 0n || BigInt(file.size) > limit)
     return file.type.startsWith('image/') ? '图片不能超过 20 MB。' : '视频不能超过 500 MB。';
@@ -195,7 +195,7 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
         throw new Error('INVALID_DELETE_RESULT');
       setItems((current) => current.filter((item) => item.id !== deleting.id));
       setDeleting(undefined);
-      setFeedback({ tone: 'status', message: '删除请求已受理，可在 7 天内联系支持恢复。' });
+      setFeedback({ tone: 'status', message: '删除请求已受理，演示环境中的本机临时副本已清理。' });
     } catch (error) {
       const uncertain = classifyCommerceCommandError(error) === 'UNCERTAIN';
       const loginRequired =
@@ -269,14 +269,14 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
         <div>
           <p className="section-kicker">添加素材</p>
           <h2 id="upload-title">上传到私有素材库</h2>
-          <p>图片最大 20 MB，MP4 视频最大 500 MB。文件会按账户隔离存储。</p>
+          <p>图片最大 20 MB，MP4、WebM、MOV 视频最大 500 MB。文件会按账户隔离存储。</p>
         </div>
         <label className="upload-picker">
           <span>选择文件</span>
           <input
             aria-label="上传图片或视频"
             type="file"
-            accept="image/jpeg,image/png,image/webp,video/mp4"
+            accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
             disabled={progress !== undefined}
             onChange={(event) => {
               const file = event.currentTarget.files?.[0];
@@ -420,7 +420,10 @@ export function AssetLibrary({ initial, gateway, ownerId }: AssetLibraryProps) {
         >
           <p className="section-kicker">确认操作</p>
           <h2 id="delete-title">删除“{deleting.name}”？</h2>
-          <p>素材会立即从列表隐藏，可在 7 天内恢复。正在运行的任务快照不会被修改。</p>
+          <p>
+            素材会立即从列表隐藏；演示环境中的本机临时副本会同时删除。正式服务的恢复策略以支持说明为准。
+            正在运行的任务快照不会被修改。
+          </p>
           <div className="dialog-actions">
             <button
               type="button"

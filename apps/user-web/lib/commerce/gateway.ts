@@ -4,7 +4,15 @@ import { UuidSchema } from '@repo/contracts/common';
 
 import { createUuidV7, isUuidV7 } from '../tasks/identifiers';
 import { commerceOwnerIdFromPhone } from './identity';
+import { createMockAssetAccess } from './mock-upload-boundary';
 import { requireMockCommerce } from './mock-config';
+import {
+  completeMockUpload,
+  deleteMockObject,
+  findMockObject,
+  listMockObjects,
+  renameMockObject,
+} from './mock-object-store';
 import type {
   AssetFilters,
   AssetListItem,
@@ -192,7 +200,17 @@ function listOffset(cursor: string | undefined): number {
 export const commerceGateway: CommerceGateway = {
   async listAssets(filters: AssetFilters, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const matches = assets.filter((asset) => {
+    const stored = (await listMockObjects(context.ownerId)).map((item) => ({
+      ownerId: item.ownerId,
+      id: item.assetId,
+      kind: 'UPLOAD' as const,
+      name: item.name,
+      mimeType: item.mimeType,
+      sizeBytes: item.sizeBytes,
+      createdAt: item.createdAt,
+      posterAlt: `${item.name} 素材预览`,
+    }));
+    const matches = [...stored, ...assets].filter((asset) => {
       if (asset.ownerId !== context.ownerId || deletedAssets.has(asset.id)) return false;
       if (filters.kind && asset.kind !== filters.kind) return false;
       if (filters.mediaType && !asset.mimeType.startsWith(filters.mediaType.toLowerCase()))
@@ -216,6 +234,15 @@ export const commerceGateway: CommerceGateway = {
 
   async requestAssetAccess(assetId, purpose, context): Promise<unknown> {
     assertOwner(context.ownerId);
+    const stored = await findMockObject(assetId, context.ownerId);
+    if (stored) {
+      return createMockAssetAccess({
+        assetId: stored.assetId,
+        ownerId: stored.ownerId,
+        storageKey: stored.storageKey,
+        purpose,
+      });
+    }
     ownedAsset(assetId, context.ownerId);
     const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
     const disposition = purpose === 'DOWNLOAD' ? 'attachment' : 'inline';
@@ -226,39 +253,31 @@ export const commerceGateway: CommerceGateway = {
     });
   },
 
-  completeUpload(receipt, context): Promise<unknown> {
+  async completeUpload(receipt, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    if (receipt.ownerId !== context.ownerId || receipt.uploadId !== context.idempotencyKey)
+    if (
+      receipt.ownerId !== context.ownerId ||
+      receipt.assetId !== context.idempotencyKey ||
+      receipt.idempotencyKey !== context.idempotencyKey
+    )
       throw new CommerceCommandError('UPLOAD_RECEIPT_MISMATCH');
-    return Promise.resolve(
-      command(
-        context.idempotencyKey,
-        context.ownerId,
-        `upload:${receipt.uploadId}:${receipt.sha256}`,
-        () => {
-          const created: Owned<AssetListItem> = {
-            ownerId: context.ownerId,
-            id: receipt.uploadId,
-            kind: 'UPLOAD',
-            name: receipt.name,
-            mimeType: receipt.mimeType,
-            sizeBytes: receipt.sizeBytes,
-            createdAt: new Date().toISOString(),
-            posterAlt: `${receipt.name} 素材预览`,
-          };
-          assets.unshift(created);
-          return publicValue(created);
-        },
-      ),
-    );
+    return completeMockUpload(receipt);
   },
 
-  renameAsset(assetId, name, context): Promise<unknown> {
+  async renameAsset(assetId, name, context): Promise<unknown> {
     assertOwner(context.ownerId);
-    const asset = ownedAsset(assetId, context.ownerId);
     const normalized = name.trim();
     if (normalized.length < 1 || normalized.length > 120)
       throw new CommerceCommandError('INVALID_ASSET_NAME');
+    const stored = await findMockObject(assetId, context.ownerId);
+    if (stored) {
+      if (!isUuidV7(context.idempotencyKey))
+        throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
+      const renamed = await renameMockObject(assetId, context.ownerId, normalized);
+      if (!renamed) throw new CommerceCommandError('ASSET_NOT_FOUND');
+      return renamed;
+    }
+    const asset = ownedAsset(assetId, context.ownerId);
     return Promise.resolve(
       command(context.idempotencyKey, context.ownerId, `rename:${assetId}:${normalized}`, () => {
         const renamed = { ...asset, name: normalized };
@@ -269,8 +288,15 @@ export const commerceGateway: CommerceGateway = {
     );
   },
 
-  deleteAsset(assetId, context): Promise<unknown> {
+  async deleteAsset(assetId, context): Promise<unknown> {
     assertOwner(context.ownerId);
+    const stored = await findMockObject(assetId, context.ownerId);
+    if (stored) {
+      if (!isUuidV7(context.idempotencyKey))
+        throw new CommerceCommandError('INVALID_IDEMPOTENCY_KEY');
+      await deleteMockObject(assetId, context.ownerId);
+      return { accepted: true };
+    }
     return Promise.resolve(
       command(context.idempotencyKey, context.ownerId, `delete:${assetId}`, () => {
         ownedAsset(assetId, context.ownerId);
