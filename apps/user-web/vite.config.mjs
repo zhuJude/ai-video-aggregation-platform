@@ -11,6 +11,7 @@ export default {
   // Serial files prevent another test file from deleting a lock it did not create while simulating
   // crash recovery; production concurrency remains covered inside the store-focused tests.
   test: {
+    env: { USER_WEB_PUBLIC_MODE: 'mock' },
     exclude: [...configDefaults.exclude, 'e2e/**'],
     fileParallelism: false,
   },

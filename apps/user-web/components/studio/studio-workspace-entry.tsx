@@ -5,6 +5,7 @@ import type { RetryDraft } from '../../lib/tasks/types';
 import { StudioWorkspace } from './studio-workspace';
 
 interface StudioWorkspaceEntryProps {
+  readonly initialModelId?: string | undefined;
   readonly retryDraft?: RetryDraft | undefined;
   readonly retryDraftRequested?: boolean | undefined;
 }

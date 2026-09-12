@@ -1,3 +1,5 @@
+import 'server-only';
+
 export type GenerationMode =
   'TEXT_TO_VIDEO' | 'IMAGE_TO_VIDEO' | 'FIRST_LAST_FRAME' | 'REFERENCE_VIDEO' | 'EXTEND_VIDEO';
 
@@ -10,8 +12,8 @@ export interface ProviderSummary {
 }
 
 export interface PointRange {
-  min: number;
-  max: number;
+  min: string;
+  max: string;
   unit: '点数';
 }
 
@@ -74,15 +76,15 @@ export interface ModelsResponse {
 
 export interface PointConversion {
   currency: 'CNY';
-  amountMinor: number;
-  points: number;
+  amountMinor: string;
+  points: string;
 }
 
 export interface RechargePackage {
   id: string;
   title: string;
-  amountMinor: number;
-  points: number;
+  amountMinor: string;
+  points: string;
 }
 
 export interface PricingResponse {
@@ -149,7 +151,7 @@ const models: readonly PublicModel[] = [
     provider: providers.kling,
     modes: ['TEXT_TO_VIDEO'],
     capabilities: ['中文提示词', '镜头控制', '1080p 输出'],
-    pointRange: { min: 80, max: 140, unit: '点数' },
+    pointRange: { min: '80', max: '140', unit: '点数' },
     speed: '较快',
     qualityLabel: '运动自然',
     state: 'ACTIVE',
@@ -173,7 +175,7 @@ const models: readonly PublicModel[] = [
     provider: providers.seedance,
     modes: ['IMAGE_TO_VIDEO'],
     capabilities: ['图像参考', '镜头控制', '风格保持'],
-    pointRange: { min: 120, max: 240, unit: '点数' },
+    pointRange: { min: '120', max: '240', unit: '点数' },
     speed: '均衡',
     qualityLabel: '细节优先',
     state: 'MAINTENANCE',
@@ -197,7 +199,7 @@ const models: readonly PublicModel[] = [
     provider: providers.veo,
     modes: ['FIRST_LAST_FRAME', 'REFERENCE_VIDEO'],
     capabilities: ['首尾帧', '参考视频', '长镜头构图'],
-    pointRange: { min: 280, max: 420, unit: '点数' },
+    pointRange: { min: '280', max: '420', unit: '点数' },
     speed: '深度',
     qualityLabel: '画面完成度高',
     state: 'ACTIVE',
@@ -270,7 +272,7 @@ const helpArticles: readonly PublishedHelpArticle[] = [
 ] as const;
 
 const pricing: PricingResponse = {
-  conversion: { currency: 'CNY', amountMinor: 100, points: 100 },
+  conversion: { currency: 'CNY', amountMinor: '100', points: '100' },
   modelBillingRules: [
     {
       title: '先报价，再提交',
@@ -284,9 +286,9 @@ const pricing: PricingResponse = {
   failureRefundRule: '生成失败并确认未产生可结算结果时，未结算的预留点数会退回钱包。',
   acceptedCancellationRule: '提供商受理后取消，可能按已发生成本扣除点数，其余预留点数会释放。',
   rechargePackages: [
-    { id: 'points-3000', title: '轻量包', amountMinor: 3000, points: 3000 },
-    { id: 'points-10000', title: '标准包', amountMinor: 10000, points: 10000 },
-    { id: 'points-30000', title: '制作包', amountMinor: 30000, points: 30000 },
+    { id: 'points-3000', title: '轻量包', amountMinor: '3000', points: '3000' },
+    { id: 'points-10000', title: '标准包', amountMinor: '10000', points: '10000' },
+    { id: 'points-30000', title: '制作包', amountMinor: '30000', points: '30000' },
   ],
 };
 
@@ -302,11 +304,12 @@ function fixtureSuccess<T>(data: T): GatewayResult<T> {
 
 function priceMatches(model: PublicModel, price: ModelFilters['price']): boolean {
   if (!price) return true;
-  if (price === 'UNDER_150') return model.pointRange.min < 150;
+  const minimum = BigInt(model.pointRange.min);
+  if (price === 'UNDER_150') return minimum < 150n;
   if (price === '150_TO_300') {
-    return model.pointRange.min >= 150 && model.pointRange.min <= 300;
+    return minimum >= 150n && minimum <= 300n;
   }
-  return model.pointRange.min > 300;
+  return minimum > 300n;
 }
 
 class FixturePublicSiteGateway implements PublicSiteGateway {
@@ -361,8 +364,341 @@ class FixturePublicSiteGateway implements PublicSiteGateway {
   }
 }
 
-// Swap this transport at the composition boundary when the WS09 HTTP Gateway becomes available.
-export const publicSiteGateway: PublicSiteGateway = new FixturePublicSiteGateway();
+function invalidResponse(): never {
+  throw new Error('INVALID_PUBLIC_GATEWAY_RESPONSE');
+}
+
+function object(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalidResponse();
+  return value as Record<string, unknown>;
+}
+
+function exact(value: Record<string, unknown>, keys: readonly string[]): void {
+  if (Object.keys(value).some((key) => !keys.includes(key))) invalidResponse();
+}
+
+function text(value: unknown, maximum = 2_000): string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > maximum) invalidResponse();
+  return value;
+}
+
+function identifier(value: unknown): string {
+  const parsed = text(value, 128);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(parsed)) invalidResponse();
+  return parsed;
+}
+
+function decimal(value: unknown): string {
+  if (typeof value !== 'string' || !/^(?:0|[1-9]\d{0,77})$/.test(value)) invalidResponse();
+  return value;
+}
+
+function stringArray(value: unknown, maximumItems = 100): readonly string[] {
+  if (!Array.isArray(value) || value.length > maximumItems) invalidResponse();
+  return value.map((item) => text(item, 256));
+}
+
+function member<T extends string>(value: unknown, values: ReadonlySet<T>): T {
+  if (typeof value !== 'string' || !values.has(value as T)) invalidResponse();
+  return value as T;
+}
+
+const generationModes = new Set<GenerationMode>([
+  'TEXT_TO_VIDEO',
+  'IMAGE_TO_VIDEO',
+  'FIRST_LAST_FRAME',
+  'REFERENCE_VIDEO',
+  'EXTEND_VIDEO',
+]);
+const modelStates = new Set<ModelState>(['ACTIVE', 'MAINTENANCE']);
+const speedLabels = new Set<SpeedLabel>(['较快', '均衡', '深度']);
+
+function provider(value: unknown): ProviderSummary {
+  const source = object(value);
+  exact(source, ['id', 'displayName']);
+  return { id: identifier(source.id), displayName: text(source.displayName, 80) };
+}
+
+function billingRule(value: unknown): BillingRule {
+  const source = object(value);
+  exact(source, ['title', 'description']);
+  return { title: text(source.title, 120), description: text(source.description, 1_000) };
+}
+
+function billingRules(value: unknown): readonly BillingRule[] {
+  if (!Array.isArray(value) || value.length > 20) invalidResponse();
+  return value.map(billingRule);
+}
+
+function publicModel(value: unknown): PublicModel {
+  const source = object(value);
+  exact(source, [
+    'id',
+    'displayName',
+    'provider',
+    'modes',
+    'capabilities',
+    'pointRange',
+    'speed',
+    'qualityLabel',
+    'state',
+    'stateMessage',
+    'publishedDescription',
+    'billingRules',
+  ]);
+  if (!Array.isArray(source.modes) || source.modes.length < 1 || source.modes.length > 10)
+    invalidResponse();
+  const range = object(source.pointRange);
+  exact(range, ['min', 'max', 'unit']);
+  const min = decimal(range.min);
+  const max = decimal(range.max);
+  if (BigInt(min) > BigInt(max) || range.unit !== '点数') invalidResponse();
+  return {
+    id: identifier(source.id),
+    displayName: text(source.displayName, 120),
+    provider: provider(source.provider),
+    modes: source.modes.map((mode) => member(mode, generationModes)),
+    capabilities: stringArray(source.capabilities, 50),
+    pointRange: { min, max, unit: '点数' },
+    speed: member(source.speed, speedLabels),
+    qualityLabel: text(source.qualityLabel, 120),
+    state: member(source.state, modelStates),
+    stateMessage: text(source.stateMessage, 500),
+    publishedDescription: text(source.publishedDescription, 4_000),
+    billingRules: billingRules(source.billingRules),
+  };
+}
+
+function modelFilters(value: unknown): ModelFilters {
+  const source = object(value);
+  exact(source, ['modelId', 'mode', 'providerId', 'capability', 'price', 'speed', 'state']);
+  const result: ModelFilters = {};
+  if (source.modelId !== undefined) result.modelId = identifier(source.modelId);
+  if (source.mode !== undefined) result.mode = member(source.mode, generationModes);
+  if (source.providerId !== undefined) result.providerId = identifier(source.providerId);
+  if (source.capability !== undefined) result.capability = text(source.capability, 256);
+  if (source.price !== undefined)
+    result.price = member(source.price, new Set(['UNDER_150', '150_TO_300', 'OVER_300']));
+  if (source.speed !== undefined) result.speed = member(source.speed, speedLabels);
+  if (source.state !== undefined) result.state = member(source.state, modelStates);
+  return result;
+}
+
+function modelsResponse(value: unknown): ModelsResponse {
+  const source = object(value);
+  exact(source, ['items', 'total', 'filters', 'modelOptions', 'providers', 'capabilities']);
+  if (
+    !Array.isArray(source.items) ||
+    !Array.isArray(source.modelOptions) ||
+    !Array.isArray(source.providers) ||
+    !Number.isSafeInteger(source.total) ||
+    (source.total as number) < 0
+  )
+    invalidResponse();
+  return {
+    items: source.items.map(publicModel),
+    total: source.total as number,
+    filters: modelFilters(source.filters),
+    modelOptions: source.modelOptions.map((value) => {
+      const option = object(value);
+      exact(option, ['id', 'displayName']);
+      return { id: identifier(option.id), displayName: text(option.displayName, 120) };
+    }),
+    providers: source.providers.map(provider),
+    capabilities: stringArray(source.capabilities, 100),
+  };
+}
+
+function homeResponse(value: unknown): HomeResponse {
+  const source = object(value);
+  exact(source, ['popularModels', 'creatorCases']);
+  if (!Array.isArray(source.popularModels) || !Array.isArray(source.creatorCases))
+    invalidResponse();
+  return {
+    popularModels: source.popularModels.map(publicModel),
+    creatorCases: source.creatorCases.map((value) => {
+      const item = object(value);
+      exact(item, ['id', 'title', 'category', 'summary', 'modelId']);
+      return {
+        id: identifier(item.id),
+        title: text(item.title, 160),
+        category: text(item.category, 80),
+        summary: text(item.summary, 1_000),
+        modelId: identifier(item.modelId),
+      };
+    }),
+  };
+}
+
+function pricingResponse(value: unknown): PricingResponse {
+  const source = object(value);
+  exact(source, [
+    'conversion',
+    'modelBillingRules',
+    'failureRefundRule',
+    'acceptedCancellationRule',
+    'rechargePackages',
+  ]);
+  const conversion = object(source.conversion);
+  exact(conversion, ['currency', 'amountMinor', 'points']);
+  if (conversion.currency !== 'CNY') invalidResponse();
+  let rechargePackages: readonly RechargePackage[] | null = null;
+  if (source.rechargePackages !== null) {
+    if (!Array.isArray(source.rechargePackages) || source.rechargePackages.length > 50)
+      invalidResponse();
+    rechargePackages = source.rechargePackages.map((value) => {
+      const item = object(value);
+      exact(item, ['id', 'title', 'amountMinor', 'points']);
+      return {
+        id: identifier(item.id),
+        title: text(item.title, 120),
+        amountMinor: decimal(item.amountMinor),
+        points: decimal(item.points),
+      };
+    });
+  }
+  return {
+    conversion: {
+      currency: 'CNY',
+      amountMinor: decimal(conversion.amountMinor),
+      points: decimal(conversion.points),
+    },
+    modelBillingRules: billingRules(source.modelBillingRules),
+    failureRefundRule: text(source.failureRefundRule, 2_000),
+    acceptedCancellationRule: text(source.acceptedCancellationRule, 2_000),
+    rechargePackages,
+  };
+}
+
+function helpResponse(value: unknown): HelpResponse {
+  const source = object(value);
+  exact(source, ['article', 'navigation']);
+  if (!Array.isArray(source.navigation)) invalidResponse();
+  const navigation = source.navigation.map((value) => {
+    const item = object(value);
+    exact(item, ['slug', 'title']);
+    return { slug: stringArray(item.slug, 10), title: text(item.title, 160) };
+  });
+  if (source.article === null) return { article: null, navigation };
+  const article = object(source.article);
+  exact(article, ['slug', 'title', 'summary', 'kind', 'publishedAt', 'publishedHtml']);
+  return {
+    article: {
+      slug: stringArray(article.slug, 10),
+      title: text(article.title, 160),
+      summary: text(article.summary, 1_000),
+      kind: member(article.kind, new Set(['GUIDE', 'FAQ', 'ANNOUNCEMENT', 'LEGAL'])),
+      publishedAt: text(article.publishedAt, 64),
+      publishedHtml: text(article.publishedHtml, 100_000),
+    },
+    navigation,
+  };
+}
+
+function gatewayBaseUrl(): URL {
+  const configured = process.env.GATEWAY_URL?.trim();
+  if (!configured) throw new Error('PUBLIC_GATEWAY_UNAVAILABLE');
+  const parsed = new URL(configured);
+  if (
+    parsed.protocol !== 'https:' &&
+    parsed.hostname !== 'localhost' &&
+    parsed.hostname !== '127.0.0.1'
+  )
+    throw new Error('PUBLIC_GATEWAY_UNAVAILABLE');
+  return parsed;
+}
+
+class HttpPublicSiteGateway implements PublicSiteGateway {
+  private async get<T>(path: string, parse: (value: unknown) => T): Promise<GatewayResult<T>> {
+    try {
+      const response = await fetch(new URL(path, gatewayBaseUrl()), {
+        cache: 'no-store',
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return {
+          ok: false,
+          error: {
+            code: 'PUBLIC_GATEWAY_UNAVAILABLE',
+            message: '公开内容服务暂时不可用。',
+            retryable: response.status >= 500,
+          },
+        };
+      }
+      if (!response.headers.get('content-type')?.toLowerCase().startsWith('application/json'))
+        invalidResponse();
+      const version = response.headers.get('x-api-version');
+      if (!version || !/^[A-Za-z0-9._-]{1,64}$/.test(version)) invalidResponse();
+      return success(parse((await response.json()) as unknown), { transport: 'http', version });
+    } catch (error) {
+      const invalid = error instanceof Error && error.message === 'INVALID_PUBLIC_GATEWAY_RESPONSE';
+      return {
+        ok: false,
+        error: {
+          code: invalid ? 'INVALID_PUBLIC_GATEWAY_RESPONSE' : 'PUBLIC_GATEWAY_UNAVAILABLE',
+          message: invalid ? '公开内容响应未通过校验。' : '公开内容服务暂时不可用。',
+          retryable: !invalid,
+        },
+      };
+    }
+  }
+
+  getHome(): Promise<GatewayResult<HomeResponse>> {
+    return this.get('/v1/public/home', homeResponse);
+  }
+
+  getHelp(slug: readonly string[]): Promise<GatewayResult<HelpResponse>> {
+    const suffix = slug.map(encodeURIComponent).join('/');
+    return this.get(`/v1/public/help${suffix ? `/${suffix}` : ''}`, helpResponse);
+  }
+
+  getModel(id: string): Promise<GatewayResult<PublicModel | null>> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id))
+      return Promise.resolve({
+        ok: false,
+        error: { code: 'INVALID_PUBLIC_REQUEST', message: '模型编号无效。', retryable: false },
+      });
+    return this.get(`/v1/public/models/${encodeURIComponent(id)}`, (value) =>
+      value === null ? null : publicModel(value),
+    );
+  }
+
+  getModels(filters: ModelFilters): Promise<GatewayResult<ModelsResponse>> {
+    const query = new URLSearchParams();
+    const set = (key: string, value: string | undefined) => {
+      if (value !== undefined) query.set(key, value);
+    };
+    set('modelId', filters.modelId);
+    set('mode', filters.mode);
+    set('providerId', filters.providerId);
+    set('capability', filters.capability);
+    set('price', filters.price);
+    set('speed', filters.speed);
+    set('state', filters.state);
+    return this.get(`/v1/public/models${query.size ? `?${query.toString()}` : ''}`, modelsResponse);
+  }
+
+  getPricing(): Promise<GatewayResult<PricingResponse>> {
+    return this.get('/v1/public/pricing', pricingResponse);
+  }
+}
+
+const fixtureGateway = new FixturePublicSiteGateway();
+const httpGateway = new HttpPublicSiteGateway();
+
+function selectedPublicGateway(): PublicSiteGateway {
+  return process.env.USER_WEB_PUBLIC_MODE === 'mock' ? fixtureGateway : httpGateway;
+}
+
+export const publicSiteGateway: PublicSiteGateway = {
+  getHome: () => selectedPublicGateway().getHome(),
+  getHelp: (slug) => selectedPublicGateway().getHelp(slug),
+  getModel: (id) => selectedPublicGateway().getModel(id),
+  getModels: (filters) => selectedPublicGateway().getModels(filters),
+  getPricing: () => selectedPublicGateway().getPricing(),
+};
 
 export const generationModeLabels: Readonly<Record<GenerationMode, string>> = {
   TEXT_TO_VIDEO: '文生视频',

@@ -27,6 +27,7 @@ const child = spawn(
       USER_WEB_COMMERCE_MODE: 'mock',
       USER_WEB_E2E_MODE: '1',
       USER_WEB_MOCK_IDENTITY_KEY: key(19),
+      USER_WEB_PUBLIC_MODE: 'mock',
       USER_WEB_SESSION_ENCRYPTION_KEY: key(7),
       USER_WEB_STUDIO_MODE: 'mock',
       USER_WEB_SUPPORT_MODE: 'mock',

@@ -32,6 +32,7 @@ import { SmartMode } from './smart-mode';
 
 interface StudioWorkspaceProps {
   readonly gateway: StudioGateway;
+  readonly initialModelId?: string | undefined;
   readonly retryDraft?: RetryDraft | undefined;
   readonly retryDraftRequested?: boolean | undefined;
 }
@@ -76,10 +77,11 @@ function retryDraftMatchesCapability(
 
 export function StudioWorkspace({
   gateway,
+  initialModelId,
   retryDraft,
   retryDraftRequested = false,
 }: StudioWorkspaceProps) {
-  const initialMode = retryDraft ? 'PRO' : 'SMART';
+  const initialMode = retryDraft || initialModelId ? 'PRO' : 'SMART';
   const initialSmartPreferencesRef = useRef<SmartPreferences>(
     retryDraft
       ? { ...INITIAL_SMART_PREFERENCES, generationMode: retryDraft.generationMode }
@@ -87,7 +89,9 @@ export function StudioWorkspace({
   );
   const initialSmartPreferences = initialSmartPreferencesRef.current;
   const initialProSelectionRef = useRef<ProSelection>(
-    retryDraft ? { ...INITIAL_PRO_SELECTION, modelId: retryDraft.modelId } : INITIAL_PRO_SELECTION,
+    retryDraft || initialModelId
+      ? { ...INITIAL_PRO_SELECTION, modelId: retryDraft?.modelId ?? initialModelId ?? '' }
+      : INITIAL_PRO_SELECTION,
   );
   const initialProSelection = initialProSelectionRef.current;
   const [studioMode, setStudioMode] = useState<'SMART' | 'PRO'>(initialMode);
@@ -214,7 +218,11 @@ export function StudioWorkspace({
           setPageError('重试草稿与当前平台、模型或能力 Schema 不兼容，请从原任务重新创建。');
           return;
         }
-        const firstActive = draftModel ?? nextModels.find((model) => model.status === 'ACTIVE');
+        const requestedModel = initialModelId
+          ? nextModels.find((model) => model.id === initialModelId && model.status === 'ACTIVE')
+          : undefined;
+        const firstActive =
+          draftModel ?? requestedModel ?? nextModels.find((model) => model.status === 'ACTIVE');
         setProSelection((current) => ({
           ...current,
           providerId: firstActive?.providerId ?? nextProviders[0]?.id ?? '',
@@ -247,7 +255,14 @@ export function StudioWorkspace({
       capabilityRequestId.current += 1;
       quoteRequestId.current += 1;
     };
-  }, [gateway, initialSmartPreferences, loadProCapability, loadSmartCapability, retryDraft]);
+  }, [
+    gateway,
+    initialModelId,
+    initialSmartPreferences,
+    loadProCapability,
+    loadSmartCapability,
+    retryDraft,
+  ]);
 
   const handleCapabilityChange = useCallback(
     (values: Readonly<Record<string, unknown>>, result: PreparedCapabilityParameters) => {

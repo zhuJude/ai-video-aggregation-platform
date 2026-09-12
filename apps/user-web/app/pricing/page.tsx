@@ -9,13 +9,23 @@ export const metadata: Metadata = {
   description: '了解光帧 AI 视频模型的点数换算、任务计费、失败退回与取消规则。',
 };
 
-function formatCny(amountMinor: number): string {
-  return new Intl.NumberFormat('zh-CN', {
-    style: 'currency',
-    currency: 'CNY',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(amountMinor / 100);
+export const dynamic = 'force-dynamic';
+
+function formatMinorUnits(amountMinor: string): string {
+  const minor = BigInt(amountMinor);
+  const yuan = minor / 100n;
+  const fraction = minor % 100n;
+  return fraction === 0n
+    ? yuan.toString()
+    : `${yuan.toString()}.${fraction.toString().padStart(2, '0')}`;
+}
+
+function formatCny(amountMinor: string): string {
+  return `¥${formatMinorUnits(amountMinor)}`;
+}
+
+function formatPoints(points: string): string {
+  return BigInt(points).toLocaleString('zh-CN');
 }
 
 export default async function PricingPage() {
@@ -36,7 +46,8 @@ export default async function PricingPage() {
             <div className="conversion-callout">
               <span>点数换算</span>
               <strong>
-                {result.data.conversion.amountMinor / 100} 元 = {result.data.conversion.points} 点数
+                {formatMinorUnits(result.data.conversion.amountMinor)} 元 ={' '}
+                {formatPoints(result.data.conversion.points)} 点数
               </strong>
             </div>
           </section>
@@ -79,7 +90,7 @@ export default async function PricingPage() {
                   <article data-featured={index === 1} key={rechargePackage.id}>
                     <h3>{rechargePackage.title}</h3>
                     <strong>{formatCny(rechargePackage.amountMinor)}</strong>
-                    <p>{rechargePackage.points.toLocaleString('zh-CN')} 点数</p>
+                    <p>{formatPoints(rechargePackage.points)} 点数</p>
                     <Link href={`/wallet?package=${rechargePackage.id}`}>选择此充值包</Link>
                   </article>
                 ))}

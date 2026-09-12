@@ -5,23 +5,36 @@ import { isUuidV7 } from '../../lib/tasks/identifiers';
 import { redirect } from 'next/navigation';
 
 interface StudioPageProps {
-  readonly searchParams: Promise<{ readonly draft?: string | string[] }>;
+  readonly searchParams: Promise<{
+    readonly draft?: string | string[];
+    readonly model?: string | string[];
+  }>;
 }
 
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
 export default async function StudioPage({ searchParams }: StudioPageProps) {
-  const { draft } = await searchParams;
+  const { draft, model } = await searchParams;
   const draftId = typeof draft === 'string' && isUuidV7(draft) ? draft : undefined;
-  const returnTo = draftId ? `/studio?draft=${encodeURIComponent(draftId)}` : '/studio';
+  const modelId = typeof model === 'string' && MODEL_ID.test(model) ? model : undefined;
+  const query = new URLSearchParams();
+  if (draftId) query.set('draft', draftId);
+  if (modelId) query.set('model', modelId);
+  const returnTo = `/studio${query.size ? `?${query.toString()}` : ''}`;
   const sessionState = await readAuthenticatedServerSessionState();
   if (sessionState.kind === 'needs-refresh') {
     redirect(`/auth/session/refresh?returnTo=${encodeURIComponent(returnTo)}`);
   }
   if (sessionState.kind !== 'active') {
-    redirect('/login?returnTo=%2Fstudio');
+    redirect(`/login?returnTo=${encodeURIComponent(returnTo)}`);
   }
   const session = sessionState.session;
   const retryDraft = draftId ? readRetryDraft(draftId, { ownerId: session.ownerId }) : undefined;
   return (
-    <StudioWorkspaceEntry retryDraft={retryDraft} retryDraftRequested={typeof draft === 'string'} />
+    <StudioWorkspaceEntry
+      initialModelId={modelId}
+      retryDraft={retryDraft}
+      retryDraftRequested={typeof draft === 'string'}
+    />
   );
 }

@@ -10,6 +10,8 @@ interface HelpPageProps {
   params: Promise<{ slug?: string[] }>;
 }
 
+export const dynamic = 'force-dynamic';
+
 export async function generateMetadata({ params }: HelpPageProps): Promise<Metadata> {
   const { slug = [] } = await params;
   const result = await publicSiteGateway.getHelp(slug);

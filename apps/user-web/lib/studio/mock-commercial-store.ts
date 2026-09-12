@@ -44,6 +44,44 @@ interface StoredTask {
   readonly resultAssetId: string;
 }
 
+const MOCK_MODEL_ROUTES = {
+  'kling-2-1-pro': {
+    generationMode: 'TEXT_TO_VIDEO',
+    providerId: 'kling',
+    providerName: '可灵 AI',
+  },
+  'seedance-1-5-pro': {
+    generationMode: 'IMAGE_TO_VIDEO',
+    providerId: 'seedance',
+    providerName: '字节 Seedance',
+  },
+  'veo-3-1': {
+    generationMode: 'FIRST_LAST_FRAME',
+    providerId: 'veo',
+    providerName: 'Google Veo',
+  },
+  'mock-cinema-v2': {
+    generationMode: 'IMAGE_TO_VIDEO',
+    providerId: 'mock-provider-east',
+    providerName: '演示平台 East',
+  },
+  'mock-motion-v1': {
+    generationMode: 'IMAGE_TO_VIDEO',
+    providerId: 'mock-provider-east',
+    providerName: '演示平台 East',
+  },
+  'mock-story-v3': {
+    generationMode: 'TEXT_TO_VIDEO',
+    providerId: 'mock-provider-west',
+    providerName: '演示平台 West',
+  },
+} as const;
+
+function mockModelRoute(modelId: string) {
+  if (!(modelId in MOCK_MODEL_ROUTES)) throw new MockCommercialError('MODEL_SNAPSHOT_UNAVAILABLE');
+  return MOCK_MODEL_ROUTES[modelId as keyof typeof MOCK_MODEL_ROUTES];
+}
+
 interface Submission {
   readonly idempotencyKey: string;
   readonly fingerprint: string;
@@ -322,18 +360,14 @@ export async function createMockCommercialTask(
       if (routing.kind === 'EXACT_MODEL' && quote.routing.kind !== 'EXACT_MODEL') {
         throw new MockCommercialError('QUOTE_ROUTING_MISMATCH');
       }
-      const generationMode =
-        routing.kind === 'SMART'
-          ? routing.preferences.generationMode
-          : routing.modelId === 'mock-story-v3'
-            ? 'TEXT_TO_VIDEO'
-            : 'IMAGE_TO_VIDEO';
       const modelId = routing.kind === 'EXACT_MODEL' ? routing.modelId : 'mock-story-v3';
       const modelName =
         routing.kind === 'EXACT_MODEL' && quote.routing.kind === 'EXACT_MODEL'
           ? quote.routing.modelName
           : 'Story V3';
-      const eastProvider = modelId === 'mock-cinema-v2';
+      const modelRoute = mockModelRoute(modelId);
+      const generationMode =
+        routing.kind === 'SMART' ? routing.preferences.generationMode : modelRoute.generationMode;
       const queuedSnapshot = {
         eventId: `1:${createUuidV7()}`,
         revision: 1,
@@ -348,15 +382,15 @@ export async function createMockCommercialTask(
         taskNumber,
         generationMode,
         modelName,
-        providerName: eastProvider ? '演示平台 East' : '演示平台 West',
+        providerName: modelRoute.providerName,
         createdAt: now,
         quotedPoints: quote.quotedPoints,
         statusSnapshot: queuedSnapshot,
         modelSnapshot: {
           modelId,
           modelName,
-          providerId: eastProvider ? 'mock-provider-east' : 'mock-provider-west',
-          providerName: eastProvider ? '演示平台 East' : '演示平台 West',
+          providerId: modelRoute.providerId,
+          providerName: modelRoute.providerName,
           capabilityVersion: quote.capabilityVersion,
           pricingVersion: 'mock-pricing-v1',
         },

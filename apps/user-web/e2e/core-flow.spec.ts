@@ -58,12 +58,17 @@ test('phone login, model discovery, WebP upload and resilient commercial lifecyc
   await expect(selectedModel).toBeVisible();
   await selectedModel.getByRole('link', { name: '查看详情' }).click();
   await expect(page.getByRole('heading', { name: 'Kling 2.1 Pro' })).toBeVisible();
-  await expect(page.getByRole('link', { name: '使用此模型' })).toHaveAttribute(
-    'href',
-    '/studio?model=kling-2-1-pro',
+  await page.getByRole('link', { name: '使用此模型' }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`/login\\?returnTo=${encodeURIComponent('/studio?model=kling-2-1-pro')}$`),
   );
-
   await login(page);
+  await expect(page).toHaveURL(/\/studio\?model=kling-2-1-pro$/);
+  await expect(page.getByRole('button', { name: '专业模式' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(page.getByLabel('模型')).toHaveValue('kling-2-1-pro');
   await page.goto('/assets');
   const uploadRequest = page.waitForRequest(
     (request) =>
@@ -112,7 +117,7 @@ test('phone login, model discovery, WebP upload and resilient commercial lifecyc
   if (!successTaskId) throw new Error('TASK_ID_NOT_RENDERED');
 
   let disconnected = false;
-  await page.route('**/api/tasks/*/events', async (route) => {
+  await page.route(/\/api\/tasks\/[^/]+\/events(?:\?.*)?$/, async (route) => {
     if (!disconnected) {
       disconnected = true;
       await route.abort('connectionfailed');
@@ -121,7 +126,9 @@ test('phone login, model discovery, WebP upload and resilient commercial lifecyc
     await route.continue();
   });
   await page.getByRole('link', { name: '查看任务进度' }).click();
-  await expect(page.getByText('已结算', { exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.task-live-status[data-status="SETTLED"]')).toBeVisible({
+    timeout: 20_000,
+  });
   expect(disconnected).toBe(true);
   await expect(page.getByRole('heading', { name: '生成结果' })).toBeVisible();
   await acceptanceScreenshot(page, testInfo, 'task-success');

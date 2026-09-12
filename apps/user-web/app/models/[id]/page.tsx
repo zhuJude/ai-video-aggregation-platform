@@ -13,6 +13,8 @@ interface ModelDetailPageProps {
   params: Promise<{ id: string }>;
 }
 
+export const dynamic = 'force-dynamic';
+
 export async function generateMetadata({ params }: ModelDetailPageProps): Promise<Metadata> {
   const { id } = await params;
   const result = await publicSiteGateway.getModel(id);

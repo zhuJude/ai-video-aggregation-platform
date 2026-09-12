@@ -42,9 +42,9 @@ it('refreshes once and retries task creation with the identical quote snapshot a
   const idempotencyKey = '0198f4d4-21c2-7b7d-8a03-08a0da2a7511';
   const { clientStudioGateway } = await import('../lib/studio/client-gateway');
 
-  await expect(
-    clientStudioGateway.createTask(request, { idempotencyKey }),
-  ).resolves.toEqual(accepted);
+  await expect(clientStudioGateway.createTask(request, { idempotencyKey })).resolves.toEqual(
+    accepted,
+  );
   expect(refresh).toHaveBeenCalledTimes(1);
   expect(actions.create).toHaveBeenCalledTimes(2);
   expect(actions.create).toHaveBeenNthCalledWith(1, request, idempotencyKey);

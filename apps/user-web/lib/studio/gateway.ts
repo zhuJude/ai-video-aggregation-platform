@@ -15,11 +15,35 @@ import { validateForm } from './capability';
 import { stableDeepEqual } from './runtime';
 
 const providers: readonly StudioProviderOption[] = [
+  { id: 'kling', name: '可灵 AI' },
+  { id: 'seedance', name: '字节 Seedance' },
+  { id: 'veo', name: 'Google Veo' },
   { id: 'mock-provider-east', name: '演示平台 East' },
   { id: 'mock-provider-west', name: '演示平台 West' },
 ];
 
 const models: readonly StudioModelOption[] = [
+  {
+    id: 'kling-2-1-pro',
+    providerId: 'kling',
+    name: 'Kling 2.1 Pro',
+    status: 'ACTIVE',
+    capabilityVersion: 'cap-text-v4',
+  },
+  {
+    id: 'seedance-1-5-pro',
+    providerId: 'seedance',
+    name: 'Seedance 1.5 Pro',
+    status: 'MAINTENANCE',
+    capabilityVersion: 'cap-image-v7',
+  },
+  {
+    id: 'veo-3-1',
+    providerId: 'veo',
+    name: 'Veo 3.1',
+    status: 'ACTIVE',
+    capabilityVersion: 'cap-first_last_frame-v1',
+  },
   {
     id: 'mock-cinema-v2',
     providerId: 'mock-provider-east',
@@ -235,11 +259,13 @@ class FixtureStudioGateway implements StudioGateway {
   async getCapability(modelId: string): Promise<StudioCapabilityDocument> {
     const model = models.find((candidate) => candidate.id === modelId);
     if (!model || model.status !== 'ACTIVE') throw new Error('MODEL_UNAVAILABLE');
-    return Promise.resolve(
-      model.capabilityVersion === textCapability.capabilityVersion
-        ? textCapability
-        : imageCapability,
-    );
+    if (model.capabilityVersion === textCapability.capabilityVersion)
+      return Promise.resolve(textCapability);
+    if (model.capabilityVersion === imageCapability.capabilityVersion)
+      return Promise.resolve(imageCapability);
+    if (model.capabilityVersion === 'cap-first_last_frame-v1')
+      return Promise.resolve(genericAssetCapability('FIRST_LAST_FRAME'));
+    throw new Error('CAPABILITY_UNAVAILABLE');
   }
 
   async getSmartCapability(mode: StudioGenerationMode): Promise<StudioCapabilityDocument> {

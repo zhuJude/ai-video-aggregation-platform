@@ -12,7 +12,7 @@ const REQUEST_ERROR_MESSAGE = '请稍后重试，我们不会透露该手机号�
 const ERROR_ID = 'phone-login-error';
 
 type PendingAction = 'request' | 'verify' | null;
-type WorkspaceDestination = '/studio';
+type WorkspaceDestination = string;
 type ErrorField = 'code' | 'form' | 'phone';
 
 interface LoginError {
@@ -28,6 +28,7 @@ interface ActiveRequest {
 
 interface PhoneLoginFormProps {
   onAuthenticated?: (destination: WorkspaceDestination) => void;
+  returnTo?: WorkspaceDestination;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -36,7 +37,10 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
-export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
+export function PhoneLoginForm({
+  onAuthenticated,
+  returnTo = '/studio',
+}: PhoneLoginFormProps = {}) {
   const [hydrated, setHydrated] = useState(false);
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
@@ -210,7 +214,7 @@ export function PhoneLoginForm({ onAuthenticated }: PhoneLoginFormProps = {}) {
         return;
       }
       setStatusMessage('登录成功，正在进入工作台。');
-      const destination: WorkspaceDestination = '/studio';
+      const destination: WorkspaceDestination = returnTo;
       if (onAuthenticated) {
         onAuthenticated(destination);
       } else {

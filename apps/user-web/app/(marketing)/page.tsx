@@ -14,6 +14,8 @@ export const metadata: Metadata = {
   description: '比较主流 AI 视频模型，统一点数计费，管理从生成到交付的创作流程。',
 };
 
+export const dynamic = 'force-dynamic';
+
 export default async function HomePage() {
   const result = await publicSiteGateway.getHome();
 

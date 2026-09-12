@@ -55,7 +55,5 @@ export async function createStudioTaskAction(
   request: StudioCreateTaskRequest,
   idempotencyKey: string,
 ) {
-  return runStudioAction(async () =>
-    (await gateway()).createTask(request, { idempotencyKey }),
-  );
+  return runStudioAction(async () => (await gateway()).createTask(request, { idempotencyKey }));
 }

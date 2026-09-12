@@ -120,6 +120,46 @@ describe('mock commercial journey', () => {
     ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
   });
 
+  it('keeps the public catalog provider and capability snapshot for an exact model task', async () => {
+    const gateway = await gatewayFor(OWNER_ID);
+    const capability = await gateway.getCapability('kling-2-1-pro');
+    const parameters = {
+      prompt: '日落下的海边公路，镜头缓慢向前',
+      duration: 5,
+      aspectRatio: '16:9',
+      mockFailure: false,
+    };
+    const quote = await gateway.quote({
+      routing: {
+        kind: 'EXACT_MODEL',
+        modelId: 'kling-2-1-pro',
+        providerId: 'kling',
+        allowEquivalentFallback: false,
+      },
+      capabilityVersion: capability.capabilityVersion,
+      parameters,
+    });
+    const accepted = await gateway.createTask(
+      {
+        quoteId: quote.id,
+        capabilityVersion: quote.capabilityVersion,
+        parameters: quote.parameters,
+        quotedPoints: quote.quotedPoints,
+      },
+      { idempotencyKey: createUuidV7() },
+    );
+
+    const task = parseTaskDetail(await taskGateway.getTask(accepted.taskId, { ownerId: OWNER_ID }));
+    expect(task.generationMode).toBe('TEXT_TO_VIDEO');
+    expect(task.modelSnapshot).toMatchObject({
+      modelId: 'kling-2-1-pro',
+      modelName: 'Kling 2.1 Pro',
+      providerId: 'kling',
+      providerName: '可灵 AI',
+      capabilityVersion: 'cap-text-v4',
+    });
+  });
+
   it('settles a successful task once despite duplicate reads and conserves wallet points', async () => {
     const setup = await createTask();
     const accepted = await setup.gateway.createTask(setup.request, { idempotencyKey: setup.key });

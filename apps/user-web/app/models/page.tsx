@@ -17,6 +17,8 @@ export const metadata: Metadata = {
   description: '按生成方式、提供商、能力、点数、速度和状态比较 AI 视频模型。',
 };
 
+export const dynamic = 'force-dynamic';
+
 type SearchParams = Record<string, string | string[] | undefined>;
 
 const modes = Object.keys(generationModeLabels) as GenerationMode[];

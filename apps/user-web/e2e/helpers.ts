@@ -3,14 +3,14 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 export async function login(page: Page): Promise<void> {
-  await page.goto('/login');
+  if (new URL(page.url()).pathname !== '/login') await page.goto('/login');
   await page.getByRole('textbox', { name: '手机号' }).fill('13800138000');
   await page.getByRole('button', { name: '获取验证码' }).click();
   await expect(page.getByText('如果该手机号可用，验证码将尽快发送。')).toBeVisible();
   await expect(page.getByLabel('短信验证码')).toBeFocused();
   await page.getByLabel('短信验证码').fill('123456');
   await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page).toHaveURL(/\/studio$/);
+  await expect(page).toHaveURL(/\/studio(?:\?.*)?$/);
   await expect(page.getByRole('heading', { name: '从能力配置到透明报价' })).toBeVisible();
 }
 

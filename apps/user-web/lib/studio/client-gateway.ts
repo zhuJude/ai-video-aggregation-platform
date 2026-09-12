@@ -32,10 +32,8 @@ async function runWithSessionRefresh<T>(
 export const clientStudioGateway: StudioGateway = {
   listProviders: () => runWithSessionRefresh(listStudioProvidersAction),
   listModels: () => runWithSessionRefresh(listStudioModelsAction),
-  getCapability: (modelId) =>
-    runWithSessionRefresh(() => getStudioCapabilityAction(modelId)),
-  getSmartCapability: (mode) =>
-    runWithSessionRefresh(() => getSmartStudioCapabilityAction(mode)),
+  getCapability: (modelId) => runWithSessionRefresh(() => getStudioCapabilityAction(modelId)),
+  getSmartCapability: (mode) => runWithSessionRefresh(() => getSmartStudioCapabilityAction(mode)),
   quote: (request) => runWithSessionRefresh(() => quoteStudioTaskAction(request)),
   createTask: (request, { idempotencyKey }) =>
     runWithSessionRefresh(() => createStudioTaskAction(request, idempotencyKey)),
