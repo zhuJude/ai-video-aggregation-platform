@@ -1,4 +1,4 @@
-import type { AdminAuthenticator, AdminPrincipal, RawHeaders } from './operations-http.module.js';
+import type { AdminAuthenticator, AdminPrincipal, RawHeaders, UserAuthenticator, UserPrincipal } from './operations-http.module.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -14,6 +14,15 @@ export interface AdminTokenClaims {
 export interface AdminTokenVerifier {
   verify(token: string): Promise<AdminTokenClaims>;
 }
+
+export interface UserTokenClaims {
+  sub: string;
+  tokenUse: string;
+  issuer: string;
+  audience: string | readonly string[];
+}
+
+export interface UserTokenVerifier { verify(token: string): Promise<UserTokenClaims>; }
 
 /** Production JWKS seam. Only cryptographically verified claims become a principal. */
 export class JwksAdminAuthenticator implements AdminAuthenticator {
@@ -37,8 +46,30 @@ export class JwksAdminAuthenticator implements AdminAuthenticator {
   }
 }
 
+export class JwksUserAuthenticator implements UserAuthenticator {
+  constructor(
+    private readonly verifier: UserTokenVerifier,
+    private readonly expected: { issuer: string; audience: string },
+  ) {}
+
+  async authenticate(request: { headers: RawHeaders }): Promise<UserPrincipal | null> {
+    const token = bearerToken(request.headers.authorization);
+    if (token === null) return null;
+    let claims: UserTokenClaims;
+    try { claims = await this.verifier.verify(token); }
+    catch (error) { if (isInvalidToken(error)) return null; throw error; }
+    if (claims.tokenUse !== 'user' || claims.issuer !== this.expected.issuer || !hasAudience(claims.audience, this.expected.audience) || !UUID_PATTERN.test(claims.sub)) return null;
+    return { userId: claims.sub };
+  }
+}
+
 function hasAudience(actual: string | readonly string[], expected: string): boolean {
   return typeof actual === 'string' ? actual === expected : actual.includes(expected);
+}
+
+function bearerToken(value: string | string[] | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  return /^Bearer ([A-Za-z0-9._~-]+)$/.exec(value)?.[1] ?? null;
 }
 
 function isInvalidToken(error: unknown): boolean {

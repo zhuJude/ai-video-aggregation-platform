@@ -1,17 +1,20 @@
 import { randomBytes } from 'node:crypto';
 import { PublicationError, type ContentDraftInput, type ContentKind, type OperationRequestContext, type PackageDraftInput, type PublicationService } from '../application/publication.service.js';
+import { TicketError, type AttachmentInput, type Feedback, type FeedbackKind, type TicketMessage, type TicketService } from '../application/ticket.service.js';
 import { createUuidV7Generator, isUuidV7 } from '../domain/uuid-v7.js';
 
 export type RawHeaders = Record<string, string | string[] | undefined>;
-export interface OperationsHttpRequest { method: string; path: string; headers?: RawHeaders; body?: unknown; }
+export interface OperationsHttpRequest { method: string; path: string; headers?: RawHeaders; query?: Record<string, unknown>; body?: unknown; }
 export interface OperationsHttpResponse { status: number; headers?: Record<string, string>; body?: unknown; }
 export interface AdminPrincipal { adminId: string; role: 'OWNER' | 'ADMIN' | 'VIEWER'; permissions: readonly string[]; }
 export interface AdminAuthenticator { authenticate(request: { headers: RawHeaders }): Promise<AdminPrincipal | null>; }
+export interface UserPrincipal { userId: string; }
+export interface UserAuthenticator { authenticate(request: { headers: RawHeaders }): Promise<UserPrincipal | null>; }
 
 /** Framework-neutral controller; a Nest/Fastify adapter can mount this handler without exposing body principals. */
 export class OperationsHttpModule {
   readonly #id = createUuidV7Generator();
-  constructor(private readonly dependencies: { publication: PublicationService; adminAuthenticator: AdminAuthenticator }) {}
+  constructor(private readonly dependencies: { publication: PublicationService; adminAuthenticator: AdminAuthenticator; ticket?: TicketService; userAuthenticator?: UserAuthenticator }) {}
 
   async handle(request: OperationsHttpRequest): Promise<OperationsHttpResponse> {
     const traceId = resolveTraceId(request.headers);
@@ -23,6 +26,7 @@ export class OperationsHttpModule {
 
   async #route(request: OperationsHttpRequest, context: OperationRequestContext): Promise<OperationsHttpResponse> {
     if (request.path.startsWith('/admin/')) return this.#admin(request, context);
+    if (request.path === '/v1/tickets' || request.path.startsWith('/v1/tickets/') || request.path === '/v1/feedback' || request.path.startsWith('/v1/feedback/')) return this.#userSupport(request, context);
     if (request.method !== 'GET') return notFound(context.traceId);
     if (request.path === '/v1/recharge-packages') return { status: 200, body: (await this.dependencies.publication.listActivePackages()).map((row) => ({
       id: row.id, name: row.name, points: row.points.toString(10), bonusPoints: row.bonusPoints.toString(10), active: row.active,
@@ -34,10 +38,62 @@ export class OperationsHttpModule {
     return notFound(context.traceId);
   }
 
+  async #userSupport(request: OperationsHttpRequest, context: OperationRequestContext): Promise<OperationsHttpResponse> {
+    const service = this.dependencies.ticket;
+    const authenticator = this.dependencies.userAuthenticator;
+    if (service === undefined || authenticator === undefined) return notFound(context.traceId);
+    const principal = await authenticator.authenticate({ headers: normalizeHeaders(request.headers) });
+    if (principal === null) return apiError(401, 'UNAUTHENTICATED', context.traceId, false);
+    const invalid = (): OperationsHttpResponse => apiError(400, 'INVALID_REQUEST', context.traceId, false);
+
+    if (request.method === 'POST' && request.path === '/v1/tickets') {
+      const body = parseTicketCreate(request.body);
+      if (body === null) return invalid();
+      return { status: 201, body: await service.create(body, principal.userId, context) };
+    }
+    if (request.method === 'GET' && request.path === '/v1/tickets') {
+      const page = parsePage(request.query); if (page === null) return invalid();
+      return { status: 200, body: await service.list(principal.userId, page) };
+    }
+    let match = /^\/v1\/tickets\/([0-9a-f-]+)$/i.exec(request.path);
+    if (request.method === 'GET' && match !== null) {
+      if (!isUuidV7(match[1] ?? '')) return invalid();
+      return { status: 200, body: userTicketView(await service.get(match[1] ?? '', principal.userId)) };
+    }
+    match = /^\/v1\/tickets\/([0-9a-f-]+)\/messages$/i.exec(request.path);
+    if (request.method === 'POST' && match !== null) {
+      if (!isUuidV7(match[1] ?? '')) return invalid();
+      const body = parseTicketMessage(request.body); const key = singleHeader(request.headers, 'idempotency-key');
+      if (body === null || key === null) return invalid();
+      return { status: 201, body: ticketMessageResult(await service.addMessage(match[1] ?? '', body, principal.userId, key, context)) };
+    }
+    match = /^\/v1\/tickets\/([0-9a-f-]+)\/reopen$/i.exec(request.path);
+    if (request.method === 'POST' && match !== null) {
+      if (!isUuidV7(match[1] ?? '')) return invalid();
+      const revision = parseExpectedRevision(request.body); if (revision === null) return invalid();
+      return { status: 200, body: await service.reopen(match[1] ?? '', revision, principal.userId, context) };
+    }
+    if (request.method === 'POST' && request.path === '/v1/feedback') {
+      const body = parseFeedback(request.body); if (body === null) return invalid();
+      return { status: 201, body: publicFeedback(await service.createFeedback(body, principal.userId, context)) };
+    }
+    if (request.method === 'GET' && request.path === '/v1/feedback') {
+      const page = parsePage(request.query); if (page === null) return invalid();
+      const result = await service.listFeedback(principal.userId, page); return { status: 200, body: { ...result, items: result.items.map(publicFeedback) } };
+    }
+    match = /^\/v1\/feedback\/([0-9a-f-]+)$/i.exec(request.path);
+    if (request.method === 'GET' && match !== null) {
+      if (!isUuidV7(match[1] ?? '')) return invalid();
+      return { status: 200, body: publicFeedback(await service.getFeedback(match[1] ?? '', principal.userId)) };
+    }
+    return notFound(context.traceId);
+  }
+
   async #admin(request: OperationsHttpRequest, context: OperationRequestContext): Promise<OperationsHttpResponse> {
     const invalidRequest = (): OperationsHttpResponse => apiError(400, 'INVALID_REQUEST', context.traceId, false);
     const principal = await this.dependencies.adminAuthenticator.authenticate({ headers: normalizeHeaders(request.headers) });
     if (principal === null) return apiError(401, 'UNAUTHENTICATED', context.traceId, false);
+    if (request.path === '/admin/v1/feedback' || request.path.startsWith('/admin/v1/tickets/')) return this.#adminSupport(request, principal, context);
     if ((principal.role !== 'OWNER' && principal.role !== 'ADMIN') || !principal.permissions.includes('operations:write')) return apiError(403, 'FORBIDDEN', context.traceId, false);
     const pathId = /^\/admin\/v1\/(?:recharge-packages|content-entries|content-versions|system-settings|feature-flags)\/([^/]+)\//i.exec(request.path)?.[1];
     if (pathId !== undefined && !isUuidV7(pathId)) return invalidRequest();
@@ -158,6 +214,44 @@ export class OperationsHttpModule {
     }
     return notFound(context.traceId);
   }
+
+  async #adminSupport(request: OperationsHttpRequest, principal: AdminPrincipal, context: OperationRequestContext): Promise<OperationsHttpResponse> {
+    const service = this.dependencies.ticket;
+    if (service === undefined) return notFound(context.traceId);
+    const invalid = (): OperationsHttpResponse => apiError(400, 'INVALID_REQUEST', context.traceId, false);
+    const denyUnless = (permission: string): OperationsHttpResponse | null => principal.permissions.includes(permission) ? null : apiError(403, 'FORBIDDEN', context.traceId, false);
+    if (request.method === 'GET' && request.path === '/admin/v1/feedback') {
+      const denied = denyUnless('operations:feedback:read'); if (denied !== null) return denied;
+      const page = parsePage(request.query); if (page === null) return invalid();
+      const result = await service.listFeedbackForAdmin(page); return { status: 200, body: { ...result, items: result.items.map(publicFeedback) } };
+    }
+    let match = /^\/admin\/v1\/tickets\/([0-9a-f-]+)$/i.exec(request.path);
+    if (request.method === 'GET' && match !== null) {
+      const denied = denyUnless('operations:tickets:read'); if (denied !== null) return denied;
+      if (!isUuidV7(match[1] ?? '')) return invalid();
+      const result = await service.getForAdmin(match[1] ?? ''); return { status: 200, body: { ...result, messages: result.messages.map(publicMessage) } };
+    }
+    if (principal.role !== 'OWNER' && principal.role !== 'ADMIN') return apiError(403, 'FORBIDDEN', context.traceId, false);
+    match = /^\/admin\/v1\/tickets\/([0-9a-f-]+)\/(claim|reply|internal-notes|resolve|close)$/i.exec(request.path);
+    if (request.method !== 'POST' || match === null) return notFound(context.traceId);
+    if (!isUuidV7(match[1] ?? '')) return invalid();
+    const action = match[2] ?? '';
+    const permission = `operations:tickets:${action === 'internal-notes' ? 'note' : action}`;
+    const denied = denyUnless(permission); if (denied !== null) return denied;
+    if (action === 'reply') {
+      const body = parseTicketMessage(request.body); const key = singleHeader(request.headers, 'idempotency-key');
+      if (body === null || key === null) return invalid();
+      return { status: 201, body: ticketMessageResult(await service.reply(match[1] ?? '', body, principal.adminId, key, context)) };
+    }
+    if (action === 'internal-notes') {
+      const body = parseInternalNote(request.body); if (body === null) return invalid();
+      return { status: 201, body: await service.addInternalNote(match[1] ?? '', body, principal.adminId) };
+    }
+    const revision = parseExpectedRevision(request.body); if (revision === null) return invalid();
+    if (action === 'claim') return { status: 200, body: await service.claim(match[1] ?? '', revision, principal.adminId, context) };
+    if (action === 'resolve') return { status: 200, body: await service.resolve(match[1] ?? '', revision, principal.adminId, context) };
+    return { status: 200, body: await service.close(match[1] ?? '', revision, principal.adminId, context) };
+  }
 }
 
 function normalizeHeaders(headers: RawHeaders | undefined): RawHeaders { return Object.fromEntries(Object.entries(headers ?? {}).map(([key, value]) => [key.toLowerCase(), value])); }
@@ -226,12 +320,29 @@ function parseFeatureFlagPatch(value: Record<string, unknown>): { enabled?: bool
   if (Object.hasOwn(value, 'rules')) patch.rules = value.rules;
   return Object.keys(patch).length === 0 ? null : patch;
 }
+function exactRecord(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> | null { const body = asRecord(value); if (body === null || Object.keys(body).some((key) => !allowed.includes(key)) || required.some((key) => !Object.hasOwn(body, key))) return null; return body; }
+function parseAttachments(value: unknown): AttachmentInput[] | null { if (value === undefined) return []; if (!Array.isArray(value) || value.length > 10) return null; const rows: AttachmentInput[] = []; for (const item of value) { const body = exactRecord(item, ['assetId', 'supportUploadSessionId'], ['assetId']); if (body === null || typeof body.assetId !== 'string' || !isUuidV7(body.assetId) || !(body.supportUploadSessionId === undefined || (typeof body.supportUploadSessionId === 'string' && isUuidV7(body.supportUploadSessionId)))) return null; rows.push({ assetId: body.assetId, ...(typeof body.supportUploadSessionId === 'string' ? { supportUploadSessionId: body.supportUploadSessionId } : {}) }); } return rows; }
+function parseTicketCreate(value: unknown): { subject: string; body: string; attachments: AttachmentInput[] } | null { const body = exactRecord(value, ['subject', 'body', 'attachments'], ['subject', 'body']); if (body === null || typeof body.subject !== 'string' || typeof body.body !== 'string') return null; const attachments = parseAttachments(body.attachments); return attachments === null ? null : { subject: body.subject, body: body.body, attachments }; }
+function parseTicketMessage(value: unknown): { body: string; expectedRevision: number; attachments: AttachmentInput[] } | null { const body = exactRecord(value, ['body', 'expectedRevision', 'attachments'], ['body', 'expectedRevision']); if (body === null || typeof body.body !== 'string' || !isRevision(body.expectedRevision)) return null; const attachments = parseAttachments(body.attachments); return attachments === null ? null : { body: body.body, expectedRevision: body.expectedRevision, attachments }; }
+function parseInternalNote(value: unknown): { body: string; expectedRevision: number } | null { const body = exactRecord(value, ['body', 'expectedRevision'], ['body', 'expectedRevision']); return body !== null && typeof body.body === 'string' && isRevision(body.expectedRevision) ? { body: body.body, expectedRevision: body.expectedRevision } : null; }
+function parseFeedback(value: unknown): { kind: FeedbackKind; taskId?: string; content: string; rating?: number; attachments: AttachmentInput[] } | null { const body = exactRecord(value, ['kind', 'taskId', 'content', 'rating', 'attachments'], ['kind', 'content']); if (body === null || !['MODEL_RESULT', 'FAILED_TASK', 'PRODUCT_SUGGESTION'].includes(String(body.kind)) || typeof body.content !== 'string' || !(body.taskId === undefined || (typeof body.taskId === 'string' && isUuidV7(body.taskId))) || !(body.rating === undefined || (typeof body.rating === 'number' && Number.isInteger(body.rating)))) return null; const attachments = parseAttachments(body.attachments); if (attachments === null) return null; return { kind: body.kind as FeedbackKind, content: body.content, attachments, ...(typeof body.taskId === 'string' ? { taskId: body.taskId } : {}), ...(typeof body.rating === 'number' ? { rating: body.rating } : {}) }; }
+function parsePage(value: Record<string, unknown> | undefined): { limit: number; cursor?: string } | null { const query = value ?? {}; if (Object.keys(query).some((key) => key !== 'limit' && key !== 'cursor')) return null; const rawLimit = query.limit ?? 20; const limit = typeof rawLimit === 'string' && /^\d+$/.test(rawLimit) ? Number(rawLimit) : rawLimit; if (!isRevision(limit) || limit < 1 || limit > 100 || !(query.cursor === undefined || typeof query.cursor === 'string')) return null; return { limit, ...(typeof query.cursor === 'string' ? { cursor: query.cursor } : {}) }; }
+function singleHeader(headers: RawHeaders | undefined, name: string): string | null { const value = normalizeHeaders(headers)[name]; return typeof value === 'string' ? value : null; }
+function publicMessage(message: TicketMessage): Omit<TicketMessage, 'idempotencyKey' | 'requestHash' | 'attachments'> & { attachments: Array<{ id: string; assetId: string }> } { return { id: message.id, ticketId: message.ticketId, authorId: message.authorId, authorType: message.authorType, resolutionCycle: message.resolutionCycle, body: message.body, createdAt: message.createdAt, attachments: message.attachments.map(({ id, assetId }) => ({ id, assetId })) }; }
+function userTicketView(result: Awaited<ReturnType<TicketService['get']>>): { ticket: typeof result.ticket; messages: ReturnType<typeof publicMessage>[] } { return { ticket: result.ticket, messages: result.messages.map(publicMessage) }; }
+function ticketMessageResult(result: Awaited<ReturnType<TicketService['addMessage']>>): { ticket: typeof result.ticket; message: ReturnType<typeof publicMessage> } { return { ticket: result.ticket, message: publicMessage(result.message) }; }
+function publicFeedback(feedback: Feedback): Omit<Feedback, 'attachments'> & { attachments: Array<{ id: string; assetId: string }> } { return { ...feedback, attachments: feedback.attachments.map(({ id, assetId }) => ({ id, assetId })) }; }
 function notFound(traceId: string): OperationsHttpResponse { return apiError(404, 'ROUTE_NOT_FOUND', traceId, false); }
+const CROSS_SERVICE_DOMAIN_ERROR_CODES = new Set(['FEEDBACK_SUBJECT_NOT_FOUND']);
 function mapError(error: unknown, traceId: string): OperationsHttpResponse {
-  if (!(error instanceof PublicationError)) return apiError(500, 'INTERNAL_ERROR', traceId, true);
-  if (error.code.includes('NOT_FOUND')) return apiError(404, error.code, traceId, false);
-  if (error.code === 'VERSION_CONFLICT') return apiError(409, error.code, traceId, true);
-  return apiError(422, error.code, traceId, false);
+  const untrustedCode = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
+  const code = error instanceof PublicationError || error instanceof TicketError
+    ? error.code
+    : CROSS_SERVICE_DOMAIN_ERROR_CODES.has(untrustedCode) ? untrustedCode : null;
+  if (code === null) return apiError(500, 'INTERNAL_ERROR', traceId, true);
+  if (code.includes('NOT_FOUND')) return apiError(404, code, traceId, false);
+  if (code === 'VERSION_CONFLICT' || code === 'TICKET_REVISION_CONFLICT' || code === 'IDEMPOTENCY_CONFLICT') return apiError(409, code, traceId, code !== 'IDEMPOTENCY_CONFLICT');
+  return apiError(422, code, traceId, false);
 }
 
 function apiError(status: number, code: string, traceId: string, retryable: boolean, details?: unknown): OperationsHttpResponse {

@@ -6,6 +6,30 @@ import { bootstrapOperationsRuntime, OPERATIONS_OPENAPI } from '../src/runtime/o
 import { InMemoryPublicationRepository, PublicationService } from '../src/application/publication.service.js';
 
 describe('Nest operations production runtime', () => {
+  it('documents every support route with concrete OpenAPI 3.1 schemas', () => {
+    type SupportSchema = { additionalProperties?: boolean; properties: Record<string, { enum?: string[] }> };
+    type SupportOperation = { requestBody?: unknown; responses: Record<string, unknown> };
+    const paths = OPERATIONS_OPENAPI.paths as Record<string, Record<string, SupportOperation>>;
+    const required: ReadonlyArray<readonly [string, string]> = [
+      ['post', '/v1/tickets'], ['get', '/v1/tickets'], ['get', '/v1/tickets/{id}'], ['post', '/v1/tickets/{id}/messages'], ['post', '/v1/tickets/{id}/reopen'],
+      ['post', '/v1/feedback'], ['get', '/v1/feedback'], ['get', '/v1/feedback/{id}'],
+      ['post', '/admin/v1/tickets/{id}/claim'], ['post', '/admin/v1/tickets/{id}/reply'], ['post', '/admin/v1/tickets/{id}/internal-notes'], ['post', '/admin/v1/tickets/{id}/resolve'], ['post', '/admin/v1/tickets/{id}/close'],
+    ];
+    for (const [method, path] of required) {
+      const operation = paths[path]?.[method];
+      expect(operation, `${method} ${path}`).toBeDefined();
+      expect(operation?.responses).not.toEqual({});
+      if (method === 'post') expect(operation?.requestBody).toBeDefined();
+    }
+    const schemas = OPERATIONS_OPENAPI.components.schemas as unknown as Record<string, SupportSchema>;
+    expect(schemas.Ticket?.properties.status?.enum).toEqual(['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED']);
+    expect(schemas.UserTicketView?.properties).not.toHaveProperty('internalNotes');
+    expect(schemas.TicketMessageRequest?.additionalProperties).toBe(false);
+    expect(schemas.FeedbackRequest?.additionalProperties).toBe(false);
+    expect(OPERATIONS_OPENAPI.components.securitySchemes).toEqual({ bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } });
+    expect((paths['/v1/tickets']?.post as SupportOperation & { security?: unknown }).security).toEqual([{ bearerAuth: [] }]);
+  });
+
   it('publishes validator-like complete OpenAPI 3.1 operations', () => {
     type Schema = { $ref?: string; properties?: Record<string, unknown>; type?: string };
     type Operation = { parameters: Array<{ name: string; in: string; required: boolean }>; requestBody?: { content: Record<string, { schema: Schema }> }; responses: Record<string, { content: Record<string, { schema: Schema }> }> };

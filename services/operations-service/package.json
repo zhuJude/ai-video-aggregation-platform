@@ -8,6 +8,7 @@
     "lint": "eslint src test prisma.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --exclude dist/**",
+    "test:postgresql": "node scripts/test-postgresql.mjs",
     "test:coverage": "vitest run --coverage --exclude dist/**",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
@@ -23,6 +24,8 @@
     "rxjs": "7.8.2"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.4.3",
+    "@prisma/adapter-pg": "7.10.0",
     "@types/node": "24.10.1",
     "prisma": "7.10.0",
     "typescript": "5.9.3",

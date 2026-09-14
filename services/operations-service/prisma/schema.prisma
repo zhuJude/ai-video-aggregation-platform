@@ -202,12 +202,15 @@ model Ticket {
   subject        String        @db.VarChar(200)
   status         TicketStatus  @default(OPEN)
   assigneeId     String?       @db.Uuid
+  resolutionCycle Int          @default(0)
+  responseRequiredSince DateTime @default(now()) @db.Timestamptz(3)
   revision       Int           @default(0)
   resolvedAt     DateTime?     @db.Timestamptz(3)
   closedAt       DateTime?     @db.Timestamptz(3)
   createdAt      DateTime      @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime      @updatedAt @db.Timestamptz(3)
   messages       TicketMessage[]
+  internalNotes  TicketInternalNote[]
 
   @@index([userId, createdAt])
   @@index([status, assigneeId, updatedAt])
@@ -218,9 +221,36 @@ model TicketMessage {
   ticketId   String                  @db.Uuid
   authorId   String                  @db.Uuid
   authorType TicketMessageAuthorType
+  resolutionCycle Int             @default(0)
   body       String
+  idempotencyKey String?                 @db.VarChar(128)
+  requestHash    String?                 @db.Char(64)
   createdAt  DateTime                @default(now()) @db.Timestamptz(3)
   ticket     Ticket                  @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  attachments TicketMessageAttachment[]
+
+  @@unique([ticketId, authorId, idempotencyKey], map: "TicketMessage_idempotency_key")
+  @@index([ticketId, createdAt])
+}
+
+model TicketMessageAttachment {
+  id                     String        @id @db.Uuid
+  messageId              String        @db.Uuid
+  assetId                String        @db.Uuid
+  supportUploadSessionId String?       @db.Uuid
+  message                TicketMessage @relation(fields: [messageId], references: [id], onDelete: Restrict)
+
+  @@unique([messageId, assetId])
+  @@index([assetId])
+}
+
+model TicketInternalNote {
+  id        String   @id @db.Uuid
+  ticketId  String   @db.Uuid
+  authorId  String   @db.Uuid
+  body      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Restrict)
 
   @@index([ticketId, createdAt])
 }
@@ -233,9 +263,87 @@ model Feedback {
   content    String
   rating     Int?
   createdAt  DateTime     @default(now()) @db.Timestamptz(3)
+  attachments FeedbackAttachment[]
 
   @@index([userId, createdAt])
   @@index([kind, createdAt])
+}
+
+model FeedbackAttachment {
+  id                     String   @id @db.Uuid
+  feedbackId             String   @db.Uuid
+  assetId                String   @db.Uuid
+  supportUploadSessionId String?  @db.Uuid
+  feedback               Feedback @relation(fields: [feedbackId], references: [id], onDelete: Restrict)
+
+  @@unique([feedbackId, assetId])
+  @@index([assetId])
+}
+
+model SupportUploadConsumption {
+  id         String   @id @db.Uuid
+  sessionId  String   @unique(map: "SupportUploadConsumption_sessionId_key") @db.Uuid
+  ownerId    String   @db.Uuid
+  assetId    String   @db.Uuid
+  sourceType String   @db.VarChar(24)
+  sourceId   String   @db.Uuid
+  consumedAt DateTime @db.Timestamptz(3)
+
+  @@index([ownerId, consumedAt])
+}
+
+model SupportUploadBinding {
+  id            String   @id @db.Uuid
+  operationId   String   @unique @db.VarChar(160)
+  generation    Int      @default(0)
+  remoteOperationId String @unique @db.Uuid
+  fence         String   @db.Uuid
+  requestHash   String   @db.Char(64)
+  idempotencyKey String  @db.VarChar(128)
+  reservationId String?  @db.VarChar(160)
+  ownershipToken String? @db.VarChar(256)
+  sessionId     String   @unique @db.Uuid
+  ownerId       String   @db.Uuid
+  assetId       String   @db.Uuid
+  sourceType    String?  @db.VarChar(24)
+  sourceId      String?  @db.Uuid
+  status        String   @db.VarChar(24)
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @db.Timestamptz(3)
+  claimToken    String?  @db.Uuid
+  leaseUntil    DateTime? @db.Timestamptz(3)
+  lastError     String?  @db.VarChar(160)
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  finalizedAt   DateTime? @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt])
+}
+
+model SupportUploadCompensation {
+  id                String   @id @db.Uuid
+  compensationKey   String   @unique @db.Char(64)
+  reservationId     String   @db.VarChar(160)
+  operationId       String   @db.VarChar(160)
+  remoteOperationId String   @db.VarChar(160)
+  generation        Int
+  fence             String   @db.VarChar(160)
+  requestHash       String   @db.VarChar(128)
+  ownershipToken    String   @db.VarChar(256)
+  sessionId         String   @db.VarChar(160)
+  ownerId           String   @db.VarChar(160)
+  assetId           String   @db.VarChar(160)
+  purpose           String   @db.VarChar(64)
+  expiresAt         DateTime @db.Timestamptz(3)
+  status            String   @default("RELEASE_PENDING") @db.VarChar(24)
+  attempts          Int      @default(0)
+  nextAttemptAt     DateTime @db.Timestamptz(3)
+  claimToken        String?  @db.Uuid
+  leaseUntil        DateTime? @db.Timestamptz(3)
+  lastError         String?  @db.VarChar(160)
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  releasedAt        DateTime? @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt])
 }
 
 model OutboxEvent {
