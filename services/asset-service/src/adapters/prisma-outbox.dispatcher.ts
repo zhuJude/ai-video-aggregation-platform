@@ -36,22 +36,44 @@ export class PrismaOutboxDispatcher implements ResultOutboxDispatcher {
         data: { claimToken, leaseUntil: new Date(now.getTime() + OUTBOX_LEASE_MS) },
       });
       return changed.count === 1
-        ? { id: row.id as string, type: row.eventType as string, payload: row.payload as unknown, attempts: row.attempts as number }
+        ? {
+            id: row.id as string,
+            type: row.eventType as string,
+            payload: row.payload as unknown,
+            attempts: row.attempts as number,
+          }
         : null;
     });
     if (event === null) return;
 
     try {
       await this.publisher.publish({ id: event.id, type: event.type, payload: event.payload });
-      await this.client.$transaction((tx) => tx.outboxEvent.updateMany({
-        where: { id: eventId, claimToken, status: { in: ['PENDING', 'FAILED'] } },
-        data: { status: 'PUBLISHED', publishedAt: this.now(), claimToken: null, leaseUntil: null, lastError: null },
-      }));
+      await this.client.$transaction((tx) =>
+        tx.outboxEvent.updateMany({
+          where: { id: eventId, claimToken, status: { in: ['PENDING', 'FAILED'] } },
+          data: {
+            status: 'PUBLISHED',
+            publishedAt: this.now(),
+            claimToken: null,
+            leaseUntil: null,
+            lastError: null,
+          },
+        }),
+      );
     } catch (error) {
-      await this.client.$transaction((tx) => tx.outboxEvent.updateMany({
-        where: { id: eventId, claimToken, status: { in: ['PENDING', 'FAILED'] } },
-        data: { status: 'FAILED', attempts: { increment: 1 }, nextAttemptAt: new Date(this.now().getTime() + backoffMs(event.attempts)), lastError: 'EVENT_PUBLISH_FAILED', claimToken: null, leaseUntil: null },
-      }));
+      await this.client.$transaction((tx) =>
+        tx.outboxEvent.updateMany({
+          where: { id: eventId, claimToken, status: { in: ['PENDING', 'FAILED'] } },
+          data: {
+            status: 'FAILED',
+            attempts: { increment: 1 },
+            nextAttemptAt: new Date(this.now().getTime() + backoffMs(event.attempts)),
+            lastError: 'EVENT_PUBLISH_FAILED',
+            claimToken: null,
+            leaseUntil: null,
+          },
+        }),
+      );
       throw error;
     }
   }
@@ -59,15 +81,25 @@ export class PrismaOutboxDispatcher implements ResultOutboxDispatcher {
   /** Scans durable due work so a process crash after the asset transaction cannot strand an event. */
   async dispatchDue(limit = 100): Promise<number> {
     const now = this.now();
-    const rows = await this.client.$transaction((tx) => tx.outboxEvent.findMany({
-      where: { status: { in: ['PENDING', 'FAILED'] }, nextAttemptAt: { lte: now }, OR: [{ leaseUntil: null }, { leaseUntil: { lte: now } }] },
-      orderBy: { nextAttemptAt: 'asc' },
-      select: { id: true },
-      take: limit,
-    }));
+    const rows = await this.client.$transaction((tx) =>
+      tx.outboxEvent.findMany({
+        where: {
+          status: { in: ['PENDING', 'FAILED'] },
+          nextAttemptAt: { lte: now },
+          OR: [{ leaseUntil: null }, { leaseUntil: { lte: now } }],
+        },
+        orderBy: { nextAttemptAt: 'asc' },
+        select: { id: true },
+        take: limit,
+      }),
+    );
     let attempted = 0;
     for (const row of rows as Array<{ id: string }>) {
-      try { await this.dispatch(row.id); } catch { /* each event retains its own retry schedule */ }
+      try {
+        await this.dispatch(row.id);
+      } catch {
+        /* each event retains its own retry schedule */
+      }
       attempted += 1;
     }
     return attempted;
@@ -76,7 +108,9 @@ export class PrismaOutboxDispatcher implements ResultOutboxDispatcher {
 
 export class AssetOutboxJob {
   constructor(private readonly dispatcher: Pick<PrismaOutboxDispatcher, 'dispatchDue'>) {}
-  run(): Promise<number> { return this.dispatcher.dispatchDue(); }
+  run(): Promise<number> {
+    return this.dispatcher.dispatchDue();
+  }
 }
 
 function backoffMs(previousAttempts: number): number {

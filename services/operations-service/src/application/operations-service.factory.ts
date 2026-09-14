@@ -1,20 +1,38 @@
-import { PrismaPublicationRepository, type PrismaPublicationClient } from '../adapters/prisma-publication.repository.js';
-import { PrismaTicketRepository, type PrismaTicketClient } from '../adapters/prisma-ticket.repository.js';
+import {
+  PrismaPublicationRepository,
+  type PrismaPublicationClient,
+} from '../adapters/prisma-publication.repository.js';
+import {
+  PrismaTicketRepository,
+  type PrismaTicketClient,
+} from '../adapters/prisma-ticket.repository.js';
 import {
   OperationsOutboxDispatcher,
   OperationsOutboxJob,
   PrismaOperationsOutboxStore,
   type OperationsEventPublisher,
 } from '../adapters/operations-outbox.dispatcher.js';
-import { JwksAdminAuthenticator, JwksUserAuthenticator, type AdminTokenVerifier, type UserTokenVerifier } from '../http/http-auth.adapters.js';
+import {
+  JwksAdminAuthenticator,
+  JwksUserAuthenticator,
+  type AdminTokenVerifier,
+  type UserTokenVerifier,
+} from '../http/http-auth.adapters.js';
 import { OperationsHttpModule } from '../http/operations-http.module.js';
 import { PublicationService } from './publication.service.js';
 import { createUuidV7Generator } from '../domain/uuid-v7.js';
-import { SecureAttachmentAuthorization, TicketService, type AttachmentAuthorizationGateway, type FeedbackSubjectAuthorizationPort } from './ticket.service.js';
+import {
+  SecureAttachmentAuthorization,
+  TicketService,
+  type AttachmentAuthorizationGateway,
+  type FeedbackSubjectAuthorizationPort,
+} from './ticket.service.js';
 
 /** Production composition; principals enter only through verified raw-token auth adapters. */
 export function createOperationsSupportingServices(input: {
-  prisma: PrismaPublicationClient & PrismaTicketClient & ConstructorParameters<typeof PrismaOperationsOutboxStore>[0];
+  prisma: PrismaPublicationClient &
+    PrismaTicketClient &
+    ConstructorParameters<typeof PrismaOperationsOutboxStore>[0];
   eventPublisher: OperationsEventPublisher;
   adminTokenVerifier: AdminTokenVerifier;
   userTokenVerifier: UserTokenVerifier;

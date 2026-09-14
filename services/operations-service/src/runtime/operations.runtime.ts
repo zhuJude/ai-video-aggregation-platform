@@ -1,26 +1,268 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-function-type, @typescript-eslint/no-unused-vars -- Nest adapter methods implement framework-owned signatures. */
 import 'reflect-metadata';
 import { randomBytes } from 'node:crypto';
-import { All, Controller, Get, Inject, Module, Req, Res, type DynamicModule, type NestApplicationOptions, type RequestMethod, type VersioningOptions } from '@nestjs/common';
+import {
+  All,
+  Controller,
+  Get,
+  Inject,
+  Module,
+  Req,
+  Res,
+  type DynamicModule,
+  type NestApplicationOptions,
+  type RequestMethod,
+  type VersioningOptions,
+} from '@nestjs/common';
 import { AbstractHttpAdapter } from '@nestjs/core/adapters/http-adapter';
 import { NestFactory } from '@nestjs/core';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import { OperationsHttpModule, type OperationsHttpRequest } from '../http/operations-http.module.js';
+import {
+  OperationsHttpModule,
+  type OperationsHttpRequest,
+} from '../http/operations-http.module.js';
 
 export const OPERATIONS_HTTP = Symbol('OPERATIONS_HTTP');
 export const OPERATIONS_READINESS = Symbol('OPERATIONS_READINESS');
-type DocumentedRoute = readonly [path: string, method: 'get' | 'post' | 'patch', operationId: string, successStatus: 200 | 201, requestSchema: string | null, responseSchema: string];
+export const OPERATIONS_METRICS = Symbol('OPERATIONS_METRICS');
+type DocumentedRoute = readonly [
+  path: string,
+  method: 'get' | 'post' | 'patch',
+  operationId: string,
+  successStatus: 200 | 201,
+  requestSchema: string | null,
+  responseSchema: string,
+];
 const DOCUMENTED_ROUTES: readonly DocumentedRoute[] = [
-  ['/health/live', 'get', 'liveness', 200, null, 'Health'], ['/health/ready', 'get', 'readiness', 200, null, 'Health'], ['/openapi.json', 'get', 'openapi', 200, null, 'OpenApiDocument'],
-  ['/v1/recharge-packages', 'get', 'listPackages', 200, null, 'RechargePackageList'], ['/v1/announcements', 'get', 'listAnnouncements', 200, null, 'PublicContentList'], ['/v1/help', 'get', 'listHelp', 200, null, 'PublicContentList'], ['/v1/banners/{slot}', 'get', 'listBanners', 200, null, 'PublicBannerList'],
-  ['/v1/tickets', 'post', 'createTicket', 201, 'TicketCreateRequest', 'Ticket'], ['/v1/tickets', 'get', 'listTickets', 200, null, 'TicketPage'], ['/v1/tickets/{id}', 'get', 'getTicket', 200, null, 'UserTicketView'], ['/v1/tickets/{id}/messages', 'post', 'addTicketMessage', 201, 'TicketMessageRequest', 'TicketMessageResult'], ['/v1/tickets/{id}/reopen', 'post', 'reopenTicket', 200, 'RevisionRequest', 'Ticket'],
-  ['/v1/feedback', 'post', 'createFeedback', 201, 'FeedbackRequest', 'Feedback'], ['/v1/feedback', 'get', 'listFeedback', 200, null, 'FeedbackPage'], ['/v1/feedback/{id}', 'get', 'getFeedback', 200, null, 'Feedback'],
-  ['/admin/v1/recharge-packages/drafts', 'post', 'createPackageDraft', 201, 'PackageDraftRequest', 'PackageVersion'], ['/admin/v1/recharge-packages/{id}/drafts', 'post', 'createPackageDraftFrom', 201, 'PackagePatchRequest', 'PackageVersion'], ['/admin/v1/recharge-packages/{id}/draft', 'patch', 'updatePackageDraft', 200, 'VersionedPackagePatchRequest', 'PackageVersion'], ['/admin/v1/recharge-packages/{id}/preview', 'get', 'previewPackage', 200, null, 'PackageVersion'], ['/admin/v1/recharge-packages/{id}/publish', 'post', 'publishPackage', 200, 'RevisionRequest', 'PackageVersion'], ['/admin/v1/recharge-packages/{id}/retire', 'post', 'retirePackage', 200, 'RevisionRequest', 'PackageVersion'],
-  ['/admin/v1/content-entries', 'post', 'createContentEntry', 201, 'ContentEntryRequest', 'ContentEntry'], ['/admin/v1/content-entries/{id}/drafts', 'post', 'createContentDraft', 201, 'ContentDraftRequest', 'ContentVersion'], ['/admin/v1/content-entries/{id}/rollback', 'post', 'rollbackContent', 200, 'RollbackRequest', 'ContentVersion'], ['/admin/v1/content-versions/{id}/preview', 'get', 'previewContent', 200, null, 'ContentVersion'], ['/admin/v1/content-versions/{id}/draft', 'patch', 'updateContentDraft', 200, 'VersionedContentPatchRequest', 'ContentVersion'], ['/admin/v1/content-versions/{id}/publish', 'post', 'publishContent', 200, 'RevisionRequest', 'ContentVersion'], ['/admin/v1/content-versions/{id}/retire', 'post', 'retireContent', 200, 'RevisionRequest', 'ContentVersion'],
-  ['/admin/v1/banner-placements', 'post', 'placeBanner', 201, 'BannerPlacementRequest', 'BannerPlacement'], ['/admin/v1/banners/{slot}/reorder', 'post', 'reorderBanners', 200, 'BannerReorderRequest', 'RevisionResponse'],
-  ['/admin/v1/system-settings/drafts', 'post', 'createSetting', 201, 'SystemSettingDraftRequest', 'SystemSettingVersion'], ['/admin/v1/system-settings/{id}/preview', 'get', 'previewSetting', 200, null, 'SystemSettingVersion'], ['/admin/v1/system-settings/{id}/draft', 'patch', 'updateSetting', 200, 'VersionedSystemSettingPatch', 'SystemSettingVersion'], ['/admin/v1/system-settings/{id}/publish', 'post', 'publishSetting', 200, 'RevisionRequest', 'SystemSettingVersion'], ['/admin/v1/system-settings/{id}/retire', 'post', 'retireSetting', 200, 'RevisionRequest', 'SystemSettingVersion'],
-  ['/admin/v1/feature-flags/drafts', 'post', 'createFlag', 201, 'FeatureFlagDraftRequest', 'FeatureFlagVersion'], ['/admin/v1/feature-flags/{id}/preview', 'get', 'previewFlag', 200, null, 'FeatureFlagVersion'], ['/admin/v1/feature-flags/{id}/draft', 'patch', 'updateFlag', 200, 'VersionedFeatureFlagPatch', 'FeatureFlagVersion'], ['/admin/v1/feature-flags/{id}/publish', 'post', 'publishFlag', 200, 'RevisionRequest', 'FeatureFlagVersion'], ['/admin/v1/feature-flags/{id}/retire', 'post', 'retireFlag', 200, 'RevisionRequest', 'FeatureFlagVersion'],
-  ['/admin/v1/tickets/{id}', 'get', 'getTicketForAdmin', 200, null, 'AdminTicketView'], ['/admin/v1/tickets/{id}/claim', 'post', 'claimTicket', 200, 'RevisionRequest', 'Ticket'], ['/admin/v1/tickets/{id}/reply', 'post', 'replyTicket', 201, 'TicketMessageRequest', 'TicketMessageResult'], ['/admin/v1/tickets/{id}/internal-notes', 'post', 'addTicketInternalNote', 201, 'InternalNoteRequest', 'InternalNoteResult'], ['/admin/v1/tickets/{id}/resolve', 'post', 'resolveTicket', 200, 'RevisionRequest', 'Ticket'], ['/admin/v1/tickets/{id}/close', 'post', 'closeTicket', 200, 'RevisionRequest', 'Ticket'], ['/admin/v1/feedback', 'get', 'listFeedbackForAdmin', 200, null, 'FeedbackPage'],
+  ['/health/live', 'get', 'liveness', 200, null, 'Health'],
+  ['/health/ready', 'get', 'readiness', 200, null, 'Health'],
+  ['/openapi.json', 'get', 'openapi', 200, null, 'OpenApiDocument'],
+  ['/v1/recharge-packages', 'get', 'listPackages', 200, null, 'RechargePackageList'],
+  ['/v1/announcements', 'get', 'listAnnouncements', 200, null, 'PublicContentList'],
+  ['/v1/help', 'get', 'listHelp', 200, null, 'PublicContentList'],
+  ['/v1/banners/{slot}', 'get', 'listBanners', 200, null, 'PublicBannerList'],
+  ['/v1/tickets', 'post', 'createTicket', 201, 'TicketCreateRequest', 'Ticket'],
+  ['/v1/tickets', 'get', 'listTickets', 200, null, 'TicketPage'],
+  ['/v1/tickets/{id}', 'get', 'getTicket', 200, null, 'UserTicketView'],
+  [
+    '/v1/tickets/{id}/messages',
+    'post',
+    'addTicketMessage',
+    201,
+    'TicketMessageRequest',
+    'TicketMessageResult',
+  ],
+  ['/v1/tickets/{id}/reopen', 'post', 'reopenTicket', 200, 'RevisionRequest', 'Ticket'],
+  ['/v1/feedback', 'post', 'createFeedback', 201, 'FeedbackRequest', 'Feedback'],
+  ['/v1/feedback', 'get', 'listFeedback', 200, null, 'FeedbackPage'],
+  ['/v1/feedback/{id}', 'get', 'getFeedback', 200, null, 'Feedback'],
+  [
+    '/admin/v1/recharge-packages/drafts',
+    'post',
+    'createPackageDraft',
+    201,
+    'PackageDraftRequest',
+    'PackageVersion',
+  ],
+  [
+    '/admin/v1/recharge-packages/{id}/drafts',
+    'post',
+    'createPackageDraftFrom',
+    201,
+    'PackagePatchRequest',
+    'PackageVersion',
+  ],
+  [
+    '/admin/v1/recharge-packages/{id}/draft',
+    'patch',
+    'updatePackageDraft',
+    200,
+    'VersionedPackagePatchRequest',
+    'PackageVersion',
+  ],
+  [
+    '/admin/v1/recharge-packages/{id}/preview',
+    'get',
+    'previewPackage',
+    200,
+    null,
+    'PackageVersion',
+  ],
+  [
+    '/admin/v1/recharge-packages/{id}/publish',
+    'post',
+    'publishPackage',
+    200,
+    'RevisionRequest',
+    'PackageVersion',
+  ],
+  [
+    '/admin/v1/recharge-packages/{id}/retire',
+    'post',
+    'retirePackage',
+    200,
+    'RevisionRequest',
+    'PackageVersion',
+  ],
+  [
+    '/admin/v1/content-entries',
+    'post',
+    'createContentEntry',
+    201,
+    'ContentEntryRequest',
+    'ContentEntry',
+  ],
+  [
+    '/admin/v1/content-entries/{id}/drafts',
+    'post',
+    'createContentDraft',
+    201,
+    'ContentDraftRequest',
+    'ContentVersion',
+  ],
+  [
+    '/admin/v1/content-entries/{id}/rollback',
+    'post',
+    'rollbackContent',
+    200,
+    'RollbackRequest',
+    'ContentVersion',
+  ],
+  ['/admin/v1/content-versions/{id}/preview', 'get', 'previewContent', 200, null, 'ContentVersion'],
+  [
+    '/admin/v1/content-versions/{id}/draft',
+    'patch',
+    'updateContentDraft',
+    200,
+    'VersionedContentPatchRequest',
+    'ContentVersion',
+  ],
+  [
+    '/admin/v1/content-versions/{id}/publish',
+    'post',
+    'publishContent',
+    200,
+    'RevisionRequest',
+    'ContentVersion',
+  ],
+  [
+    '/admin/v1/content-versions/{id}/retire',
+    'post',
+    'retireContent',
+    200,
+    'RevisionRequest',
+    'ContentVersion',
+  ],
+  [
+    '/admin/v1/banner-placements',
+    'post',
+    'placeBanner',
+    201,
+    'BannerPlacementRequest',
+    'BannerPlacement',
+  ],
+  [
+    '/admin/v1/banners/{slot}/reorder',
+    'post',
+    'reorderBanners',
+    200,
+    'BannerReorderRequest',
+    'RevisionResponse',
+  ],
+  [
+    '/admin/v1/system-settings/drafts',
+    'post',
+    'createSetting',
+    201,
+    'SystemSettingDraftRequest',
+    'SystemSettingVersion',
+  ],
+  [
+    '/admin/v1/system-settings/{id}/preview',
+    'get',
+    'previewSetting',
+    200,
+    null,
+    'SystemSettingVersion',
+  ],
+  [
+    '/admin/v1/system-settings/{id}/draft',
+    'patch',
+    'updateSetting',
+    200,
+    'VersionedSystemSettingPatch',
+    'SystemSettingVersion',
+  ],
+  [
+    '/admin/v1/system-settings/{id}/publish',
+    'post',
+    'publishSetting',
+    200,
+    'RevisionRequest',
+    'SystemSettingVersion',
+  ],
+  [
+    '/admin/v1/system-settings/{id}/retire',
+    'post',
+    'retireSetting',
+    200,
+    'RevisionRequest',
+    'SystemSettingVersion',
+  ],
+  [
+    '/admin/v1/feature-flags/drafts',
+    'post',
+    'createFlag',
+    201,
+    'FeatureFlagDraftRequest',
+    'FeatureFlagVersion',
+  ],
+  ['/admin/v1/feature-flags/{id}/preview', 'get', 'previewFlag', 200, null, 'FeatureFlagVersion'],
+  [
+    '/admin/v1/feature-flags/{id}/draft',
+    'patch',
+    'updateFlag',
+    200,
+    'VersionedFeatureFlagPatch',
+    'FeatureFlagVersion',
+  ],
+  [
+    '/admin/v1/feature-flags/{id}/publish',
+    'post',
+    'publishFlag',
+    200,
+    'RevisionRequest',
+    'FeatureFlagVersion',
+  ],
+  [
+    '/admin/v1/feature-flags/{id}/retire',
+    'post',
+    'retireFlag',
+    200,
+    'RevisionRequest',
+    'FeatureFlagVersion',
+  ],
+  ['/admin/v1/tickets/{id}', 'get', 'getTicketForAdmin', 200, null, 'AdminTicketView'],
+  ['/admin/v1/tickets/{id}/claim', 'post', 'claimTicket', 200, 'RevisionRequest', 'Ticket'],
+  [
+    '/admin/v1/tickets/{id}/reply',
+    'post',
+    'replyTicket',
+    201,
+    'TicketMessageRequest',
+    'TicketMessageResult',
+  ],
+  [
+    '/admin/v1/tickets/{id}/internal-notes',
+    'post',
+    'addTicketInternalNote',
+    201,
+    'InternalNoteRequest',
+    'InternalNoteResult',
+  ],
+  ['/admin/v1/tickets/{id}/resolve', 'post', 'resolveTicket', 200, 'RevisionRequest', 'Ticket'],
+  ['/admin/v1/tickets/{id}/close', 'post', 'closeTicket', 200, 'RevisionRequest', 'Ticket'],
+  ['/admin/v1/feedback', 'get', 'listFeedbackForAdmin', 200, null, 'FeedbackPage'],
 ];
 
 const schemaRef = (name: string) => ({ $ref: `#/components/schemas/${name}` });
@@ -28,107 +270,922 @@ const jsonContent = (name: string) => ({ 'application/json': { schema: schemaRef
 const ERROR_CONTENT = { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } };
 function buildOpenApiPaths(): Record<string, Record<string, unknown>> {
   const paths: Record<string, Record<string, unknown>> = {};
-  for (const [path, method, operationId, successStatus, requestSchema, responseSchema] of DOCUMENTED_ROUTES) {
-    const parameters: unknown[] = [{ name: 'x-trace-id', in: 'header', required: false, schema: { type: 'string', pattern: '^[a-f0-9]{32}$' } }];
-    const protectedRoute = path.startsWith('/admin/') || path.startsWith('/v1/tickets') || path.startsWith('/v1/feedback');
-    if (protectedRoute) parameters.push({ name: 'authorization', in: 'header', required: true, schema: { type: 'string' } });
-    if (path.endsWith('/messages') || path.endsWith('/reply')) parameters.push({ name: 'idempotency-key', in: 'header', required: true, schema: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' } });
-    if (method === 'get' && (path === '/v1/tickets' || path === '/v1/feedback' || path === '/admin/v1/feedback')) parameters.push({ name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 } }, { name: 'cursor', in: 'query', required: false, schema: { type: 'string', minLength: 1 } });
-    for (const match of path.matchAll(/\{([^}]+)\}/g)) parameters.push({ name: match[1], in: 'path', required: true, schema: match[1] === 'id' ? schemaRef('UuidV7') : { type: 'string' } });
-    const errors = Object.fromEntries([400, 401, 403, 404, 409, 422, 500].map((status) => [String(status), { description: 'ApiError', content: ERROR_CONTENT }]));
-    if (path === '/health/ready') errors['503'] = { description: 'Dependency unavailable', content: ERROR_CONTENT };
-    const operation = { operationId, parameters, ...(protectedRoute ? { security: [{ bearerAuth: [] }] } : {}), ...(requestSchema === null ? {} : { requestBody: { required: true, content: jsonContent(requestSchema) } }), responses: { [String(successStatus)]: { description: 'Success', content: jsonContent(responseSchema) }, ...errors } };
+  for (const [
+    path,
+    method,
+    operationId,
+    successStatus,
+    requestSchema,
+    responseSchema,
+  ] of DOCUMENTED_ROUTES) {
+    const parameters: unknown[] = [
+      {
+        name: 'x-trace-id',
+        in: 'header',
+        required: false,
+        schema: { type: 'string', pattern: '^[a-f0-9]{32}$' },
+      },
+    ];
+    const protectedRoute =
+      path.startsWith('/admin/') ||
+      path.startsWith('/v1/tickets') ||
+      path.startsWith('/v1/feedback');
+    if (protectedRoute)
+      parameters.push({
+        name: 'authorization',
+        in: 'header',
+        required: true,
+        schema: { type: 'string' },
+      });
+    if (path.endsWith('/messages') || path.endsWith('/reply'))
+      parameters.push({
+        name: 'idempotency-key',
+        in: 'header',
+        required: true,
+        schema: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 128,
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$',
+        },
+      });
+    if (
+      method === 'get' &&
+      (path === '/v1/tickets' || path === '/v1/feedback' || path === '/admin/v1/feedback')
+    )
+      parameters.push(
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+        },
+        { name: 'cursor', in: 'query', required: false, schema: { type: 'string', minLength: 1 } },
+      );
+    for (const match of path.matchAll(/\{([^}]+)\}/g))
+      parameters.push({
+        name: match[1],
+        in: 'path',
+        required: true,
+        schema: match[1] === 'id' ? schemaRef('UuidV7') : { type: 'string' },
+      });
+    const errors = Object.fromEntries(
+      [400, 401, 403, 404, 409, 422, 500].map((status) => [
+        String(status),
+        { description: 'ApiError', content: ERROR_CONTENT },
+      ]),
+    );
+    if (path === '/health/ready')
+      errors['503'] = { description: 'Dependency unavailable', content: ERROR_CONTENT };
+    const operation = {
+      operationId,
+      parameters,
+      ...(protectedRoute ? { security: [{ bearerAuth: [] }] } : {}),
+      ...(requestSchema === null
+        ? {}
+        : { requestBody: { required: true, content: jsonContent(requestSchema) } }),
+      responses: {
+        [String(successStatus)]: { description: 'Success', content: jsonContent(responseSchema) },
+        ...errors,
+      },
+    };
     (paths[path] ??= {})[method] = operation;
   }
   return paths;
 }
 
-const UUID_V7 = { type: 'string', format: 'uuid', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' };
+const UUID_V7 = {
+  type: 'string',
+  format: 'uuid',
+  pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+};
 const DECIMAL = { type: 'string', pattern: '^(0|[1-9][0-9]*)$' };
 const DATE_NULLABLE = { oneOf: [{ type: 'string', format: 'date-time' }, { type: 'null' }] };
 const REVISION = { type: 'integer', minimum: 0 };
 const STATUS = { type: 'string', enum: ['DRAFT', 'PUBLISHED', 'RETIRED'] };
 const JSON_VALUE = { type: ['object', 'array', 'string', 'number', 'boolean', 'null'] };
-const PUBLIC_VALUE = { oneOf: [
-    { type: 'object', additionalProperties: false, properties: { siteName: { type: 'string', minLength: 1, maxLength: 80 }, theme: { type: 'string', enum: ['light', 'dark'] }, locale: { type: 'string', enum: ['zh-CN', 'en-US'] }, registrationEnabled: { type: 'boolean' } } },
-    { type: 'object', additionalProperties: false, required: ['enabled', 'message'], properties: { enabled: { type: 'boolean' }, message: { type: 'string', minLength: 1, maxLength: 500 } } },
-    { type: 'object', additionalProperties: false, required: ['email'], properties: { email: { type: 'string', format: 'email', maxLength: 254 } } },
-    { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string', format: 'uri', maxLength: 500, pattern: '^https://[^/?#@\\s]+(?:/[^?#\\s]*)?$' } } },
-  ] };
+const PUBLIC_VALUE = {
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        siteName: { type: 'string', minLength: 1, maxLength: 80 },
+        theme: { type: 'string', enum: ['light', 'dark'] },
+        locale: { type: 'string', enum: ['zh-CN', 'en-US'] },
+        registrationEnabled: { type: 'boolean' },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['enabled', 'message'],
+      properties: {
+        enabled: { type: 'boolean' },
+        message: { type: 'string', minLength: 1, maxLength: 500 },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['email'],
+      properties: { email: { type: 'string', format: 'email', maxLength: 254 } },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['url'],
+      properties: {
+        url: {
+          type: 'string',
+          format: 'uri',
+          maxLength: 500,
+          pattern: '^https://[^/?#@\\s]+(?:/[^?#\\s]*)?$',
+        },
+      },
+    },
+  ],
+};
 const KMS_REFERENCE = { type: 'string', pattern: '^kms://[A-Za-z0-9][A-Za-z0-9/_-]{2,255}$' };
-const PACKAGE_FIELDS = { name: { type: 'string', minLength: 1, maxLength: 120 }, amountMinor: DECIMAL, currency: { type: 'string', enum: ['CNY'] }, points: DECIMAL, bonusPoints: DECIMAL, purchaseLimit: { oneOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, validityDays: { oneOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }, sortOrder: { type: 'integer', minimum: 0 }, activeFrom: DATE_NULLABLE, activeUntil: DATE_NULLABLE };
-const CONTENT_FIELDS = { title: { type: 'string', minLength: 1, maxLength: 200 }, summary: { type: 'string', maxLength: 1000 }, bodyHtml: { type: 'string' }, sortOrder: { type: 'integer', minimum: 0 }, activeFrom: DATE_NULLABLE, activeUntil: DATE_NULLABLE, helpCategoryId: { oneOf: [UUID_V7, { type: 'null' }] } };
+const PACKAGE_FIELDS = {
+  name: { type: 'string', minLength: 1, maxLength: 120 },
+  amountMinor: DECIMAL,
+  currency: { type: 'string', enum: ['CNY'] },
+  points: DECIMAL,
+  bonusPoints: DECIMAL,
+  purchaseLimit: { oneOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+  validityDays: { oneOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+  sortOrder: { type: 'integer', minimum: 0 },
+  activeFrom: DATE_NULLABLE,
+  activeUntil: DATE_NULLABLE,
+};
+const CONTENT_FIELDS = {
+  title: { type: 'string', minLength: 1, maxLength: 200 },
+  summary: { type: 'string', maxLength: 1000 },
+  bodyHtml: { type: 'string' },
+  sortOrder: { type: 'integer', minimum: 0 },
+  activeFrom: DATE_NULLABLE,
+  activeUntil: DATE_NULLABLE,
+  helpCategoryId: { oneOf: [UUID_V7, { type: 'null' }] },
+};
 const TICKET_STATUS = { type: 'string', enum: ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'] };
-const ATTACHMENT_INPUT = { type: 'object', additionalProperties: false, required: ['assetId'], properties: { assetId: UUID_V7, supportUploadSessionId: UUID_V7 } };
+const ATTACHMENT_INPUT = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['assetId'],
+  properties: { assetId: UUID_V7, supportUploadSessionId: UUID_V7 },
+};
 const ATTACHMENTS = { type: 'array', maxItems: 10, uniqueItems: true, items: ATTACHMENT_INPUT };
 const COMPONENT_SCHEMAS = {
   UuidV7: UUID_V7,
-  ApiError: { type: 'object', additionalProperties: false, required: ['code', 'message', 'traceId', 'retryable'], properties: { code: { type: 'string' }, message: { type: 'string' }, traceId: { type: 'string', pattern: '^[a-f0-9]{32}$' }, retryable: { type: 'boolean' }, details: { type: 'object', additionalProperties: true } } },
-  Health: { type: 'object', additionalProperties: false, required: ['status'], properties: { status: { type: 'string', enum: ['ok', 'ready'] } } }, OpenApiDocument: { type: 'object', required: ['openapi', 'info', 'paths'], properties: { openapi: { type: 'string' }, info: { type: 'object' }, paths: { type: 'object' } } },
-  RechargePackage: { type: 'object', additionalProperties: false, required: ['id', 'name', 'points', 'bonusPoints', 'active'], properties: { id: UUID_V7, name: { type: 'string', minLength: 1 }, points: DECIMAL, bonusPoints: DECIMAL, active: { type: 'boolean' } } }, RechargePackageList: { type: 'array', items: schemaRef('RechargePackage') },
-  PackageDraftRequest: { type: 'object', additionalProperties: false, required: ['name', 'amountMinor', 'currency', 'points', 'bonusPoints', 'purchaseLimit', 'validityDays', 'sortOrder'], properties: PACKAGE_FIELDS }, PackagePatchRequest: { type: 'object', additionalProperties: false, properties: PACKAGE_FIELDS }, VersionedPackagePatchRequest: { type: 'object', additionalProperties: false, required: ['expectedRevision'], properties: { expectedRevision: REVISION, ...PACKAGE_FIELDS } },
-  PackageVersion: { type: 'object', additionalProperties: false, required: ['id', 'packageId', 'version', 'revision', 'status', 'name', 'amountMinor', 'currency', 'points', 'bonusPoints', 'purchaseLimit', 'validityDays', 'sortOrder', 'createdBy', 'createdAt'], properties: { id: UUID_V7, packageId: UUID_V7, version: { type: 'integer', minimum: 1 }, revision: REVISION, status: STATUS, basePublishedVersionId: { oneOf: [UUID_V7, { type: 'null' }] }, ...PACKAGE_FIELDS, createdBy: UUID_V7, createdAt: { type: 'string', format: 'date-time' }, publishedAt: DATE_NULLABLE, retiredAt: DATE_NULLABLE } },
-  RevisionRequest: { type: 'object', additionalProperties: false, required: ['expectedRevision'], properties: { expectedRevision: REVISION } }, RevisionResponse: { type: 'object', additionalProperties: false, required: ['revision'], properties: { revision: REVISION } },
-  ContentEntryRequest: { type: 'object', additionalProperties: false, required: ['kind', 'key'], properties: { kind: { type: 'string', enum: ['BANNER', 'ANNOUNCEMENT', 'HELP', 'CASE_STUDY', 'LEGAL'] }, key: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{1,127}$' } } }, ContentEntry: { type: 'object', required: ['id', 'kind', 'key', 'createdBy', 'createdAt'], properties: { id: UUID_V7, kind: { type: 'string' }, key: { type: 'string' }, createdBy: UUID_V7, createdAt: { type: 'string', format: 'date-time' } } },
-  ContentDraftRequest: { type: 'object', additionalProperties: false, required: ['title', 'summary', 'bodyHtml', 'sortOrder'], properties: CONTENT_FIELDS }, VersionedContentPatchRequest: { type: 'object', additionalProperties: false, required: ['expectedRevision'], properties: { expectedRevision: REVISION, ...CONTENT_FIELDS } }, RollbackRequest: { type: 'object', additionalProperties: false, required: ['targetVersionId'], properties: { targetVersionId: UUID_V7 } },
-  ContentVersion: { type: 'object', required: ['id', 'entryId', 'version', 'revision', 'status', 'title', 'summary', 'bodyHtml', 'sortOrder', 'createdBy', 'createdAt'], properties: { id: UUID_V7, entryId: UUID_V7, version: { type: 'integer', minimum: 1 }, revision: REVISION, status: STATUS, basePublishedVersionId: { oneOf: [UUID_V7, { type: 'null' }] }, ...CONTENT_FIELDS, createdBy: UUID_V7, createdAt: { type: 'string', format: 'date-time' }, publishedAt: DATE_NULLABLE, retiredAt: DATE_NULLABLE } }, PublicContentList: { type: 'array', items: schemaRef('ContentVersion') },
-  BannerPlacementRequest: { type: 'object', additionalProperties: false, required: ['contentVersionId', 'slot', 'sortOrder', 'expectedRevision'], properties: { contentVersionId: UUID_V7, slot: { type: 'string', pattern: '^[A-Z0-9][A-Z0-9_-]{1,63}$' }, sortOrder: { type: 'integer', minimum: 0 }, expectedRevision: REVISION, activeFrom: DATE_NULLABLE, activeUntil: DATE_NULLABLE } }, BannerPlacement: { type: 'object', required: ['id', 'contentVersionId', 'slot', 'sortOrder', 'createdBy', 'createdAt'], properties: { id: UUID_V7, contentVersionId: UUID_V7, slot: { type: 'string' }, sortOrder: { type: 'integer' }, activeFrom: DATE_NULLABLE, activeUntil: DATE_NULLABLE, createdBy: UUID_V7, createdAt: { type: 'string', format: 'date-time' } } }, BannerReorderRequest: { type: 'object', additionalProperties: false, required: ['expectedRevision', 'orderedPlacementIds'], properties: { expectedRevision: REVISION, orderedPlacementIds: { type: 'array', uniqueItems: true, items: UUID_V7 } } }, PublicBannerList: { type: 'array', items: { type: 'object', required: ['placement', 'content'], properties: { placement: schemaRef('BannerPlacement'), content: schemaRef('ContentVersion') } } },
-  SystemSettingDraftRequest: { oneOf: [{ type: 'object', additionalProperties: false, required: ['key', 'publicValue'], properties: { key: { type: 'string', minLength: 1, maxLength: 128 }, publicValue: PUBLIC_VALUE } }, { type: 'object', additionalProperties: false, required: ['key', 'kmsSecretReferenceId'], properties: { key: { type: 'string', minLength: 1, maxLength: 128 }, kmsSecretReferenceId: KMS_REFERENCE } }] },
-  VersionedSystemSettingPatch: { oneOf: [{ type: 'object', additionalProperties: false, required: ['expectedRevision', 'publicValue'], properties: { expectedRevision: REVISION, publicValue: PUBLIC_VALUE } }, { type: 'object', additionalProperties: false, required: ['expectedRevision', 'kmsSecretReferenceId'], properties: { expectedRevision: REVISION, kmsSecretReferenceId: KMS_REFERENCE } }] },
-  SystemSettingVersion: { type: 'object', required: ['id', 'settingKey', 'version', 'revision', 'status', 'createdBy', 'createdAt'], properties: { id: UUID_V7, settingKey: { type: 'string' }, version: { type: 'integer', minimum: 1 }, revision: REVISION, status: STATUS, basePublishedVersionId: { oneOf: [UUID_V7, { type: 'null' }] }, publicValue: JSON_VALUE, kmsSecretReferenceId: { oneOf: [KMS_REFERENCE, { type: 'null' }] }, createdBy: UUID_V7, createdAt: { type: 'string', format: 'date-time' }, publishedAt: DATE_NULLABLE, retiredAt: DATE_NULLABLE } },
-  FeatureFlagDraftRequest: { type: 'object', additionalProperties: false, required: ['flagKey', 'enabled', 'rules'], properties: { flagKey: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{1,127}$' }, enabled: { type: 'boolean' }, rules: JSON_VALUE } },
-  VersionedFeatureFlagPatch: { type: 'object', additionalProperties: false, required: ['expectedRevision'], anyOf: [{ required: ['enabled'] }, { required: ['rules'] }], properties: { expectedRevision: REVISION, enabled: { type: 'boolean' }, rules: JSON_VALUE } },
-  FeatureFlagVersion: { type: 'object', required: ['id', 'flagKey', 'version', 'revision', 'status', 'enabled', 'rules', 'createdBy', 'createdAt'], properties: { id: UUID_V7, flagKey: { type: 'string' }, version: { type: 'integer' }, revision: REVISION, status: STATUS, basePublishedVersionId: { oneOf: [UUID_V7, { type: 'null' }] }, enabled: { type: 'boolean' }, rules: JSON_VALUE, createdBy: UUID_V7, createdAt: { type: 'string', format: 'date-time' }, publishedAt: DATE_NULLABLE, retiredAt: DATE_NULLABLE } },
-  Ticket: { type: 'object', additionalProperties: false, required: ['id', 'userId', 'subject', 'status', 'assigneeId', 'resolutionCycle', 'responseRequiredSince', 'revision', 'resolvedAt', 'closedAt', 'createdAt', 'updatedAt'], properties: { id: UUID_V7, userId: UUID_V7, subject: { type: 'string', minLength: 1, maxLength: 200 }, status: TICKET_STATUS, assigneeId: { oneOf: [UUID_V7, { type: 'null' }] }, resolutionCycle: REVISION, responseRequiredSince: { type: 'string', format: 'date-time' }, revision: REVISION, resolvedAt: DATE_NULLABLE, closedAt: DATE_NULLABLE, createdAt: { type: 'string', format: 'date-time' }, updatedAt: { type: 'string', format: 'date-time' } } },
-  TicketAttachment: { type: 'object', additionalProperties: false, required: ['id', 'assetId'], properties: { id: UUID_V7, assetId: UUID_V7 } },
-  TicketMessage: { type: 'object', additionalProperties: false, required: ['id', 'ticketId', 'authorId', 'authorType', 'resolutionCycle', 'body', 'createdAt', 'attachments'], properties: { id: UUID_V7, ticketId: UUID_V7, authorId: UUID_V7, authorType: { type: 'string', enum: ['USER', 'AGENT'] }, resolutionCycle: REVISION, body: { type: 'string', minLength: 1, maxLength: 10000 }, createdAt: { type: 'string', format: 'date-time' }, attachments: { type: 'array', items: schemaRef('TicketAttachment') } } },
-  TicketCreateRequest: { type: 'object', additionalProperties: false, required: ['subject', 'body'], properties: { subject: { type: 'string', minLength: 1, maxLength: 200 }, body: { type: 'string', minLength: 1, maxLength: 10000 }, attachments: ATTACHMENTS } },
-  TicketMessageRequest: { type: 'object', additionalProperties: false, required: ['body', 'expectedRevision'], properties: { body: { type: 'string', minLength: 1, maxLength: 10000 }, expectedRevision: REVISION, attachments: ATTACHMENTS } },
-  TicketMessageResult: { type: 'object', additionalProperties: false, required: ['ticket', 'message'], properties: { ticket: schemaRef('Ticket'), message: schemaRef('TicketMessage') } },
-  UserTicketView: { type: 'object', additionalProperties: false, required: ['ticket', 'messages'], properties: { ticket: schemaRef('Ticket'), messages: { type: 'array', items: schemaRef('TicketMessage') } } },
-  TicketPage: { type: 'object', additionalProperties: false, required: ['items'], properties: { items: { type: 'array', items: schemaRef('Ticket') }, nextCursor: { type: 'string' } } },
-  InternalNoteRequest: { type: 'object', additionalProperties: false, required: ['body', 'expectedRevision'], properties: { body: { type: 'string', minLength: 1, maxLength: 10000 }, expectedRevision: REVISION } },
-  InternalNote: { type: 'object', additionalProperties: false, required: ['id', 'ticketId', 'authorId', 'body', 'createdAt'], properties: { id: UUID_V7, ticketId: UUID_V7, authorId: UUID_V7, body: { type: 'string', minLength: 1, maxLength: 10000 }, createdAt: { type: 'string', format: 'date-time' } } },
-  InternalNoteResult: { type: 'object', additionalProperties: false, required: ['ticket', 'note'], properties: { ticket: schemaRef('Ticket'), note: schemaRef('InternalNote') } },
-  AdminTicketView: { type: 'object', additionalProperties: false, required: ['ticket', 'messages', 'internalNotes'], properties: { ticket: schemaRef('Ticket'), messages: { type: 'array', items: schemaRef('TicketMessage') }, internalNotes: { type: 'array', items: schemaRef('InternalNote') } } },
-  FeedbackRequest: { type: 'object', additionalProperties: false, required: ['kind', 'content'], properties: { kind: { type: 'string', enum: ['MODEL_RESULT', 'FAILED_TASK', 'PRODUCT_SUGGESTION'] }, taskId: UUID_V7, content: { type: 'string', minLength: 1, maxLength: 5000 }, rating: { type: 'integer', minimum: 1, maximum: 5 }, attachments: ATTACHMENTS } },
-  Feedback: { type: 'object', additionalProperties: false, required: ['id', 'userId', 'kind', 'taskId', 'content', 'rating', 'createdAt', 'attachments'], properties: { id: UUID_V7, userId: UUID_V7, kind: { type: 'string', enum: ['MODEL_RESULT', 'FAILED_TASK', 'PRODUCT_SUGGESTION'] }, taskId: { oneOf: [UUID_V7, { type: 'null' }] }, content: { type: 'string', minLength: 1, maxLength: 5000 }, rating: { oneOf: [{ type: 'integer', minimum: 1, maximum: 5 }, { type: 'null' }] }, createdAt: { type: 'string', format: 'date-time' }, attachments: { type: 'array', items: schemaRef('TicketAttachment') } } },
-  FeedbackPage: { type: 'object', additionalProperties: false, required: ['items'], properties: { items: { type: 'array', items: schemaRef('Feedback') }, nextCursor: { type: 'string' } } },
+  ApiError: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['code', 'message', 'traceId', 'retryable'],
+    properties: {
+      code: { type: 'string' },
+      message: { type: 'string' },
+      traceId: { type: 'string', pattern: '^[a-f0-9]{32}$' },
+      retryable: { type: 'boolean' },
+      details: { type: 'object', additionalProperties: true },
+    },
+  },
+  Health: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['status'],
+    properties: { status: { type: 'string', enum: ['ok', 'ready'] } },
+  },
+  OpenApiDocument: {
+    type: 'object',
+    required: ['openapi', 'info', 'paths'],
+    properties: {
+      openapi: { type: 'string' },
+      info: { type: 'object' },
+      paths: { type: 'object' },
+    },
+  },
+  RechargePackage: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'name', 'points', 'bonusPoints', 'active'],
+    properties: {
+      id: UUID_V7,
+      name: { type: 'string', minLength: 1 },
+      points: DECIMAL,
+      bonusPoints: DECIMAL,
+      active: { type: 'boolean' },
+    },
+  },
+  RechargePackageList: { type: 'array', items: schemaRef('RechargePackage') },
+  PackageDraftRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      'name',
+      'amountMinor',
+      'currency',
+      'points',
+      'bonusPoints',
+      'purchaseLimit',
+      'validityDays',
+      'sortOrder',
+    ],
+    properties: PACKAGE_FIELDS,
+  },
+  PackagePatchRequest: { type: 'object', additionalProperties: false, properties: PACKAGE_FIELDS },
+  VersionedPackagePatchRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['expectedRevision'],
+    properties: { expectedRevision: REVISION, ...PACKAGE_FIELDS },
+  },
+  PackageVersion: {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      'id',
+      'packageId',
+      'version',
+      'revision',
+      'status',
+      'name',
+      'amountMinor',
+      'currency',
+      'points',
+      'bonusPoints',
+      'purchaseLimit',
+      'validityDays',
+      'sortOrder',
+      'createdBy',
+      'createdAt',
+    ],
+    properties: {
+      id: UUID_V7,
+      packageId: UUID_V7,
+      version: { type: 'integer', minimum: 1 },
+      revision: REVISION,
+      status: STATUS,
+      basePublishedVersionId: { oneOf: [UUID_V7, { type: 'null' }] },
+      ...PACKAGE_FIELDS,
+      createdBy: UUID_V7,
+      createdAt: { type: 'string', format: 'date-time' },
+      publishedAt: DATE_NULLABLE,
+      retiredAt: DATE_NULLABLE,
+    },
+  },
+  RevisionRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['expectedRevision'],
+    properties: { expectedRevision: REVISION },
+  },
+  RevisionResponse: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['revision'],
+    properties: { revision: REVISION },
+  },
+  ContentEntryRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['kind', 'key'],
+    properties: {
+      kind: { type: 'string', enum: ['BANNER', 'ANNOUNCEMENT', 'HELP', 'CASE_STUDY', 'LEGAL'] },
+      key: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{1,127}$' },
+    },
+  },
+  ContentEntry: {
+    type: 'object',
+    required: ['id', 'kind', 'key', 'createdBy', 'createdAt'],
+    properties: {
+      id: UUID_V7,
+      kind: { type: 'string' },
+      key: { type: 'string' },
+      createdBy: UUID_V7,
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  ContentDraftRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['title', 'summary', 'bodyHtml', 'sortOrder'],
+    properties: CONTENT_FIELDS,
+  },
+  VersionedContentPatchRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['expectedRevision'],
+    properties: { expectedRevision: REVISION, ...CONTENT_FIELDS },
+  },
+  RollbackRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['targetVersionId'],
+    properties: { targetVersionId: UUID_V7 },
+  },
+  ContentVersion: {
+    type: 'object',
+    required: [
+      'id',
+      'entryId',
+      'version',
+      'revision',
+      'status',
+      'title',
+      'summary',
+      'bodyHtml',
+      'sortOrder',
+      'createdBy',
+      'createdAt',
+    ],
+    properties: {
+      id: UUID_V7,
+      entryId: UUID_V7,
+      version: { type: 'integer', minimum: 1 },
+      revision: REVISION,
+      status: STATUS,
+      basePublishedVersionId: { oneOf: [UUID_V7, { type: 'null' }] },
+      ...CONTENT_FIELDS,
+      createdBy: UUID_V7,
+      createdAt: { type: 'string', format: 'date-time' },
+      publishedAt: DATE_NULLABLE,
+      retiredAt: DATE_NULLABLE,
+    },
+  },
+  PublicContentList: { type: 'array', items: schemaRef('ContentVersion') },
+  BannerPlacementRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['contentVersionId', 'slot', 'sortOrder', 'expectedRevision'],
+    properties: {
+      contentVersionId: UUID_V7,
+      slot: { type: 'string', pattern: '^[A-Z0-9][A-Z0-9_-]{1,63}$' },
+      sortOrder: { type: 'integer', minimum: 0 },
+      expectedRevision: REVISION,
+      activeFrom: DATE_NULLABLE,
+      activeUntil: DATE_NULLABLE,
+    },
+  },
+  BannerPlacement: {
+    type: 'object',
+    required: ['id', 'contentVersionId', 'slot', 'sortOrder', 'createdBy', 'createdAt'],
+    properties: {
+      id: UUID_V7,
+      contentVersionId: UUID_V7,
+      slot: { type: 'string' },
+      sortOrder: { type: 'integer' },
+      activeFrom: DATE_NULLABLE,
+      activeUntil: DATE_NULLABLE,
+      createdBy: UUID_V7,
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  BannerReorderRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['expectedRevision', 'orderedPlacementIds'],
+    properties: {
+      expectedRevision: REVISION,
+      orderedPlacementIds: { type: 'array', uniqueItems: true, items: UUID_V7 },
+    },
+  },
+  PublicBannerList: {
+    type: 'array',
+    items: {
+      type: 'object',
+      required: ['placement', 'content'],
+      properties: { placement: schemaRef('BannerPlacement'), content: schemaRef('ContentVersion') },
+    },
+  },
+  SystemSettingDraftRequest: {
+    oneOf: [
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['key', 'publicValue'],
+        properties: {
+          key: { type: 'string', minLength: 1, maxLength: 128 },
+          publicValue: PUBLIC_VALUE,
+        },
+      },
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['key', 'kmsSecretReferenceId'],
+        properties: {
+          key: { type: 'string', minLength: 1, maxLength: 128 },
+          kmsSecretReferenceId: KMS_REFERENCE,
+        },
+      },
+    ],
+  },
+  VersionedSystemSettingPatch: {
+    oneOf: [
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['expectedRevision', 'publicValue'],
+        properties: { expectedRevision: REVISION, publicValue: PUBLIC_VALUE },
+      },
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['expectedRevision', 'kmsSecretReferenceId'],
+        properties: { expectedRevision: REVISION, kmsSecretReferenceId: KMS_REFERENCE },
+      },
+    ],
+  },
+  SystemSettingVersion: {
+    type: 'object',
+    required: ['id', 'settingKey', 'version', 'revision', 'status', 'createdBy', 'createdAt'],
+    properties: {
+      id: UUID_V7,
+      settingKey: { type: 'string' },
+      version: { type: 'integer', minimum: 1 },
+      revision: REVISION,
+      status: STATUS,
+      basePublishedVersionId: { oneOf: [UUID_V7, { type: 'null' }] },
+      publicValue: JSON_VALUE,
+      kmsSecretReferenceId: { oneOf: [KMS_REFERENCE, { type: 'null' }] },
+      createdBy: UUID_V7,
+      createdAt: { type: 'string', format: 'date-time' },
+      publishedAt: DATE_NULLABLE,
+      retiredAt: DATE_NULLABLE,
+    },
+  },
+  FeatureFlagDraftRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['flagKey', 'enabled', 'rules'],
+    properties: {
+      flagKey: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{1,127}$' },
+      enabled: { type: 'boolean' },
+      rules: JSON_VALUE,
+    },
+  },
+  VersionedFeatureFlagPatch: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['expectedRevision'],
+    anyOf: [{ required: ['enabled'] }, { required: ['rules'] }],
+    properties: { expectedRevision: REVISION, enabled: { type: 'boolean' }, rules: JSON_VALUE },
+  },
+  FeatureFlagVersion: {
+    type: 'object',
+    required: [
+      'id',
+      'flagKey',
+      'version',
+      'revision',
+      'status',
+      'enabled',
+      'rules',
+      'createdBy',
+      'createdAt',
+    ],
+    properties: {
+      id: UUID_V7,
+      flagKey: { type: 'string' },
+      version: { type: 'integer' },
+      revision: REVISION,
+      status: STATUS,
+      basePublishedVersionId: { oneOf: [UUID_V7, { type: 'null' }] },
+      enabled: { type: 'boolean' },
+      rules: JSON_VALUE,
+      createdBy: UUID_V7,
+      createdAt: { type: 'string', format: 'date-time' },
+      publishedAt: DATE_NULLABLE,
+      retiredAt: DATE_NULLABLE,
+    },
+  },
+  Ticket: {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      'id',
+      'userId',
+      'subject',
+      'status',
+      'assigneeId',
+      'resolutionCycle',
+      'responseRequiredSince',
+      'revision',
+      'resolvedAt',
+      'closedAt',
+      'createdAt',
+      'updatedAt',
+    ],
+    properties: {
+      id: UUID_V7,
+      userId: UUID_V7,
+      subject: { type: 'string', minLength: 1, maxLength: 200 },
+      status: TICKET_STATUS,
+      assigneeId: { oneOf: [UUID_V7, { type: 'null' }] },
+      resolutionCycle: REVISION,
+      responseRequiredSince: { type: 'string', format: 'date-time' },
+      revision: REVISION,
+      resolvedAt: DATE_NULLABLE,
+      closedAt: DATE_NULLABLE,
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  TicketAttachment: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'assetId'],
+    properties: { id: UUID_V7, assetId: UUID_V7 },
+  },
+  TicketMessage: {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      'id',
+      'ticketId',
+      'authorId',
+      'authorType',
+      'resolutionCycle',
+      'body',
+      'createdAt',
+      'attachments',
+    ],
+    properties: {
+      id: UUID_V7,
+      ticketId: UUID_V7,
+      authorId: UUID_V7,
+      authorType: { type: 'string', enum: ['USER', 'AGENT'] },
+      resolutionCycle: REVISION,
+      body: { type: 'string', minLength: 1, maxLength: 10000 },
+      createdAt: { type: 'string', format: 'date-time' },
+      attachments: { type: 'array', items: schemaRef('TicketAttachment') },
+    },
+  },
+  TicketCreateRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['subject', 'body'],
+    properties: {
+      subject: { type: 'string', minLength: 1, maxLength: 200 },
+      body: { type: 'string', minLength: 1, maxLength: 10000 },
+      attachments: ATTACHMENTS,
+    },
+  },
+  TicketMessageRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['body', 'expectedRevision'],
+    properties: {
+      body: { type: 'string', minLength: 1, maxLength: 10000 },
+      expectedRevision: REVISION,
+      attachments: ATTACHMENTS,
+    },
+  },
+  TicketMessageResult: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['ticket', 'message'],
+    properties: { ticket: schemaRef('Ticket'), message: schemaRef('TicketMessage') },
+  },
+  UserTicketView: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['ticket', 'messages'],
+    properties: {
+      ticket: schemaRef('Ticket'),
+      messages: { type: 'array', items: schemaRef('TicketMessage') },
+    },
+  },
+  TicketPage: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['items'],
+    properties: {
+      items: { type: 'array', items: schemaRef('Ticket') },
+      nextCursor: { type: 'string' },
+    },
+  },
+  InternalNoteRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['body', 'expectedRevision'],
+    properties: {
+      body: { type: 'string', minLength: 1, maxLength: 10000 },
+      expectedRevision: REVISION,
+    },
+  },
+  InternalNote: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'ticketId', 'authorId', 'body', 'createdAt'],
+    properties: {
+      id: UUID_V7,
+      ticketId: UUID_V7,
+      authorId: UUID_V7,
+      body: { type: 'string', minLength: 1, maxLength: 10000 },
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  InternalNoteResult: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['ticket', 'note'],
+    properties: { ticket: schemaRef('Ticket'), note: schemaRef('InternalNote') },
+  },
+  AdminTicketView: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['ticket', 'messages', 'internalNotes'],
+    properties: {
+      ticket: schemaRef('Ticket'),
+      messages: { type: 'array', items: schemaRef('TicketMessage') },
+      internalNotes: { type: 'array', items: schemaRef('InternalNote') },
+    },
+  },
+  FeedbackRequest: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['kind', 'content'],
+    properties: {
+      kind: { type: 'string', enum: ['MODEL_RESULT', 'FAILED_TASK', 'PRODUCT_SUGGESTION'] },
+      taskId: UUID_V7,
+      content: { type: 'string', minLength: 1, maxLength: 5000 },
+      rating: { type: 'integer', minimum: 1, maximum: 5 },
+      attachments: ATTACHMENTS,
+    },
+  },
+  Feedback: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'userId', 'kind', 'taskId', 'content', 'rating', 'createdAt', 'attachments'],
+    properties: {
+      id: UUID_V7,
+      userId: UUID_V7,
+      kind: { type: 'string', enum: ['MODEL_RESULT', 'FAILED_TASK', 'PRODUCT_SUGGESTION'] },
+      taskId: { oneOf: [UUID_V7, { type: 'null' }] },
+      content: { type: 'string', minLength: 1, maxLength: 5000 },
+      rating: { oneOf: [{ type: 'integer', minimum: 1, maximum: 5 }, { type: 'null' }] },
+      createdAt: { type: 'string', format: 'date-time' },
+      attachments: { type: 'array', items: schemaRef('TicketAttachment') },
+    },
+  },
+  FeedbackPage: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['items'],
+    properties: {
+      items: { type: 'array', items: schemaRef('Feedback') },
+      nextCursor: { type: 'string' },
+    },
+  },
 };
-export const OPERATIONS_OPENAPI = { openapi: '3.1.0', info: { title: 'Operations Supporting Services API', version: '1.0.0' }, paths: buildOpenApiPaths(), components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } }, schemas: COMPONENT_SCHEMAS } } as const;
+export const OPERATIONS_OPENAPI = {
+  openapi: '3.1.0',
+  info: { title: 'Operations Supporting Services API', version: '1.0.0' },
+  paths: buildOpenApiPaths(),
+  components: {
+    securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } },
+    schemas: COMPONENT_SCHEMAS,
+  },
+} as const;
 
 @Controller()
 export class OperationsController {
-  constructor(@Inject(OPERATIONS_HTTP) private readonly http: OperationsHttpModule, @Inject(OPERATIONS_READINESS) private readonly readiness: () => Promise<boolean>) {}
-  @Get('/health/live') liveness(): { status: string } { return { status: 'ok' }; }
-  @Get('/health/ready') async ready(@Req() request: FastifyRequest, @Res() reply: FastifyReply): Promise<void> { const trace = request.headers['x-trace-id']; const traceId = typeof trace === 'string' && /^[a-f0-9]{32}$/.test(trace) ? trace : randomBytes(16).toString('hex'); try { if (await this.readiness()) { void reply.send({ status: 'ready' }); return; } } catch { /* dependency exceptions are readiness failures */ } void reply.status(503).header('x-trace-id', traceId).send({ code: 'DEPENDENCY_UNAVAILABLE', message: 'DEPENDENCY_UNAVAILABLE', traceId, retryable: true }); }
-  @Get('/openapi.json') openapi(): typeof OPERATIONS_OPENAPI { return OPERATIONS_OPENAPI; }
-  @All('{*path}') async dispatch(@Req() request: FastifyRequest, @Res() reply: FastifyReply): Promise<void> { const headers = request.headers as OperationsHttpRequest['headers']; const query = request.query as Record<string, unknown>; const response = await this.http.handle({ method: request.method, path: request.url.split('?')[0] ?? request.url, ...(headers === undefined ? {} : { headers }), query, ...(request.body === undefined ? {} : { body: request.body }) }); for (const [name, value] of Object.entries(response.headers ?? {})) void reply.header(name, value); void reply.status(response.status).send(response.body); }
+  constructor(
+    @Inject(OPERATIONS_HTTP) private readonly http: OperationsHttpModule,
+    @Inject(OPERATIONS_READINESS) private readonly readiness: () => Promise<boolean>,
+    @Inject(OPERATIONS_METRICS) private readonly metrics: () => Promise<string>,
+  ) {}
+  @Get('/health/live') liveness(): { status: string } {
+    return { status: 'ok' };
+  }
+  @Get('/health/ready') async ready(
+    @Req() request: FastifyRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const trace = request.headers['x-trace-id'];
+    const traceId =
+      typeof trace === 'string' && /^[a-f0-9]{32}$/.test(trace)
+        ? trace
+        : randomBytes(16).toString('hex');
+    try {
+      if (await this.readiness()) {
+        void reply.send({ status: 'ready' });
+        return;
+      }
+    } catch {
+      /* dependency exceptions are readiness failures */
+    }
+    void reply.status(503).header('x-trace-id', traceId).send({
+      code: 'DEPENDENCY_UNAVAILABLE',
+      message: 'DEPENDENCY_UNAVAILABLE',
+      traceId,
+      retryable: true,
+    });
+  }
+  @Get('/openapi.json') openapi(): typeof OPERATIONS_OPENAPI {
+    return OPERATIONS_OPENAPI;
+  }
+  @Get('/metrics') async prometheus(@Res() reply: FastifyReply): Promise<void> {
+    void reply
+      .header('content-type', 'text/plain; version=0.0.4; charset=utf-8')
+      .send(await this.metrics());
+  }
+  @All('{*path}') async dispatch(
+    @Req() request: FastifyRequest,
+    @Res() reply: FastifyReply,
+  ): Promise<void> {
+    const headers = request.headers as OperationsHttpRequest['headers'];
+    const query = request.query as Record<string, unknown>;
+    const response = await this.http.handle({
+      method: request.method,
+      path: request.url.split('?')[0] ?? request.url,
+      ...(headers === undefined ? {} : { headers }),
+      query,
+      ...(request.body === undefined ? {} : { body: request.body }),
+    });
+    for (const [name, value] of Object.entries(response.headers ?? {}))
+      void reply.header(name, value);
+    void reply.status(response.status).send(response.body);
+  }
 }
 
 @Module({})
 // eslint-disable-next-line @typescript-eslint/no-extraneous-class
-export class OperationsRuntimeModule { static register(input: { http: OperationsHttpModule; readiness: () => Promise<boolean> }): DynamicModule { return { module: OperationsRuntimeModule, controllers: [OperationsController], providers: [{ provide: OPERATIONS_HTTP, useValue: input.http }, { provide: OPERATIONS_READINESS, useValue: input.readiness }] }; } }
+export class OperationsRuntimeModule {
+  static register(input: {
+    http: OperationsHttpModule;
+    readiness: () => Promise<boolean>;
+    metrics?: () => Promise<string>;
+  }): DynamicModule {
+    return {
+      module: OperationsRuntimeModule,
+      controllers: [OperationsController],
+      providers: [
+        { provide: OPERATIONS_HTTP, useValue: input.http },
+        { provide: OPERATIONS_READINESS, useValue: input.readiness },
+        { provide: OPERATIONS_METRICS, useValue: input.metrics ?? (() => Promise.resolve('')) },
+      ],
+    };
+  }
+}
 
 /** Nest-compatible adapter over the already-locked Fastify dependency. Nest owns discovery and dispatch. */
 class LockedFastifyAdapter extends AbstractHttpAdapter<any, FastifyRequest, FastifyReply> {
-  constructor(private readonly fastify = Fastify({ logger: false })) { super(fastify); }
-  initHttpServer(_options: NestApplicationOptions): void { this.httpServer = this.fastify.server; }
-  override listen(port: string | number, hostOrCallback?: string | (() => void), callback?: () => void): Promise<string> { const host = typeof hostOrCallback === 'string' ? hostOrCallback : '0.0.0.0'; const done = typeof hostOrCallback === 'function' ? hostOrCallback : callback; return this.fastify.listen({ port: Number(port), host }).then((address) => { done?.(); return address; }); }
-  close(): Promise<void> { return this.fastify.close(); }
-  override all(path: any, handler?: any): any { return handler === undefined ? this.fastify.all('/*', path) : this.fastify.all(routePath(path), handler); }
-  override get(path: any, handler?: any): any { return handler === undefined ? this.fastify.get('/*', path) : this.fastify.get(routePath(path), handler); }
-  useStaticAssets(): never { throw new Error('STATIC_ASSETS_NOT_SUPPORTED'); } setViewEngine(): never { throw new Error('VIEWS_NOT_SUPPORTED'); }
-  getRequestHostname(request: FastifyRequest): string { return request.hostname; } getRequestMethod(request: FastifyRequest): string { return request.method; } getRequestUrl(request: FastifyRequest): string { return request.url; }
-  status(response: FastifyReply, statusCode: number): FastifyReply { return response.status(statusCode); } reply(response: FastifyReply, body: any, statusCode?: number): FastifyReply { if (statusCode !== undefined) void response.status(statusCode); return response.send(body); }
-  end(response: FastifyReply, message?: string): FastifyReply { return response.send(message); } render(): never { throw new Error('VIEWS_NOT_SUPPORTED'); } redirect(response: FastifyReply, statusCode: number, url: string): FastifyReply { return response.redirect(url, statusCode); }
-  setErrorHandler(_handler: Function): void { this.fastify.setErrorHandler((error, request, reply) => { const status = httpErrorStatus(error); return sendApiError(request, reply, status, status === 500 ? 'INTERNAL_ERROR' : 'INVALID_REQUEST', status === 500); }); } setNotFoundHandler(_handler: Function): void { this.fastify.setNotFoundHandler((request, reply) => sendApiError(request, reply, 404, 'ROUTE_NOT_FOUND', false)); }
-  isHeadersSent(response: FastifyReply): boolean { return response.sent; } getHeader(response: FastifyReply, name: string): unknown { return response.getHeader(name); } setHeader(response: FastifyReply, name: string, value: string): FastifyReply { return response.header(name, value); } appendHeader(response: FastifyReply, name: string, value: string): FastifyReply { response.raw.appendHeader(name, value); return response; }
-  registerParserMiddleware(): void {} enableCors(): void {} createMiddlewareFactory(_method: RequestMethod): (path: string, callback: Function) => void { return (path, callback) => { this.fastify.all(routePath(path), (request, reply) => callback(request, reply, () => undefined)); }; } getType(): string { return 'fastify'; }
-  applyVersionFilter(handler: Function, _version: any, _options: VersioningOptions): (request: FastifyRequest, response: FastifyReply, next: () => void) => Function { return handler as (request: FastifyRequest, response: FastifyReply, next: () => void) => Function; }
+  constructor(private readonly fastify = Fastify({ logger: false })) {
+    super(fastify);
+  }
+  initHttpServer(_options: NestApplicationOptions): void {
+    this.httpServer = this.fastify.server;
+  }
+  override listen(
+    port: string | number,
+    hostOrCallback?: string | (() => void),
+    callback?: () => void,
+  ): Promise<string> {
+    const host = typeof hostOrCallback === 'string' ? hostOrCallback : '0.0.0.0';
+    const done = typeof hostOrCallback === 'function' ? hostOrCallback : callback;
+    return this.fastify.listen({ port: Number(port), host }).then((address) => {
+      done?.();
+      return address;
+    });
+  }
+  close(): Promise<void> {
+    return this.fastify.close();
+  }
+  override all(path: any, handler?: any): any {
+    return handler === undefined
+      ? this.fastify.all('/*', path)
+      : this.fastify.all(routePath(path), handler);
+  }
+  override get(path: any, handler?: any): any {
+    return handler === undefined
+      ? this.fastify.get('/*', path)
+      : this.fastify.get(routePath(path), handler);
+  }
+  useStaticAssets(): never {
+    throw new Error('STATIC_ASSETS_NOT_SUPPORTED');
+  }
+  setViewEngine(): never {
+    throw new Error('VIEWS_NOT_SUPPORTED');
+  }
+  getRequestHostname(request: FastifyRequest): string {
+    return request.hostname;
+  }
+  getRequestMethod(request: FastifyRequest): string {
+    return request.method;
+  }
+  getRequestUrl(request: FastifyRequest): string {
+    return request.url;
+  }
+  status(response: FastifyReply, statusCode: number): FastifyReply {
+    return response.status(statusCode);
+  }
+  reply(response: FastifyReply, body: any, statusCode?: number): FastifyReply {
+    if (statusCode !== undefined) void response.status(statusCode);
+    return response.send(body);
+  }
+  end(response: FastifyReply, message?: string): FastifyReply {
+    return response.send(message);
+  }
+  render(): never {
+    throw new Error('VIEWS_NOT_SUPPORTED');
+  }
+  redirect(response: FastifyReply, statusCode: number, url: string): FastifyReply {
+    return response.redirect(url, statusCode);
+  }
+  setErrorHandler(_handler: Function): void {
+    this.fastify.setErrorHandler((error, request, reply) => {
+      const status = httpErrorStatus(error);
+      return sendApiError(
+        request,
+        reply,
+        status,
+        status === 500 ? 'INTERNAL_ERROR' : 'INVALID_REQUEST',
+        status === 500,
+      );
+    });
+  }
+  setNotFoundHandler(_handler: Function): void {
+    this.fastify.setNotFoundHandler((request, reply) =>
+      sendApiError(request, reply, 404, 'ROUTE_NOT_FOUND', false),
+    );
+  }
+  isHeadersSent(response: FastifyReply): boolean {
+    return response.sent;
+  }
+  getHeader(response: FastifyReply, name: string): unknown {
+    return response.getHeader(name);
+  }
+  setHeader(response: FastifyReply, name: string, value: string): FastifyReply {
+    return response.header(name, value);
+  }
+  appendHeader(response: FastifyReply, name: string, value: string): FastifyReply {
+    response.raw.appendHeader(name, value);
+    return response;
+  }
+  registerParserMiddleware(): void {}
+  enableCors(): void {}
+  createMiddlewareFactory(_method: RequestMethod): (path: string, callback: Function) => void {
+    return (path, callback) => {
+      this.fastify.all(routePath(path), (request, reply) =>
+        callback(request, reply, () => undefined),
+      );
+    };
+  }
+  getType(): string {
+    return 'fastify';
+  }
+  applyVersionFilter(
+    handler: Function,
+    _version: any,
+    _options: VersioningOptions,
+  ): (request: FastifyRequest, response: FastifyReply, next: () => void) => Function {
+    return handler as (
+      request: FastifyRequest,
+      response: FastifyReply,
+      next: () => void,
+    ) => Function;
+  }
 }
-function routePath(path: unknown): string { return (typeof path === 'string' ? path : '/').replace('{*path}', '*'); }
-function httpErrorStatus(error: unknown): number { if (typeof error !== 'object' || error === null || !('statusCode' in error)) return 500; const status = error.statusCode; return typeof status === 'number' && status >= 400 && status < 500 ? status : 500; }
-function sendApiError(request: FastifyRequest, reply: FastifyReply, status: number, code: string, retryable: boolean): FastifyReply { const incoming = request.headers['x-trace-id']; const traceId = typeof incoming === 'string' && /^[a-f0-9]{32}$/.test(incoming) ? incoming : randomBytes(16).toString('hex'); return reply.status(status).header('x-trace-id', traceId).send({ code, message: code, traceId, retryable }); }
+function routePath(path: unknown): string {
+  return (typeof path === 'string' ? path : '/').replace('{*path}', '*');
+}
+function httpErrorStatus(error: unknown): number {
+  if (typeof error !== 'object' || error === null || !('statusCode' in error)) return 500;
+  const status = error.statusCode;
+  return typeof status === 'number' && status >= 400 && status < 500 ? status : 500;
+}
+function sendApiError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  status: number,
+  code: string,
+  retryable: boolean,
+): FastifyReply {
+  const incoming = request.headers['x-trace-id'];
+  const traceId =
+    typeof incoming === 'string' && /^[a-f0-9]{32}$/.test(incoming)
+      ? incoming
+      : randomBytes(16).toString('hex');
+  return reply
+    .status(status)
+    .header('x-trace-id', traceId)
+    .send({ code, message: code, traceId, retryable });
+}
 
-export async function bootstrapOperationsRuntime(input: { http: OperationsHttpModule; readiness: () => Promise<boolean>; host?: string; port?: number }): Promise<{ server: FastifyInstance; close(): Promise<void> }> { const adapter = new LockedFastifyAdapter(); const app = await NestFactory.create(OperationsRuntimeModule.register(input), adapter, { logger: ['error', 'warn'] }); await app.listen(input.port ?? 0, input.host ?? '0.0.0.0'); return { server: adapter.getInstance<FastifyInstance>(), close: () => app.close() }; }
+export async function bootstrapOperationsRuntime(input: {
+  http: OperationsHttpModule;
+  readiness: () => Promise<boolean>;
+  metrics?: () => Promise<string>;
+  host?: string;
+  port?: number;
+}): Promise<{ server: FastifyInstance; close(): Promise<void> }> {
+  const adapter = new LockedFastifyAdapter();
+  const app = await NestFactory.create(OperationsRuntimeModule.register(input), adapter, {
+    logger: ['error', 'warn'],
+  });
+  app.enableShutdownHooks();
+  await app.listen(input.port ?? 0, input.host ?? '0.0.0.0');
+  return { server: adapter.getInstance<FastifyInstance>(), close: () => app.close() };
+}

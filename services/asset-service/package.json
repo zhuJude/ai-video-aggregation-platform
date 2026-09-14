@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "lint": "eslint src test",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/src/main.js",
+    "build": "node scripts/prisma-generate.mjs && tsc -p tsconfig.json",
+    "lint": "node scripts/prisma-generate.mjs && eslint src test",
+    "typecheck": "node scripts/prisma-generate.mjs && tsc -p tsconfig.json --noEmit",
     "test": "vitest run --exclude dist/**",
     "test:coverage": "vitest run --coverage --exclude dist/**",
     "prisma:generate": "prisma generate",
@@ -14,8 +15,19 @@
     "prisma:migrate:deploy": "prisma migrate deploy"
   },
   "dependencies": {
+    "@alicloud/credentials": "2.4.7",
+    "@alicloud/kms20160120": "3.3.0",
+    "@nestjs/common": "12.0.1",
+    "@nestjs/core": "12.0.1",
+    "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
-    "ali-oss": "6.23.0"
+    "@repo/contracts": "workspace:*",
+    "ali-oss": "6.23.0",
+    "fastify": "5.12.1",
+    "jose": "6.2.12",
+    "reflect-metadata": "0.2.2",
+    "rocketmq-client-nodejs": "1.0.7",
+    "rxjs": "7.8.2"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

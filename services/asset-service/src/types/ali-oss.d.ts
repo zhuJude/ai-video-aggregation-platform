@@ -23,6 +23,7 @@ declare module 'ali-oss' {
       policy: string;
     };
     generateObjectUrl(name: string): string;
+    getBucketInfo(name: string): Promise<unknown>;
     head(name: string): Promise<OssResponse>;
     get(
       name: string,

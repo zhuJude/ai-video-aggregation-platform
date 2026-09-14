@@ -23,6 +23,7 @@ import type { NotificationWorkerRunner } from '../application/notification.consu
 
 const HTTP = Symbol('NOTIFICATION_HTTP');
 const READINESS = Symbol('NOTIFICATION_READINESS');
+const METRICS = Symbol('NOTIFICATION_METRICS');
 const uuid = {
   type: 'string',
   format: 'uuid',
@@ -144,6 +145,7 @@ class NotificationController {
   constructor(
     @Inject(HTTP) private readonly http: NotificationHttpModule,
     @Inject(READINESS) private readonly readiness: () => Promise<boolean>,
+    @Inject(METRICS) private readonly metrics: () => Promise<string>,
   ) {}
   @Get('/health/live') live(): { status: string } {
     return { status: 'ok' };
@@ -175,6 +177,11 @@ class NotificationController {
   @Get('/openapi.json') document(): typeof NOTIFICATION_OPENAPI {
     return NOTIFICATION_OPENAPI;
   }
+  @Get('/metrics') async prometheus(@Res() reply: FastifyReply): Promise<void> {
+    void reply
+      .header('content-type', 'text/plain; version=0.0.4; charset=utf-8')
+      .send(await this.metrics());
+  }
   @All('{*path}') async dispatch(
     @Req() request: FastifyRequest,
     @Res() reply: FastifyReply,
@@ -197,6 +204,7 @@ class NotificationRuntimeModule {
   static register(input: {
     http: NotificationHttpModule;
     readiness: () => Promise<boolean>;
+    metrics?: () => Promise<string>;
   }): DynamicModule {
     return {
       module: NotificationRuntimeModule,
@@ -204,6 +212,7 @@ class NotificationRuntimeModule {
       providers: [
         { provide: HTTP, useValue: input.http },
         { provide: READINESS, useValue: input.readiness },
+        { provide: METRICS, useValue: input.metrics ?? (() => Promise.resolve('')) },
       ],
     };
   }
@@ -343,7 +352,9 @@ function apiFailure(
 export async function bootstrapNotificationRuntime(input: {
   http: NotificationHttpModule;
   readiness: () => Promise<boolean>;
+  metrics?: () => Promise<string>;
   workerRunner: NotificationWorkerRunner;
+  workersEnabled?: boolean;
   host?: string;
   port?: number;
 }): Promise<{ server: FastifyInstance; close(): Promise<void> }> {
@@ -351,12 +362,13 @@ export async function bootstrapNotificationRuntime(input: {
   const app = await NestFactory.create(NotificationRuntimeModule.register(input), adapter, {
     logger: ['error', 'warn'],
   });
+  app.enableShutdownHooks();
   await app.listen(input.port ?? 0, input.host ?? '0.0.0.0');
-  input.workerRunner.start();
+  if (input.workersEnabled ?? true) input.workerRunner.start();
   return {
     server: adapter.getInstance<FastifyInstance>(),
     close: async () => {
-      await input.workerRunner.stop();
+      if (input.workersEnabled ?? true) await input.workerRunner.stop();
       await app.close();
     },
   };

@@ -28,6 +28,7 @@ describe('Nest notification runtime', () => {
     const runtime = await bootstrapNotificationRuntime({
       http,
       readiness: () => Promise.resolve(true),
+      metrics: () => Promise.resolve('support_notification_consumer_lag_seconds 0\n'),
       workerRunner: workerRunner as never,
     });
     runtimes.push(runtime);
@@ -41,6 +42,9 @@ describe('Nest notification runtime', () => {
     expect(
       (await runtime.server.inject({ method: 'GET', url: '/openapi.json' })).json(),
     ).toMatchObject({ openapi: '3.1.0' });
+    expect((await runtime.server.inject({ method: 'GET', url: '/metrics' })).body).toContain(
+      'support_notification_consumer_lag_seconds',
+    );
     expect((await runtime.server.inject({ method: 'GET', url: '/v1/inbox' })).statusCode).toBe(401);
     expect(
       (

@@ -42,7 +42,9 @@ interface PrismaAssetDelegate {
   findUnique(input: { where: { id: string } }): Promise<PersistedAsset | null>;
   updateMany(input: {
     where: { id: string; ownerId: string; status: 'PENDING' };
-    data: { status: 'AVAILABLE'; availableAt: Date; temporaryExpiresAt?: Date; checksum?: string } | { status: 'DELETING'; failedTemporaryExpiresAt?: Date };
+    data:
+      | { status: 'AVAILABLE'; availableAt: Date; temporaryExpiresAt?: Date; checksum?: string }
+      | { status: 'DELETING'; failedTemporaryExpiresAt?: Date };
   }): Promise<{ count: number }>;
 }
 
@@ -73,9 +75,7 @@ interface PrismaUploadSessionDelegate {
       expiresAt?: { gt?: Date; lte?: Date };
     };
     data:
-      | { status: 'COMPLETED'; completedAt: Date }
-      | { status: 'EXPIRED' }
-      | { status: 'REJECTED' };
+      { status: 'COMPLETED'; completedAt: Date } | { status: 'EXPIRED' } | { status: 'REJECTED' };
   }): Promise<{ count: number }>;
 }
 
@@ -136,7 +136,12 @@ export class PrismaUploadSessionRepository implements UploadSessionRepository {
   }
 
   async rejectPending(sessionId: string, ownerId: string, rejectedAt: Date): Promise<boolean> {
-    return this.#claimTerminalPending({ sessionId, ownerId, terminalAt: rejectedAt, status: 'REJECTED' });
+    return this.#claimTerminalPending({
+      sessionId,
+      ownerId,
+      terminalAt: rejectedAt,
+      status: 'REJECTED',
+    });
   }
 
   async completePending(input: {
@@ -222,16 +227,21 @@ export class PrismaUploadSessionRepository implements UploadSessionRepository {
         data: { status: input.status },
       });
       if (sessionUpdate.count === 0) return false;
-      if (sessionUpdate.count !== 1) throw new Error('Upload session terminal transition was not unique');
+      if (sessionUpdate.count !== 1)
+        throw new Error('Upload session terminal transition was not unique');
 
       const asset = await transaction.asset.findUnique({ where: { id: session.assetId } });
       if (asset === null) throw new Error('Upload session terminal asset was not found');
-      const failedTemporaryExpiresAt = input.status === 'REJECTED'
-        ? new Date((input.terminalAt ?? new Date()).getTime() + 7 * 24 * 60 * 60 * 1_000)
-        : undefined;
+      const failedTemporaryExpiresAt =
+        input.status === 'REJECTED'
+          ? new Date((input.terminalAt ?? new Date()).getTime() + 7 * 24 * 60 * 60 * 1_000)
+          : undefined;
       const assetUpdate = await transaction.asset.updateMany({
         where: { id: session.assetId, ownerId: input.ownerId, status: 'PENDING' },
-        data: { status: 'DELETING', ...(failedTemporaryExpiresAt === undefined ? {} : { failedTemporaryExpiresAt }) },
+        data: {
+          status: 'DELETING',
+          ...(failedTemporaryExpiresAt === undefined ? {} : { failedTemporaryExpiresAt }),
+        },
       });
       if (assetUpdate.count !== 1) {
         throw new Error(
@@ -240,8 +250,12 @@ export class PrismaUploadSessionRepository implements UploadSessionRepository {
       }
       await transaction.assetDeletion.create({
         data: {
-          id: randomUUID(), assetId: session.assetId, objectKey: asset.objectKey,
-          ...(failedTemporaryExpiresAt === undefined ? {} : { scheduledAt: failedTemporaryExpiresAt }),
+          id: randomUUID(),
+          assetId: session.assetId,
+          objectKey: asset.objectKey,
+          ...(failedTemporaryExpiresAt === undefined
+            ? {}
+            : { scheduledAt: failedTemporaryExpiresAt }),
         },
       });
       return true;

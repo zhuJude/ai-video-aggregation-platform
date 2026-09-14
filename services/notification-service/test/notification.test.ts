@@ -10,6 +10,7 @@ import {
   NotificationWorkerRunner,
 } from '../src/application/notification.consumer.js';
 import type { SmsSender } from '../src/ports/sms-sender.js';
+import { NotificationMetrics } from '../src/runtime/production.js';
 
 const USER = '01990f24-2ba2-7000-8000-000000000001';
 const EVENT = '01990f24-2ba2-7000-8000-000000000002';
@@ -612,6 +613,9 @@ describe('notification delivery', () => {
       code: 'RAM_CREDENTIAL_REFRESH_FAILED',
       acceptance: 'NOT_ATTEMPTED' as const,
     });
+    const metrics = new NotificationMetrics({
+      gauges: { operatorQueue: () => Promise.resolve(0), retryQueue: () => Promise.resolve(1) },
+    });
     const worker = new NotificationWorker(
       repository as never,
       { send: vi.fn().mockRejectedValue(error), reconcile: vi.fn() },
@@ -619,6 +623,7 @@ describe('notification delivery', () => {
         id: () => CORRELATION,
         now: vi.fn().mockReturnValueOnce(startedAt).mockReturnValueOnce(failedAt),
         baseDelayMs: 1_000,
+        metrics,
       },
     );
     await worker.runOnce();
@@ -628,6 +633,9 @@ describe('notification delivery', () => {
       new Date(failedAt.getTime() + 1_000),
       'RAM_CREDENTIAL_REFRESH_FAILED',
       failedAt,
+    );
+    await expect(metrics.render()).resolves.toContain(
+      'support_notification_sms_retries_total{reason="transient"} 1',
     );
   });
 

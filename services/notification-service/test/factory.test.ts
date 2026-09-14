@@ -13,7 +13,7 @@ describe('production factory', () => {
           accessKeyId: 'sts-id',
           accessKeySecret: 'sts-secret',
           securityToken: 'sts-token',
-          expiresAt: new Date('2099-09-14T13:00:00Z'),
+          expiresAt: new Date(Date.now() + 3_600_000),
         }),
       },
       smsConfig: {

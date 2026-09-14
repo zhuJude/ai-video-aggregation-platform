@@ -255,6 +255,9 @@ export class NotificationWorker {
   private readonly baseDelayMs: number;
   private readonly maxDelayMs: number;
   private readonly leaseMs: number;
+  private readonly metrics: {
+    smsRetry(reason: 'transient' | 'unknown_acceptance' | 'receipt_pending'): void;
+  };
 
   constructor(
     private readonly repository: NotificationRepository,
@@ -266,6 +269,9 @@ export class NotificationWorker {
       baseDelayMs?: number;
       maxDelayMs?: number;
       leaseMs?: number;
+      metrics?: {
+        smsRetry(reason: 'transient' | 'unknown_acceptance' | 'receipt_pending'): void;
+      };
     } = {},
   ) {
     this.id = options.id ?? createUuidV7Generator();
@@ -274,6 +280,7 @@ export class NotificationWorker {
     this.baseDelayMs = options.baseDelayMs ?? 5_000;
     this.maxDelayMs = options.maxDelayMs ?? 15 * 60_000;
     this.leaseMs = options.leaseMs ?? 30_000;
+    this.metrics = options.metrics ?? { smsRetry: () => undefined };
   }
 
   async runOnce(): Promise<boolean> {
@@ -295,7 +302,7 @@ export class NotificationWorker {
         const failedAt = this.now();
         if (wasNotAttempted(error))
           await this.handleProviderFailure(item, claimToken, failedAt, error, false);
-        else
+        else {
           await this.repository.unknownAcceptance(
             item.id,
             claimToken,
@@ -303,6 +310,8 @@ export class NotificationWorker {
             failureCode(error),
             failedAt,
           );
+          this.metrics.smsRetry('unknown_acceptance');
+        }
         return true;
       }
       // Intentionally outside the provider catch. If persistence fails after provider
@@ -337,7 +346,7 @@ export class NotificationWorker {
           'RECONCILIATION_EXHAUSTED',
           completedAt,
         );
-      else
+      else {
         await this.repository.reconciliationPending(
           item.id,
           claimToken,
@@ -349,9 +358,11 @@ export class NotificationWorker {
           'RECEIPT_PENDING',
           completedAt,
         );
+        this.metrics.smsRetry('receipt_pending');
+      }
     } else if (result.status === 'FAILED')
       await this.repository.operatorReview(item.id, claimToken, 'PROVIDER_REJECTED', completedAt);
-    else if (result.status === 'NOT_ACCEPTED')
+    else if (result.status === 'NOT_ACCEPTED') {
       await this.repository.confirmNotAccepted(
         item.id,
         claimToken,
@@ -362,7 +373,8 @@ export class NotificationWorker {
         ),
         completedAt,
       );
-    else await this.repository.complete(item.id, claimToken, result, completedAt);
+      this.metrics.smsRetry('transient');
+    } else await this.repository.complete(item.id, claimToken, result, completedAt);
     return true;
   }
 
@@ -390,7 +402,7 @@ export class NotificationWorker {
       this.baseDelayMs,
       this.maxDelayMs,
     );
-    if (reconciling)
+    if (reconciling) {
       await this.repository.reconciliationPending(
         item.id,
         claimToken,
@@ -402,7 +414,8 @@ export class NotificationWorker {
         failureCode(error),
         now,
       );
-    else
+      this.metrics.smsRetry('receipt_pending');
+    } else {
       await this.repository.retry(
         item.id,
         claimToken,
@@ -410,6 +423,8 @@ export class NotificationWorker {
         failureCode(error),
         now,
       );
+      this.metrics.smsRetry('transient');
+    }
   }
 }
 

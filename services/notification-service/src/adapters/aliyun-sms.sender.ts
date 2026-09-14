@@ -1,4 +1,8 @@
-import DysmsClient, { QuerySendDetailsRequest, SendSmsRequest } from '@alicloud/dysmsapi20170525';
+import DysmsClient, {
+  QuerySendDetailsRequest,
+  QuerySmsSignRequest,
+  SendSmsRequest,
+} from '@alicloud/dysmsapi20170525';
 import type {
   SmsReceiptResult,
   SmsSendInput,
@@ -31,6 +35,7 @@ interface AliyunQueryResponse {
 }
 
 export interface AliyunSmsClient {
+  ping?(): Promise<void>;
   sendSms(
     request: SendSmsRequest,
     options?: { signal?: AbortSignal; timeoutMs?: number },
@@ -68,7 +73,11 @@ interface RamRoleSession {
   expiresAt: Date;
 }
 
-type AliyunClientFactory = (session: RamRoleSession, endpoint: string) => AliyunSmsClient;
+type AliyunClientFactory = (
+  session: RamRoleSession,
+  endpoint: string,
+  signName: string,
+) => AliyunSmsClient;
 
 /** Resolves sensitive role parameters by KMS reference, then mints short-lived RAM credentials. */
 export class KmsRamRoleCredentialResolver implements RamRoleCredentialResolver {
@@ -129,7 +138,7 @@ export class RefreshingAliyunSmsClient implements AliyunSmsClient {
   private readonly now: () => Date;
   private readonly refreshBeforeMs: number;
   private readonly clientFactory: AliyunClientFactory;
-  private current: { client: AliyunSmsClient; expiresAt: Date } | null = null;
+  private current: { client: AliyunSmsClient; expiresAt: Date; sessionId: string } | null = null;
   private refreshInFlight: Promise<AliyunSmsClient> | null = null;
 
   constructor(
@@ -149,6 +158,12 @@ export class RefreshingAliyunSmsClient implements AliyunSmsClient {
 
   async initialize(): Promise<void> {
     await this.client();
+  }
+
+  async ping(): Promise<void> {
+    const client = await this.client();
+    if (client.ping === undefined) throw new Error('ALIYUN_SMS_PROBE_UNAVAILABLE');
+    await client.ping();
   }
 
   async sendSms(
@@ -187,8 +202,12 @@ export class RefreshingAliyunSmsClient implements AliyunSmsClient {
         kmsReference: this.config.credentialKmsRef,
       });
       validateSession(session, this.now());
-      const client = this.clientFactory(session, this.config.endpoint);
-      this.current = { client, expiresAt: session.expiresAt };
+      const sessionId = ramSessionIdentity(session);
+      if (this.current?.sessionId === sessionId) return this.current.client;
+      const signName = this.config.approvedSigns[0];
+      if (signName === undefined) throw new Error('SMS_ALLOWLIST_REQUIRED');
+      const client = this.clientFactory(session, this.config.endpoint, signName);
+      this.current = { client, expiresAt: session.expiresAt, sessionId };
       return client;
     } catch {
       const current = this.current;
@@ -209,13 +228,26 @@ function validateSession(session: RamRoleSession, now: Date): void {
     session.accessKeySecret.length === 0 ||
     session.securityToken.length === 0 ||
     !Number.isFinite(session.expiresAt.getTime()) ||
-    session.expiresAt <= now
+    session.expiresAt <= now ||
+    session.expiresAt.getTime() - now.getTime() > 3_600_000
   )
     throw new Error('INVALID_RAM_ROLE_SESSION');
 }
 
-function createRawAliyunClient(session: RamRoleSession, endpoint: string): AliyunSmsClient {
+function ramSessionIdentity(session: RamRoleSession): string {
+  return `${session.accessKeyId}\0${session.securityToken}\0${session.expiresAt.toISOString()}`;
+}
+
+function createRawAliyunClient(
+  session: RamRoleSession,
+  endpoint: string,
+  signName: string,
+): AliyunSmsClient {
   interface RawAliyunClient {
+    querySmsSignWithOptions(
+      request: QuerySmsSignRequest,
+      runtime: RawRuntimeOptions,
+    ): Promise<unknown>;
     sendSmsWithOptions(
       request: SendSmsRequest,
       runtime: RawRuntimeOptions,
@@ -242,6 +274,12 @@ function createRawAliyunClient(session: RamRoleSession, endpoint: string): Aliyu
     type: 'access_key',
   });
   return {
+    ping: async () => {
+      await raw.querySmsSignWithOptions(
+        new QuerySmsSignRequest({ signName }),
+        runtimeOptions(2_000),
+      );
+    },
     sendSms: (request, options) =>
       raw.sendSmsWithOptions(request, runtimeOptions(options?.timeoutMs)),
     querySendDetails: (request, options) =>

@@ -19,13 +19,13 @@ export interface AliyunOssObjectStoreConfig {
   bucket: string;
   bucketAcl: 'private' | 'public-read';
   ramRoleArn: string;
-  kmsKeyReference: string;
+  kmsKeyId: string;
   cdnBaseUrl: string;
   cdnAuthKeyReference: string;
   cdnAuthValiditySeconds: number;
   credentialProvider: (references: {
     ramRoleArn: string;
-    kmsKeyReference: string;
+    kmsKeyId: string;
   }) => Promise<StsCredentials>;
   secretResolver: (kmsReference: string) => Promise<string>;
   now?: () => Date;
@@ -50,6 +50,11 @@ export class AliyunOssObjectStore implements ObjectStore {
     this.#now = config.now ?? (() => new Date());
   }
 
+  async ping(): Promise<void> {
+    const client = this.#makeClient(await this.#getStsCredentials());
+    await client.getBucketInfo(this.#config.bucket);
+  }
+
   async createUpload(input: {
     objectKey: string;
     contentType: string;
@@ -70,7 +75,7 @@ export class AliyunOssObjectStore implements ObjectStore {
         ['content-length-range', 1, maxBytes],
         ['eq', '$Content-Type', input.contentType],
         ['eq', '$x-oss-server-side-encryption', 'KMS'],
-        ['eq', '$x-oss-server-side-encryption-key-id', this.#config.kmsKeyReference],
+        ['eq', '$x-oss-server-side-encryption-key-id', this.#config.kmsKeyId],
         ['eq', '$x-oss-forbid-overwrite', 'true'],
       ],
     };
@@ -92,7 +97,7 @@ export class AliyunOssObjectStore implements ObjectStore {
         policy: signature.policy,
         'x-oss-security-token': credentials.securityToken,
         'x-oss-server-side-encryption': 'KMS',
-        'x-oss-server-side-encryption-key-id': this.#config.kmsKeyReference,
+        'x-oss-server-side-encryption-key-id': this.#config.kmsKeyId,
         'x-oss-forbid-overwrite': 'true',
         success_action_status: '200',
       },
@@ -178,16 +183,21 @@ export class AliyunOssObjectStore implements ObjectStore {
         mime: input.contentType,
         headers: {
           'x-oss-server-side-encryption': 'KMS',
-          'x-oss-server-side-encryption-key-id': this.#config.kmsKeyReference,
+          'x-oss-server-side-encryption-key-id': this.#config.kmsKeyId,
           'x-oss-forbid-overwrite': 'true',
         },
       });
       const stored = await this.head(input.destinationKey);
-      if (stored.sizeBytes > input.maxBytes) throw new Error('Copied object exceeds the configured size limit');
+      if (stored.sizeBytes > input.maxBytes)
+        throw new Error('Copied object exceeds the configured size limit');
       return stored;
     } catch (error) {
       input.stream.destroy(error instanceof Error ? error : undefined);
-      try { await client.delete(input.destinationKey); } catch { /* durable cleanup is scheduled by the importer */ }
+      try {
+        await client.delete(input.destinationKey);
+      } catch {
+        /* durable cleanup is scheduled by the importer */
+      }
       throw error;
     }
   }
@@ -195,7 +205,7 @@ export class AliyunOssObjectStore implements ObjectStore {
   async #getStsCredentials(): Promise<StsCredentials> {
     const credentials = await this.#config.credentialProvider({
       ramRoleArn: this.#config.ramRoleArn,
-      kmsKeyReference: this.#config.kmsKeyReference,
+      kmsKeyId: this.#config.kmsKeyId,
     });
     if (
       credentials.accessKeyId.length === 0 ||
@@ -247,8 +257,8 @@ function validateConfiguration(config: AliyunOssObjectStoreConfig): void {
   if (config.ramRoleArn.trim().length === 0) {
     throw new ObjectStoreConfigurationError('A RAM role ARN is required');
   }
-  if (config.kmsKeyReference.trim().length === 0) {
-    throw new ObjectStoreConfigurationError('A KMS key reference is required');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(config.kmsKeyId)) {
+    throw new ObjectStoreConfigurationError('A resolved bare KMS key ID is required');
   }
   if (!isApprovedKmsReference(config.cdnAuthKeyReference)) {
     throw new ObjectStoreConfigurationError('A CDN authentication KMS reference is required');
@@ -321,11 +331,7 @@ function isBoundedPrefixResponse(
   maxBytes: number,
 ): boolean {
   const match = /^bytes 0-(\d+)\/\d+$/i.exec(contentRange ?? '');
-  return (
-    match !== null &&
-    receivedBytes <= maxBytes &&
-    Number(match[1]) + 1 === receivedBytes
-  );
+  return match !== null && receivedBytes <= maxBytes && Number(match[1]) + 1 === receivedBytes;
 }
 
 function joinUrlPath(basePath: string, objectKey: string): string {

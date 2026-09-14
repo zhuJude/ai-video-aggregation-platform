@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Readable } from 'node:stream';
 import {
   UploadSessionError,
   UploadSessionService,
@@ -49,7 +50,11 @@ class MemoryRepository implements UploadSessionRepository {
 
   rejectPending(sessionId: string, queriedOwnerId: string): Promise<boolean> {
     const session = this.sessions.get(sessionId);
-    if (session === undefined || session.ownerId !== queriedOwnerId || session.status !== 'PENDING') {
+    if (
+      session === undefined ||
+      session.ownerId !== queriedOwnerId ||
+      session.status !== 'PENDING'
+    ) {
       return Promise.resolve(false);
     }
     session.status = 'REJECTED';
@@ -111,7 +116,9 @@ interface TestObjectStore extends ObjectStore {
   headSpy: ReturnType<typeof vi.fn<ObjectStore['head']>>;
   createDownloadSpy: ReturnType<typeof vi.fn<ObjectStore['createDownload']>>;
   deleteSpy: ReturnType<typeof vi.fn<ObjectStore['delete']>>;
-  readPrefixSpy: ReturnType<typeof vi.fn<(objectKey: string, maxBytes: number) => Promise<Uint8Array>>>;
+  readPrefixSpy: ReturnType<
+    typeof vi.fn<(objectKey: string, maxBytes: number) => Promise<Uint8Array>>
+  >;
 }
 
 function makeObjectStore(): TestObjectStore {
@@ -211,7 +218,9 @@ describe('secure upload sessions', () => {
     });
     expect(repository.sessions.get(session.sessionId)?.status).toBe('REJECTED');
     expect(repository.assets.get(session.assetId)?.status).toBe('DELETING');
-    expect(repository.deletionRecords).toEqual([{ assetId: session.assetId, objectKey: session.objectKey }]);
+    expect(repository.deletionRecords).toEqual([
+      { assetId: session.assetId, objectKey: session.objectKey },
+    ]);
     await expect(service.complete(session.sessionId, input)).rejects.toMatchObject({
       code: 'UPLOAD_SESSION_ALREADY_USED',
     });
@@ -514,7 +523,7 @@ describe('Aliyun OSS secure configuration', () => {
     bucket: 'private-assets',
     bucketAcl: 'private',
     ramRoleArn: 'acs:ram::123456789:role/asset-service',
-    kmsKeyReference: 'acs:kms:cn-shanghai:123456789:key/example',
+    kmsKeyId: 'key-example',
     cdnBaseUrl: 'https://assets.example.com',
     cdnAuthKeyReference: 'kms://asset-cdn-auth-key',
     cdnAuthValiditySeconds: 120,
@@ -535,7 +544,10 @@ describe('Aliyun OSS secure configuration', () => {
 
   it('requires RAM role and KMS references instead of literal long-lived credentials', () => {
     expect(() => new AliyunOssObjectStore({ ...baseConfig, ramRoleArn: '' })).toThrow(/RAM role/i);
-    expect(() => new AliyunOssObjectStore({ ...baseConfig, kmsKeyReference: '' })).toThrow(/KMS/i);
+    expect(() => new AliyunOssObjectStore({ ...baseConfig, kmsKeyId: '' })).toThrow(/KMS/i);
+    expect(() => new AliyunOssObjectStore({ ...baseConfig, kmsKeyId: 'kms://asset/key' })).toThrow(
+      /KMS/i,
+    );
   });
 
   it('rejects a literal CDN signing secret in place of an approved KMS reference', () => {
@@ -545,11 +557,13 @@ describe('Aliyun OSS secure configuration', () => {
   });
 
   it('binds POST uploads to OSS forbid-overwrite semantics', async () => {
-    const calculatePostSignature = vi.spyOn(OSS.prototype, 'calculatePostSignature').mockReturnValue({
-      OSSAccessKeyId: 'temporary-access-key',
-      Signature: 'signature',
-      policy: 'policy',
-    });
+    const calculatePostSignature = vi
+      .spyOn(OSS.prototype, 'calculatePostSignature')
+      .mockReturnValue({
+        OSSAccessKeyId: 'temporary-access-key',
+        Signature: 'signature',
+        policy: 'policy',
+      });
     const store = new AliyunOssObjectStore(baseConfig);
 
     const upload = await store.createUpload({
@@ -560,12 +574,44 @@ describe('Aliyun OSS secure configuration', () => {
     });
 
     const policy = calculatePostSignature.mock.calls[0]?.[0] as
-      | { conditions: unknown[] }
-      | undefined;
+      { conditions: unknown[] } | undefined;
     if (policy === undefined) throw new Error('Expected createUpload to sign a POST policy');
     expect(policy.conditions).toContainEqual(['eq', '$x-oss-forbid-overwrite', 'true']);
-    expect(upload.headers).toMatchObject({ 'x-oss-forbid-overwrite': 'true' });
+    expect(policy.conditions).toContainEqual([
+      'eq',
+      '$x-oss-server-side-encryption-key-id',
+      'key-example',
+    ]);
+    expect(upload.headers).toMatchObject({
+      'x-oss-forbid-overwrite': 'true',
+      'x-oss-server-side-encryption-key-id': 'key-example',
+    });
     calculatePostSignature.mockRestore();
+  });
+
+  it('uses only the resolved bare CMK id for streaming uploads', async () => {
+    const putStream = vi.spyOn(OSS.prototype, 'putStream').mockResolvedValue({} as never);
+    const head = vi.spyOn(OSS.prototype, 'head').mockResolvedValue({
+      res: {
+        headers: {
+          'content-type': 'image/png',
+          'content-length': '3',
+          'x-oss-hash-sha256': 'sha256',
+        },
+      },
+    });
+    const store = new AliyunOssObjectStore(baseConfig);
+    await store.putStream({
+      destinationKey: 'imports/object-id',
+      contentType: 'image/png',
+      maxBytes: 3n,
+      stream: Readable.from(Buffer.from('abc')),
+    });
+    expect(putStream.mock.calls[0]?.[2]).toMatchObject({
+      headers: { 'x-oss-server-side-encryption-key-id': 'key-example' },
+    });
+    putStream.mockRestore();
+    head.mockRestore();
   });
 
   it('reads only a bounded object prefix through an OSS Range GET', async () => {
@@ -615,7 +661,9 @@ describe('Aliyun OSS secure configuration', () => {
 
   it('rejects a requested CDN lifetime shorter than the configured CDN Type-A TTL', async () => {
     const store = new AliyunOssObjectStore(baseConfig);
-    await expect(store.createDownload('uploads/object-id', 119)).rejects.toThrow(/configured CDN TTL/i);
+    await expect(store.createDownload('uploads/object-id', 119)).rejects.toThrow(
+      /configured CDN TTL/i,
+    );
   });
 
   it('rejects a requested CDN lifetime longer than its fixed Type-A TTL', async () => {

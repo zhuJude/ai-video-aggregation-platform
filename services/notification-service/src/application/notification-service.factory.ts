@@ -35,6 +35,9 @@ export async function createNotificationServices(input: {
   auth: { issuer: string; audience: string };
   now?: () => Date;
   id?: () => string;
+  metrics?: {
+    smsRetry(reason: 'transient' | 'unknown_acceptance' | 'receipt_pending'): void;
+  };
 }): Promise<{
   templates: TemplateService;
   service: NotificationService;
@@ -42,6 +45,7 @@ export async function createNotificationServices(input: {
   workerRunner: NotificationWorkerRunner;
   consumer: NotificationConsumer;
   http: NotificationHttpModule;
+  smsHealth: { ping(): Promise<void> };
 }> {
   const now = input.now ?? (() => new Date());
   const id = input.id ?? createUuidV7Generator();
@@ -58,7 +62,7 @@ export async function createNotificationServices(input: {
   const worker = new NotificationWorker(
     repository,
     new AliyunSmsSender(smsClient, input.smsConfig, () => undefined, now),
-    { id, now },
+    { id, now, ...(input.metrics === undefined ? {} : { metrics: input.metrics }) },
   );
   const service = new NotificationService(repository, now);
   return {
@@ -67,6 +71,12 @@ export async function createNotificationServices(input: {
     worker,
     workerRunner: new NotificationWorkerRunner(worker),
     consumer: new NotificationConsumer(repository, templates, worker, { id, now }),
+    smsHealth: {
+      async ping() {
+        if (smsClient.ping === undefined) throw new Error('ALIYUN_SMS_PROBE_UNAVAILABLE');
+        await smsClient.ping();
+      },
+    },
     http: new NotificationHttpModule({
       service,
       userAuthenticator: new JwksUserAuthenticator(input.userTokenVerifier, input.auth),

@@ -148,7 +148,7 @@ describe('Aliyun SMS production adapter', () => {
       accessKeyId: 'sts-id',
       accessKeySecret: 'sts-secret',
       securityToken: 'sts-token',
-      expiresAt: new Date('2099-09-14T13:00:00Z'),
+      expiresAt: new Date(Date.now() + 3_600_000),
     });
     const client = await createAliyunSdkSmsClient(
       {
@@ -579,5 +579,58 @@ describe('Aliyun SMS production adapter', () => {
     });
     expect(JSON.stringify(refreshError)).not.toContain('secret-value-must-not-leak');
     await expect(client.sendSms({} as never)).resolves.toBeDefined();
+  });
+
+  it('never extends an unchanged SMS STS session and rejects sessions beyond the SDK maximum', async () => {
+    let now = new Date('2026-09-14T12:00:00.000Z');
+    const expiresAt = new Date(now.getTime() + 2_000);
+    const unchanged = {
+      accessKeyId: 'id-one',
+      accessKeySecret: 'secret-one',
+      securityToken: 'token-one',
+      expiresAt,
+    };
+    const resolver = { resolve: vi.fn().mockResolvedValue(unchanged) };
+    const raw = {
+      ping: vi.fn().mockResolvedValue(undefined),
+      sendSms: vi.fn().mockResolvedValue({ body: { code: 'OK' } }),
+      querySendDetails: vi.fn(),
+    };
+    const clientFactory = vi.fn().mockReturnValue(raw);
+    const client = new RefreshingAliyunSmsClient(
+      {
+        roleArn: 'acs:ram::1:role/sms',
+        credentialKmsRef: 'kms://prod/notification/ram-role',
+        endpoint: 'dysmsapi.aliyuncs.com',
+        approvedSigns: ['平台通知'],
+        approvedTemplateCodes: ['SMS_123456'],
+      },
+      resolver,
+      { now: () => now, refreshBeforeMs: 1_000, clientFactory },
+    );
+    await client.initialize();
+    now = new Date('2026-09-14T12:00:01.500Z');
+    await client.ping();
+    expect(clientFactory).toHaveBeenCalledOnce();
+    now = new Date(expiresAt.getTime() + 1);
+    await expect(client.ping()).rejects.toMatchObject({ code: 'RAM_CREDENTIAL_REFRESH_FAILED' });
+
+    const overlong = new RefreshingAliyunSmsClient(
+      {
+        roleArn: 'acs:ram::1:role/sms',
+        credentialKmsRef: 'kms://prod/notification/ram-role',
+        endpoint: 'dysmsapi.aliyuncs.com',
+        approvedSigns: ['平台通知'],
+        approvedTemplateCodes: ['SMS_123456'],
+      },
+      {
+        resolve: () =>
+          Promise.resolve({ ...unchanged, expiresAt: new Date(now.getTime() + 3_700_000) }),
+      },
+      { now: () => now, clientFactory },
+    );
+    await expect(overlong.initialize()).rejects.toMatchObject({
+      code: 'RAM_CREDENTIAL_REFRESH_FAILED',
+    });
   });
 });

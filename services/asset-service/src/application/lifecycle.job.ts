@@ -7,11 +7,21 @@ export interface AssetLifecycleRepository {
   restoreDeletion(ownerId: string, assetId: string): Promise<boolean>;
   claimDue(now: Date): Promise<Array<{ assetId: string; objectKey: string; claimToken: string }>>;
   completeDelete(assetId: string, claimToken?: string): Promise<boolean>;
-  recordDeleteFailure(assetId: string, error: 'OBJECT_DELETE_FAILED', claimToken?: string): Promise<void>;
+  recordDeleteFailure(
+    assetId: string,
+    error: 'OBJECT_DELETE_FAILED',
+    claimToken?: string,
+  ): Promise<void>;
   scheduleExpiredTemporary(now: Date): Promise<number>;
-  claimCleanupDue(now: Date): Promise<Array<{ cleanupId: string; objectKey: string; claimToken: string }>>;
+  claimCleanupDue(
+    now: Date,
+  ): Promise<Array<{ cleanupId: string; objectKey: string; claimToken: string }>>;
   completeCleanup(cleanupId: string, claimToken: string): Promise<boolean>;
-  recordCleanupFailure(cleanupId: string, error: 'OBJECT_DELETE_FAILED', claimToken: string): Promise<void>;
+  recordCleanupFailure(
+    cleanupId: string,
+    error: 'OBJECT_DELETE_FAILED',
+    claimToken: string,
+  ): Promise<void>;
   recoverImportOrphans?(now: Date): Promise<number>;
 }
 
@@ -49,7 +59,11 @@ export class AssetLifecycleJob {
         await this.#repository.completeDelete(deletion.assetId, deletion.claimToken);
       } catch {
         try {
-          await this.#repository.recordDeleteFailure(deletion.assetId, 'OBJECT_DELETE_FAILED', deletion.claimToken);
+          await this.#repository.recordDeleteFailure(
+            deletion.assetId,
+            'OBJECT_DELETE_FAILED',
+            deletion.claimToken,
+          );
         } catch {
           // The lease expiry makes the work reclaimable even during a database transient failure.
         }
@@ -61,7 +75,11 @@ export class AssetLifecycleJob {
         await this.#repository.completeCleanup(cleanup.cleanupId, cleanup.claimToken);
       } catch {
         try {
-          await this.#repository.recordCleanupFailure(cleanup.cleanupId, 'OBJECT_DELETE_FAILED', cleanup.claimToken);
+          await this.#repository.recordCleanupFailure(
+            cleanup.cleanupId,
+            'OBJECT_DELETE_FAILED',
+            cleanup.claimToken,
+          );
         } catch {
           // Continue isolating other records; this claim is reclaimable after its lease expires.
         }

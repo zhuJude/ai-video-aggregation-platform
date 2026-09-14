@@ -7,5 +7,9 @@ if (!process.env.OPERATIONS_TEST_DATABASE_URL) {
 }
 
 const vitest = fileURLToPath(import.meta.resolve('vitest/vitest.mjs'));
-const result = spawnSync(process.execPath, [vitest, 'run', 'test/prisma-ticket.repository.pg.test.ts'], { stdio: 'inherit', env: process.env });
+const result = spawnSync(
+  process.execPath,
+  [vitest, 'run', 'test/prisma-ticket.repository.pg.test.ts'],
+  { stdio: 'inherit', env: process.env },
+);
 process.exit(result.status ?? 1);

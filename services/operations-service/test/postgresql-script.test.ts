@@ -10,7 +10,14 @@ const operationsRoot = dirname(fileURLToPath(new URL('../package.json', import.m
 it('makes the mandatory PostgreSQL CI entry fail when its database URL is missing', async () => {
   const env = { ...process.env };
   delete env.OPERATIONS_TEST_DATABASE_URL;
-  const failure: unknown = await executeFile(process.execPath, [join(operationsRoot, 'scripts', 'test-postgresql.mjs')], { cwd: operationsRoot, env }).then(() => null, (error: unknown) => error);
+  const failure: unknown = await executeFile(
+    process.execPath,
+    [join(operationsRoot, 'scripts', 'test-postgresql.mjs')],
+    { cwd: operationsRoot, env },
+  ).then(
+    () => null,
+    (error: unknown) => error,
+  );
   expect(failure).toBeInstanceOf(Error);
   const commandError = failure as Error & { code?: number; stderr?: string };
   expect(commandError.code).toBe(1);

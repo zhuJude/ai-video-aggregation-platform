@@ -68,8 +68,31 @@ model UploadSession {
   completedAt       DateTime?           @db.Timestamptz(3)
   createdAt         DateTime            @default(now()) @db.Timestamptz(3)
   asset             Asset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  supportReservations SupportUploadReservation[]
 
   @@index([ownerId, status, expiresAt])
+  @@index([status, expiresAt])
+}
+
+model SupportUploadReservation {
+  id                String   @id @db.Uuid
+  operationId       String
+  remoteOperationId String   @unique
+  generation        Int
+  fence             String
+  requestHash       String
+  idempotencyKey    String
+  ownershipToken    String
+  sessionId         String   @db.Uuid
+  assetId           String   @db.Uuid
+  ownerId           String   @db.Uuid
+  purpose           String
+  status            String
+  expiresAt         DateTime @db.Timestamptz(3)
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  session           UploadSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([operationId, generation])
   @@index([status, expiresAt])
 }
 

@@ -203,7 +203,10 @@ export class UploadSessionService {
       throw new UploadSessionError('UPLOAD_SESSION_EXPIRED', 'Upload session has expired');
     }
     if (session.status === 'REJECTED') {
-      throw new UploadSessionError('UPLOAD_SESSION_ALREADY_USED', 'Upload session has been rejected');
+      throw new UploadSessionError(
+        'UPLOAD_SESSION_ALREADY_USED',
+        'Upload session has been rejected',
+      );
     }
     this.#assertIssuedObjectKey(session, input.objectKey);
 
@@ -248,7 +251,11 @@ export class UploadSessionService {
 
       const completedAt = this.#now();
       if (session.expiresAt.getTime() <= completedAt.getTime()) {
-        const claimed = await this.#repository.claimExpired(session.id, session.ownerId, completedAt);
+        const claimed = await this.#repository.claimExpired(
+          session.id,
+          session.ownerId,
+          completedAt,
+        );
         if (!claimed) {
           throw new UploadSessionError(
             'UPLOAD_SESSION_ALREADY_USED',
@@ -424,7 +431,10 @@ function matchesMagic(mimeType: string, prefix: Uint8Array): boolean {
         startsWithBytes(prefix, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
       );
     case 'image/webp':
-      return startsWithBytes(prefix, [0x52, 0x49, 0x46, 0x46]) && startsWithBytes(prefix, [0x57, 0x45, 0x42, 0x50], 8);
+      return (
+        startsWithBytes(prefix, [0x52, 0x49, 0x46, 0x46]) &&
+        startsWithBytes(prefix, [0x57, 0x45, 0x42, 0x50], 8)
+      );
     case 'video/mp4':
     case 'video/quicktime':
       return startsWithBytes(prefix, [0x66, 0x74, 0x79, 0x70], 4);

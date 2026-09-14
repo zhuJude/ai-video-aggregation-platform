@@ -41,7 +41,9 @@ function makePrismaSeam(sessionUpdateCount: number) {
   const transaction = { asset, uploadSession, assetDeletion };
   return {
     client: {
-      $transaction: vi.fn((callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction)),
+      $transaction: vi.fn((callback: (tx: typeof transaction) => Promise<unknown>) =>
+        callback(transaction),
+      ),
     },
     asset,
     uploadSession,
@@ -53,13 +55,39 @@ describe('PrismaUploadSessionRepository', () => {
   it('persists a 24-hour temporary retention timestamp when a direct upload completes', async () => {
     const updates: unknown[] = [];
     const repository = new PrismaUploadSessionRepository({
-      $transaction: async (work: never) => (work as unknown as (tx: unknown) => Promise<unknown>)({
-        uploadSession: { findFirst: async () => ({ assetId: 'asset' }), updateMany: async () => ({ count: 1 }) },
-        asset: { updateMany: async (input: unknown) => { updates.push(input); return { count: 1 }; }, findUnique: async () => ({ id: 'asset', ownerId: 'owner', kind: 'UPLOAD', objectKey: 'uploads/a', originalFileName: 'a.png', mimeType: 'image/png', sizeBytes: 1n, checksum: null, status: 'AVAILABLE' }) },
-      }),
+      $transaction: async (work: never) =>
+        (work as unknown as (tx: unknown) => Promise<unknown>)({
+          uploadSession: {
+            findFirst: async () => ({ assetId: 'asset' }),
+            updateMany: async () => ({ count: 1 }),
+          },
+          asset: {
+            updateMany: async (input: unknown) => {
+              updates.push(input);
+              return { count: 1 };
+            },
+            findUnique: async () => ({
+              id: 'asset',
+              ownerId: 'owner',
+              kind: 'UPLOAD',
+              objectKey: 'uploads/a',
+              originalFileName: 'a.png',
+              mimeType: 'image/png',
+              sizeBytes: 1n,
+              checksum: null,
+              status: 'AVAILABLE',
+            }),
+          },
+        }),
     } as never);
-    await repository.completePending({ sessionId: 'session', ownerId: 'owner', completedAt: new Date('2026-08-31T00:00:00.000Z') });
-    expect(updates[0]).toMatchObject({ data: { temporaryExpiresAt: new Date('2026-09-01T00:00:00.000Z') } });
+    await repository.completePending({
+      sessionId: 'session',
+      ownerId: 'owner',
+      completedAt: new Date('2026-08-31T00:00:00.000Z'),
+    });
+    expect(updates[0]).toMatchObject({
+      data: { temporaryExpiresAt: new Date('2026-09-01T00:00:00.000Z') },
+    });
   });
   it('atomically completes a pending owned unexpired session once', async () => {
     const seam = makePrismaSeam(1);
@@ -78,17 +106,26 @@ describe('PrismaUploadSessionRepository', () => {
       },
       data: { status: 'COMPLETED', completedAt },
     });
-    expect(seam.asset.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: assetId, ownerId, status: 'PENDING' },
-      data: expect.objectContaining({ status: 'AVAILABLE', availableAt: completedAt, checksum: 'sha256:example', temporaryExpiresAt: new Date('2026-09-01T00:00:00.000Z') }),
-    }));
+    expect(seam.asset.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: assetId, ownerId, status: 'PENDING' },
+        data: expect.objectContaining({
+          status: 'AVAILABLE',
+          availableAt: completedAt,
+          checksum: 'sha256:example',
+          temporaryExpiresAt: new Date('2026-09-01T00:00:00.000Z'),
+        }),
+      }),
+    );
   });
 
   it('returns null when a replay loses the conditional session update', async () => {
     const seam = makePrismaSeam(0);
     const repository = new PrismaUploadSessionRepository(seam.client as PrismaUploadSessionClient);
 
-    await expect(repository.completePending({ sessionId, ownerId, completedAt })).resolves.toBeNull();
+    await expect(
+      repository.completePending({ sessionId, ownerId, completedAt }),
+    ).resolves.toBeNull();
     expect(seam.asset.updateMany).not.toHaveBeenCalled();
   });
 
@@ -97,8 +134,11 @@ describe('PrismaUploadSessionRepository', () => {
     const repository = new PrismaUploadSessionRepository(seam.client as PrismaUploadSessionClient);
 
     await expect(
-      (repository as unknown as { claimExpired(sessionId: string, ownerId: string, expiredAt: Date): Promise<boolean> })
-        .claimExpired(sessionId, ownerId, completedAt),
+      (
+        repository as unknown as {
+          claimExpired(sessionId: string, ownerId: string, expiredAt: Date): Promise<boolean>;
+        }
+      ).claimExpired(sessionId, ownerId, completedAt),
     ).resolves.toBe(true);
     expect(seam.uploadSession.updateMany).toHaveBeenCalledWith({
       where: { id: sessionId, ownerId, status: 'PENDING', expiresAt: { lte: completedAt } },
@@ -123,8 +163,11 @@ describe('PrismaUploadSessionRepository', () => {
     const repository = new PrismaUploadSessionRepository(seam.client as PrismaUploadSessionClient);
 
     await expect(
-      (repository as unknown as { claimExpired(sessionId: string, ownerId: string, expiredAt: Date): Promise<boolean> })
-        .claimExpired(sessionId, ownerId, completedAt),
+      (
+        repository as unknown as {
+          claimExpired(sessionId: string, ownerId: string, expiredAt: Date): Promise<boolean>;
+        }
+      ).claimExpired(sessionId, ownerId, completedAt),
     ).rejects.toThrow(/expiry asset transition failed/i);
     expect(seam.assetDeletion.create).not.toHaveBeenCalled();
   });
@@ -134,8 +177,11 @@ describe('PrismaUploadSessionRepository', () => {
     const repository = new PrismaUploadSessionRepository(seam.client as PrismaUploadSessionClient);
 
     await expect(
-      (repository as unknown as { rejectPending(sessionId: string, ownerId: string, rejectedAt: Date): Promise<boolean> })
-        .rejectPending(sessionId, ownerId, completedAt),
+      (
+        repository as unknown as {
+          rejectPending(sessionId: string, ownerId: string, rejectedAt: Date): Promise<boolean>;
+        }
+      ).rejectPending(sessionId, ownerId, completedAt),
     ).resolves.toBe(true);
     expect(seam.uploadSession.updateMany).toHaveBeenCalledWith({
       where: { id: sessionId, ownerId, status: 'PENDING' },
@@ -146,7 +192,9 @@ describe('PrismaUploadSessionRepository', () => {
       data: { status: 'DELETING', failedTemporaryExpiresAt: new Date('2026-09-07T00:00:00.000Z') },
     });
     expect(seam.assetDeletion.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ scheduledAt: new Date('2026-09-07T00:00:00.000Z') }) as unknown,
+      data: expect.objectContaining({
+        scheduledAt: new Date('2026-09-07T00:00:00.000Z'),
+      }) as unknown,
     });
   });
 
@@ -156,8 +204,11 @@ describe('PrismaUploadSessionRepository', () => {
     const repository = new PrismaUploadSessionRepository(seam.client as PrismaUploadSessionClient);
 
     await expect(
-      (repository as unknown as { rejectPending(sessionId: string, ownerId: string, rejectedAt: Date): Promise<boolean> })
-        .rejectPending(sessionId, ownerId, completedAt),
+      (
+        repository as unknown as {
+          rejectPending(sessionId: string, ownerId: string, rejectedAt: Date): Promise<boolean>;
+        }
+      ).rejectPending(sessionId, ownerId, completedAt),
     ).rejects.toThrow(/deletion record unavailable/i);
   });
 
