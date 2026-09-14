@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum NotificationChannel {
+  IN_APP
+  SMS
+}
+
+enum NotificationStatus {
+  PENDING
+  RECONCILING
+  RETRY_PENDING
+  DELIVERED
+  OPERATOR_REVIEW
+}
+
+enum ProviderReceiptStatus {
+  ACCEPTED
+  UNKNOWN_ACCEPTANCE
+  PENDING
+  DELIVERED
+  FAILED
+  NOT_ACCEPTED
+}
+
+enum OutboxStatus {
+  PENDING
+  CLAIMED
+  PUBLISHED
+  FAILED
+}
+
+enum OperatorQueueStatus {
+  OPEN
+  RESOLVED
+}
+
+model NotificationTemplateVersion {
+  id                String         @id @db.Uuid
+  templateKey       String         @db.VarChar(128)
+  version           Int
+  declaredVariables String[]
+  inAppTitle        String         @db.VarChar(200)
+  inAppBody         String
+  smsBody           String         @db.VarChar(1000)
+  smsSignName       String         @db.VarChar(100)
+  smsTemplateCode   String         @db.VarChar(64)
+  publishedAt       DateTime       @db.Timestamptz(3)
+  notifications     Notification[]
+
+  @@unique([templateKey, version])
+  @@index([templateKey, publishedAt])
+}
+
+model ProcessedEvent {
+  eventId         String   @id @db.Uuid
+  eventType       String   @db.VarChar(160)
+  contractVersion Int
+  occurredAt      DateTime @db.Timestamptz(3)
+  correlationId   String   @db.Uuid
+  causationId     String?  @db.Uuid
+  processedAt     DateTime @db.Timestamptz(3)
+}
+
+model Notification {
+  id                     String                      @id @db.Uuid
+  eventId                String                      @db.Uuid
+  userId                 String                      @db.Uuid
+  channel                NotificationChannel
+  templateVersionId      String                      @db.Uuid
+  renderedTitle          String?                     @db.VarChar(200)
+  renderedBody           String
+  variables              Json
+  phoneCiphertext        Bytes?
+  phoneKeyVersion        String?                     @db.VarChar(128)
+  phoneWrappedDek        Bytes?
+  signName               String?                     @db.VarChar(100)
+  templateCode           String?                     @db.VarChar(64)
+  status                 NotificationStatus          @default(PENDING)
+  attempts               Int                         @default(0)
+  nextAttemptAt          DateTime                    @db.Timestamptz(3)
+  claimToken             String?                     @db.Uuid
+  leaseUntil             DateTime?                   @db.Timestamptz(3)
+  providerRequestId      String?                     @db.VarChar(128)
+  providerReceipt        String?                     @db.VarChar(256)
+  providerReceiptStatus  ProviderReceiptStatus?
+  reconciliationAttempts Int                         @default(0)
+  sendStartedAt          DateTime?                   @db.Timestamptz(3)
+  sendDate               String?                     @db.Char(8)
+  lastErrorCode          String?                     @db.VarChar(128)
+  createdAt              DateTime                    @db.Timestamptz(3)
+  deliveredAt            DateTime?                   @db.Timestamptz(3)
+  templateVersion        NotificationTemplateVersion @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
+  deliveryAttempts       DeliveryAttempt[]
+  inboxMessage           InboxMessage?
+  operatorQueueItems     OperatorQueueItem[]
+
+  @@unique([eventId, channel], map: "Notification_eventId_channel_key")
+  @@index([status, nextAttemptAt, leaseUntil])
+  @@index([userId, createdAt, id])
+}
+
+model DeliveryAttempt {
+  id                    String                 @id @db.Uuid
+  notificationId        String                 @db.Uuid
+  attemptNumber         Int
+  claimToken            String                 @db.Uuid
+  kind                  String                 @db.VarChar(32)
+  providerRequestId     String?                @db.VarChar(128)
+  providerReceipt       String?                @db.VarChar(256)
+  providerReceiptStatus ProviderReceiptStatus?
+  errorCode             String?                @db.VarChar(128)
+  startedAt             DateTime               @db.Timestamptz(3)
+  completedAt           DateTime?              @db.Timestamptz(3)
+  notification          Notification           @relation(fields: [notificationId], references: [id], onDelete: Restrict)
+
+  @@unique([notificationId, attemptNumber])
+  @@unique([claimToken])
+  @@index([notificationId, startedAt])
+}
+
+model InboxMessage {
+  id             String       @id @db.Uuid
+  notificationId String       @unique(map: "InboxMessage_notificationId_key") @db.Uuid
+  userId         String       @db.Uuid
+  title          String       @db.VarChar(200)
+  body           String
+  readAt         DateTime?    @db.Timestamptz(3)
+  createdAt      DateTime     @db.Timestamptz(3)
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt, id])
+}
+
+model NotificationOutboxEvent {
+  id              String       @id @db.Uuid
+  eventType       String       @db.VarChar(160)
+  contractVersion Int
+  occurredAt      DateTime     @db.Timestamptz(3)
+  traceId         String       @db.Char(32)
+  correlationId   String       @db.Uuid
+  causationId     String       @db.Uuid
+  payload         Json
+  status          OutboxStatus @default(PENDING)
+  attempts        Int          @default(0)
+  nextAttemptAt   DateTime     @db.Timestamptz(3)
+  claimToken      String?      @db.Uuid
+  leaseUntil      DateTime?    @db.Timestamptz(3)
+  createdAt       DateTime     @db.Timestamptz(3)
+  publishedAt     DateTime?    @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt, leaseUntil])
+}
+
+model OperatorQueueItem {
+  id             String              @id @db.Uuid
+  notificationId String              @db.Uuid
+  reasonCode     String              @db.VarChar(128)
+  status         OperatorQueueStatus @default(OPEN)
+  createdAt      DateTime            @db.Timestamptz(3)
+  resolvedAt     DateTime?           @db.Timestamptz(3)
+  notification   Notification        @relation(fields: [notificationId], references: [id], onDelete: Restrict)
+
+  @@unique([notificationId, reasonCode])
+  @@index([status, createdAt])
+}
