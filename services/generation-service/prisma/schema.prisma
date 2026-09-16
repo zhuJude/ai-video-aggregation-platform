@@ -83,10 +83,41 @@ model GenerationTask {
   transitions              TaskTransition[]
   idempotencyRecords       TaskIdempotency[]
   repairCases              TaskRepairCase[]
+  saga                     TaskSaga?
 
   @@index([userId, createdAt, id])
   @@index([status, updatedAt])
   @@index([capabilityVersionId, createdAt])
+}
+
+model TaskSaga {
+  taskId                    String         @id @db.Uuid
+  version                   Int            @default(0)
+  quotedPoints              String         @db.VarChar(40)
+  settlementPoints          String         @db.VarChar(40)
+  providerAccepted          Boolean        @default(false)
+  providerStateRank         Int            @default(0)
+  providerId                String?        @db.Uuid
+  providerTaskId            String?        @db.VarChar(512)
+  modelCode                 String?        @db.VarChar(160)
+  executionId               String?        @db.Uuid
+  routeEpoch                Int            @default(0)
+  assetImportRequested      Boolean        @default(false)
+  assetImportDispatched     Boolean        @default(false)
+  assetId                   String?        @db.Uuid
+  routingFailoverAuthorized Boolean        @default(false)
+  cancellationChargePoints  String?        @db.VarChar(40)
+  cancelRequested           Boolean        @default(false)
+  financialDisposition      String?        @db.VarChar(80)
+  financialSettlementKey    String?        @db.VarChar(120)
+  financialReleaseKey       String?        @db.VarChar(120)
+  substitute                Json?
+  createdAt                 DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt                 DateTime       @updatedAt @db.Timestamptz(3)
+  task                      GenerationTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, providerTaskId])
+  @@index([updatedAt])
 }
 
 model TaskTransition {
@@ -157,32 +188,35 @@ model OutboxEvent {
 }
 
 model InboxMessage {
-  id            String    @id @db.Uuid
-  consumer      String    @db.VarChar(120)
-  messageId     String    @db.VarChar(160)
-  eventType     String    @db.VarChar(160)
-  payloadSha256 String    @db.Char(64)
-  receivedAt    DateTime  @default(now()) @db.Timestamptz(3)
-  processedAt   DateTime? @db.Timestamptz(3)
-  lastError     String?
+  id             String    @id @db.Uuid
+  consumer       String    @db.VarChar(120)
+  messageId      String    @db.VarChar(160)
+  eventType      String    @db.VarChar(160)
+  payloadSha256  String    @db.Char(64)
+  receivedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  processedAt    DateTime? @db.Timestamptz(3)
+  lastError      String?
+  leaseToken     String?   @db.Char(64)
+  leaseExpiresAt DateTime? @db.Timestamptz(3)
 
   @@unique([consumer, messageId])
   @@index([consumer, processedAt, receivedAt])
 }
 
 model TaskRepairCase {
-  id            String           @id @db.Uuid
-  taskId        String?          @db.Uuid
-  idempotencyId String?          @unique @db.Uuid
-  status        RepairCaseStatus @default(OPEN)
-  kind          String           @db.VarChar(80)
-  summary       String           @db.VarChar(500)
-  evidence      Json
-  detectedAt    DateTime         @default(now()) @db.Timestamptz(3)
-  resolvedAt    DateTime?        @db.Timestamptz(3)
-  resolution    Json?
-  task          GenerationTask?  @relation(fields: [taskId], references: [id], onDelete: Restrict)
-  idempotency   TaskIdempotency? @relation(fields: [idempotencyId], references: [id], onDelete: Restrict)
+  id               String           @id @db.Uuid
+  taskId           String?          @db.Uuid
+  idempotencyId    String?          @unique @db.Uuid
+  status           RepairCaseStatus @default(OPEN)
+  kind             String           @db.VarChar(80)
+  summary          String           @db.VarChar(500)
+  evidence         Json
+  detectedAt       DateTime         @default(now()) @db.Timestamptz(3)
+  resolvedAt       DateTime?        @db.Timestamptz(3)
+  resolution       Json?
+  deduplicationKey String?          @unique @db.VarChar(240)
+  task             GenerationTask?  @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  idempotency      TaskIdempotency? @relation(fields: [idempotencyId], references: [id], onDelete: Restrict)
 
   @@index([status, detectedAt])
   @@index([taskId, detectedAt])

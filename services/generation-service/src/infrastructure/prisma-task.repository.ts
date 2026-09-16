@@ -196,6 +196,9 @@ export class PrismaTaskRepository implements TaskCreationRepository, TaskManagem
             version: input.version,
             createdAt: input.createdAt,
             updatedAt: input.createdAt,
+            saga: {
+              create: taskSagaSnapshot(input),
+            },
             transitions: {
               create: input.transitions.map((transition) => ({
                 id: transition.id,
@@ -475,4 +478,57 @@ export class PrismaTaskRepository implements TaskCreationRepository, TaskManagem
       return this.findOwned(input.userId, input.taskId);
     }
   }
+}
+
+function taskSagaSnapshot(input: PersistTaskInput) {
+  const pricing = objectRecord(input.pricingSnapshot);
+  const quotedPoints = stringPoints(pricing.quotedPoints);
+  if (quotedPoints === null) throw new Error('INVALID_PRICING_SNAPSHOT');
+  const configuredSettlement = stringPoints(pricing.settlementPoints);
+  const configuredCancellation = stringPoints(pricing.cancellationChargePoints);
+  const configuredSubstitute = failoverCandidate(pricing.failoverCandidate);
+  return {
+    quotedPoints,
+    settlementPoints: configuredSettlement ?? quotedPoints,
+    providerAccepted: false,
+    providerStateRank: 0,
+    executionId: null,
+    routeEpoch: 0,
+    assetImportRequested: false,
+    assetImportDispatched: false,
+    routingFailoverAuthorized: pricing.routingFailoverAuthorized === true,
+    cancellationChargePoints: configuredCancellation,
+    cancelRequested: false,
+    financialDisposition: null,
+    financialSettlementKey: null,
+    financialReleaseKey: null,
+    ...(configuredSubstitute === null ? {} : { substitute: asJson(configuredSubstitute) }),
+    createdAt: input.createdAt,
+    updatedAt: input.createdAt,
+  };
+}
+
+function objectRecord(value: unknown): Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : {};
+}
+
+function stringPoints(value: unknown): string | null {
+  return typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value) ? value : null;
+}
+
+function failoverCandidate(value: unknown): Readonly<Record<string, string>> | null {
+  const candidate = objectRecord(value);
+  return typeof candidate.providerId === 'string' &&
+    typeof candidate.modelCode === 'string' &&
+    typeof candidate.capabilityVersionId === 'string' &&
+    stringPoints(candidate.pricePoints) !== null
+    ? {
+        providerId: candidate.providerId,
+        modelCode: candidate.modelCode,
+        capabilityVersionId: candidate.capabilityVersionId,
+        pricePoints: candidate.pricePoints as string,
+      }
+    : null;
 }

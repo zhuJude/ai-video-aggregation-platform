@@ -20,7 +20,9 @@ describe('provider runtime persistence schema', () => {
   it('enforces task/message/attempt/callback/outbox idempotency in PostgreSQL', async () => {
     const schema = await readFile(new URL('../prisma/schema.prisma', import.meta.url), 'utf8');
     expect(schema).toContain('taskId');
-    expect(schema).toMatch(/taskId\s+String\s+@unique\s+@db\.Uuid/);
+    expect(schema).toMatch(/taskId\s+String\s+@db\.Uuid/);
+    expect(schema).toMatch(/routeEpoch\s+Int\s+@default\(0\)/);
+    expect(schema).toContain('@@unique([taskId, routeEpoch])');
     expect(schema).toContain('@@unique([consumer, messageId])');
     expect(schema).toContain('@@unique([executionId, attemptNumber])');
     expect(schema).not.toMatch(/providerEventId\s+String\s+@unique/);

@@ -7,6 +7,7 @@ import {
   ProviderPollingService,
   type ClaimPollInput,
   type CompletePollInput,
+  type DeferPollInput,
 } from '../src/index.js';
 import type { PrismaClient } from '../src/generated/prisma/client.js';
 
@@ -47,6 +48,8 @@ function callbackHarness(
       findUnique: vi.fn().mockResolvedValue({
         id: EXECUTION_ID,
         taskId: TASK_ID,
+        modelCode: 'internal-model-v1',
+        routeEpoch: 0,
         status: 'RUNNING',
         currentAttempt: 2,
         lastProviderSequence: 2,
@@ -151,6 +154,8 @@ describe('Prisma callback atomicity', () => {
     transaction.providerExecution.findUnique.mockResolvedValueOnce({
       id: EXECUTION_ID,
       taskId: TASK_ID,
+      modelCode: 'internal-model-v1',
+      routeEpoch: 0,
       status: 'SUCCEEDED',
       currentAttempt: 2,
       lastProviderSequence: 3,
@@ -182,6 +187,7 @@ function pollInput(): ClaimPollInput {
     providerTaskId: 'remote-1',
     attemptNumber: 2,
     pollNumber: 1,
+    routeEpoch: 0,
     dueAt: NOW,
     receivedAt: NOW,
     leaseToken: 'd'.repeat(64),
@@ -201,6 +207,7 @@ function pollHarness() {
       taskId: TASK_ID,
       providerId: PROVIDER_ID,
       modelCode: 'internal-model-v1',
+      routeEpoch: 0,
       providerTaskId: 'remote-1',
       status: 'RUNNING',
       currentAttempt: 2,
@@ -256,6 +263,7 @@ describe('Prisma polling atomicity', () => {
         taskId: TASK_ID,
         providerId: PROVIDER_ID,
         modelCode: 'internal-model-v1',
+        routeEpoch: 0,
         providerTaskId: 'remote-1',
         status: 'RUNNING',
         currentAttempt: 2,
@@ -270,6 +278,7 @@ describe('Prisma polling atomicity', () => {
         taskId: TASK_ID,
         providerId: PROVIDER_ID,
         modelCode: 'internal-model-v1',
+        routeEpoch: 0,
         providerTaskId: 'remote-1',
         status: 'SUCCEEDED',
         currentAttempt: 2,
@@ -294,6 +303,7 @@ describe('Prisma polling atomicity', () => {
         taskId: TASK_ID,
         providerId: PROVIDER_ID,
         modelCode: 'internal-model-v1',
+        routeEpoch: 0,
         providerTaskId: 'remote-1',
         status: 'RUNNING',
         currentAttempt: 2,
@@ -308,6 +318,7 @@ describe('Prisma polling atomicity', () => {
         taskId: TASK_ID,
         providerId: PROVIDER_ID,
         modelCode: 'internal-model-v1',
+        routeEpoch: 0,
         providerTaskId: 'remote-1',
         status: 'SUCCEEDED',
         currentAttempt: 2,
@@ -364,8 +375,10 @@ describe('Prisma polling atomicity', () => {
       id: EXECUTION_ID,
       status: 'ACCEPTED',
       currentAttempt: 2,
+      routeEpoch: 0,
       pollCount: 0,
       pollLeaseToken: 'd'.repeat(64),
+      pollLeaseExpiresAt: new Date(NOW.getTime() + 60_000),
       version: 4,
     });
     const nextPollAt = new Date(NOW.getTime() + 30_000);
@@ -418,14 +431,17 @@ describe('Prisma polling atomicity', () => {
         id: EXECUTION_ID,
         status: 'RUNNING',
         currentAttempt: 2,
+        routeEpoch: 0,
         pollCount: 0,
         pollLeaseToken: 'd'.repeat(64),
+        pollLeaseExpiresAt: new Date(NOW.getTime() + 60_000),
         version: 4,
       })
       .mockResolvedValueOnce({
         id: EXECUTION_ID,
         status: 'SUCCEEDED',
         currentAttempt: 2,
+        routeEpoch: 0,
         pollCount: 0,
         pollLeaseToken: null,
         version: 5,
@@ -455,5 +471,82 @@ describe('Prisma polling atomicity', () => {
     expect(transaction.outboxEvent.create).not.toHaveBeenCalled();
     expect(transaction.providerAttempt.updateMany).not.toHaveBeenCalled();
     expect(transaction.inboxMessage.updateMany).toHaveBeenCalledOnce();
+  });
+
+  it('fences completion by an owner whose poll lease has expired', async () => {
+    const { subject, transaction } = pollHarness();
+    transaction.inboxMessage.findUnique.mockResolvedValueOnce({
+      payloadSha256: 'c'.repeat(64),
+      processedAt: null,
+    });
+    transaction.providerExecution.findUnique.mockResolvedValueOnce({
+      id: EXECUTION_ID,
+      status: 'RUNNING',
+      currentAttempt: 2,
+      routeEpoch: 0,
+      pollCount: 0,
+      pollLeaseToken: 'd'.repeat(64),
+      pollLeaseExpiresAt: NOW,
+      version: 4,
+    });
+
+    await expect(
+      subject.complete({
+        ...pollInput(),
+        state: 'RUNNING',
+        completedAt: NOW,
+        stateOutbox: {
+          id: '0198f4d4-21c2-7b7d-8a03-08a0da2a51d1',
+          aggregateId: TASK_ID,
+          eventType: 'provider.execution-running.v1',
+          eventVersion: 1,
+          deduplicationKey: 'expired-complete',
+          payload: {},
+          headers: {},
+          occurredAt: NOW,
+          availableAt: NOW,
+        },
+      }),
+    ).rejects.toThrow('STALE_POLL_CLAIM');
+    expect(transaction.providerExecution.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('fences deferral by an owner whose poll lease has expired', async () => {
+    const { subject, transaction } = pollHarness();
+    transaction.inboxMessage.findUnique.mockResolvedValueOnce({
+      payloadSha256: 'c'.repeat(64),
+      processedAt: null,
+    });
+    transaction.providerExecution.findUnique.mockResolvedValueOnce({
+      id: EXECUTION_ID,
+      status: 'RUNNING',
+      currentAttempt: 2,
+      routeEpoch: 0,
+      pollCount: 0,
+      pollLeaseToken: 'd'.repeat(64),
+      pollLeaseExpiresAt: NOW,
+      version: 4,
+    });
+    const nextPollAt = new Date(NOW.getTime() + 30_000);
+    const input: DeferPollInput = {
+      ...pollInput(),
+      errorCode: 'PROVIDER_TIMEOUT',
+      deferredAt: NOW,
+      nextPollAt,
+      nextPollOutbox: {
+        id: '0198f4d4-21c2-7b7d-8a03-08a0da2a51d2',
+        aggregateId: TASK_ID,
+        eventType: 'provider.execution-poll-due.v1',
+        eventVersion: 1,
+        deduplicationKey: 'expired-defer',
+        payload: {},
+        headers: {},
+        occurredAt: NOW,
+        availableAt: nextPollAt,
+      },
+    };
+
+    await expect(subject.defer(input)).rejects.toThrow('STALE_POLL_CLAIM');
+    expect(transaction.providerExecution.updateMany).not.toHaveBeenCalled();
   });
 });

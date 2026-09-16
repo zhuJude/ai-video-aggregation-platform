@@ -53,8 +53,10 @@ export class PrismaCallbackRepository implements CallbackRepository {
           select: {
             id: true,
             taskId: true,
+            modelCode: true,
             status: true,
             currentAttempt: true,
+            routeEpoch: true,
             lastProviderSequence: true,
             version: true,
             traceId: true,
@@ -144,8 +146,10 @@ export class PrismaCallbackRepository implements CallbackRepository {
             executionId: execution.id,
             taskId: execution.taskId,
             providerId: input.providerId,
+            modelCode: execution.modelCode,
             providerTaskId: input.providerTaskId,
             attemptNumber: execution.currentAttempt,
+            routeEpoch: execution.routeEpoch,
             providerEventId: input.providerEventId,
             sequence: input.sequence,
             status: input.state,
@@ -228,6 +232,7 @@ export class PrismaPollRepository implements PollRepository {
             providerTaskId: true,
             status: true,
             currentAttempt: true,
+            routeEpoch: true,
             pollCount: true,
             nextPollAt: true,
             pollLeaseToken: true,
@@ -250,6 +255,7 @@ export class PrismaPollRepository implements PollRepository {
           execution.modelCode !== input.modelCode ||
           execution.providerTaskId !== input.providerTaskId ||
           execution.currentAttempt !== input.attemptNumber ||
+          execution.routeEpoch !== input.routeEpoch ||
           execution.pollCount + 1 !== input.pollNumber
         )
           throw new Error('STALE_POLL_EVENT');
@@ -328,8 +334,10 @@ export class PrismaPollRepository implements PollRepository {
             id: true,
             status: true,
             currentAttempt: true,
+            routeEpoch: true,
             pollCount: true,
             pollLeaseToken: true,
+            pollLeaseExpiresAt: true,
             version: true,
           },
         });
@@ -340,12 +348,17 @@ export class PrismaPollRepository implements PollRepository {
         }
         if (
           execution.currentAttempt !== input.attemptNumber ||
+          execution.routeEpoch !== input.routeEpoch ||
           execution.pollCount !== input.pollNumber - 1 ||
-          execution.pollLeaseToken !== input.leaseToken
+          execution.pollLeaseToken !== input.leaseToken ||
+          execution.pollLeaseExpiresAt === null ||
+          execution.pollLeaseExpiresAt.getTime() <= input.completedAt.getTime()
         )
           throw new Error('STALE_POLL_CLAIM');
-        const terminal = isTerminalProviderStatus(input.state);
-        const applyState = providerRank(input.state) >= providerRank(execution.status);
+        const terminal = input.state === 'AMBIGUOUS' || isTerminalProviderStatus(input.state);
+        const applyState =
+          input.state === 'AMBIGUOUS' ||
+          providerRank(input.state) >= providerRank(execution.status);
         const updated = await transaction.providerExecution.updateMany({
           where: {
             id: input.executionId,
@@ -354,6 +367,7 @@ export class PrismaPollRepository implements PollRepository {
             currentAttempt: input.attemptNumber,
             pollCount: input.pollNumber - 1,
             pollLeaseToken: input.leaseToken,
+            pollLeaseExpiresAt: { gt: input.completedAt },
           },
           data: {
             ...(applyState ? { status: input.state } : {}),
@@ -409,8 +423,10 @@ export class PrismaPollRepository implements PollRepository {
           select: {
             status: true,
             currentAttempt: true,
+            routeEpoch: true,
             pollCount: true,
             pollLeaseToken: true,
+            pollLeaseExpiresAt: true,
             version: true,
           },
         });
@@ -421,8 +437,11 @@ export class PrismaPollRepository implements PollRepository {
         }
         if (
           execution.currentAttempt !== input.attemptNumber ||
+          execution.routeEpoch !== input.routeEpoch ||
           execution.pollCount !== input.pollNumber - 1 ||
-          execution.pollLeaseToken !== input.leaseToken
+          execution.pollLeaseToken !== input.leaseToken ||
+          execution.pollLeaseExpiresAt === null ||
+          execution.pollLeaseExpiresAt.getTime() <= input.deferredAt.getTime()
         )
           throw new Error('STALE_POLL_CLAIM');
         const updated = await transaction.providerExecution.updateMany({
@@ -431,8 +450,10 @@ export class PrismaPollRepository implements PollRepository {
             version: execution.version,
             status: execution.status,
             currentAttempt: input.attemptNumber,
+            routeEpoch: input.routeEpoch,
             pollCount: input.pollNumber - 1,
             pollLeaseToken: input.leaseToken,
+            pollLeaseExpiresAt: { gt: input.deferredAt },
           },
           data: {
             pollCount: input.pollNumber,

@@ -20,16 +20,39 @@ export const QueuedConsumerName = 'provider-runtime:generation-task-queued:v1' a
 export const RetryConsumerName = 'provider-runtime:execution-retry-scheduled:v1' as const;
 export type ConsumerName = typeof QueuedConsumerName | typeof RetryConsumerName;
 
-const QueuedTaskDataSchema = z.strictObject({
-  taskId: UuidSchema,
-  userId: UuidSchema,
-  quoteId: UuidSchema,
-  capabilityVersionId: UuidSchema,
-  status: z.literal('QUEUED'),
-  taskVersion: z.int().positive(),
-  quotedPoints: PointsStringSchema,
-  parametersSnapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
-});
+const QueuedTaskDataSchema = z
+  .strictObject({
+    taskId: UuidSchema,
+    userId: UuidSchema,
+    quoteId: UuidSchema,
+    capabilityVersionId: UuidSchema,
+    status: z.literal('QUEUED'),
+    taskVersion: z.int().positive(),
+    quotedPoints: PointsStringSchema,
+    parametersSnapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    routeEpoch: z.int().nonnegative().default(0),
+    failoverAuthorized: z.boolean().default(false),
+    originalConfirmedUnaccepted: z.literal(true).optional(),
+    originalConfirmedUnbilled: z.literal(true).optional(),
+    priorExecutionId: UuidSchema.optional(),
+    authorizedProviderId: UuidSchema.optional(),
+    authorizedModelCode: z.string().min(1).max(160).optional(),
+  })
+  .superRefine((value, context) => {
+    const proofComplete =
+      value.failoverAuthorized &&
+      value.originalConfirmedUnaccepted === true &&
+      value.originalConfirmedUnbilled === true &&
+      value.priorExecutionId !== undefined &&
+      value.authorizedProviderId !== undefined &&
+      value.authorizedModelCode !== undefined;
+    if (
+      (value.routeEpoch === 0 && value.failoverAuthorized) ||
+      (value.routeEpoch > 0 && !proofComplete)
+    ) {
+      context.addIssue({ code: 'custom', message: 'invalid failover authorization' });
+    }
+  });
 const RetryDataSchema = z.strictObject({
   executionId: UuidSchema,
   taskId: UuidSchema,
@@ -39,6 +62,7 @@ const RetryDataSchema = z.strictObject({
   modelCode: z.string().min(1).max(160),
   priorAttemptNumber: z.int().positive(),
   dueAt: z.iso.datetime({ offset: true }),
+  routeEpoch: z.int().nonnegative().default(0),
 });
 type QueuedTaskData = z.infer<typeof QueuedTaskDataSchema>;
 type RetryData = z.infer<typeof RetryDataSchema>;
@@ -95,6 +119,9 @@ export interface BeginExecutionInput {
   readonly executionId: string;
   readonly attemptId: string;
   readonly taskId: string;
+  readonly routeEpoch: number;
+  readonly failoverAuthorized: boolean;
+  readonly priorExecutionId?: string;
   readonly capabilityVersionId: string;
   readonly parametersSnapshotSha256: string;
   readonly providerId: string;
@@ -127,6 +154,9 @@ export interface PreflightQueuedInput {
   readonly eventType: 'generation.task-queued.v1';
   readonly payloadSha256: string;
   readonly taskId: string;
+  readonly routeEpoch: number;
+  readonly failoverAuthorized: boolean;
+  readonly priorExecutionId?: string;
   readonly capabilityVersionId: string;
   readonly parametersSnapshotSha256: string;
   readonly receivedAt: Date;
@@ -141,6 +171,7 @@ export interface ClaimRetryInput {
   readonly executionId: string;
   readonly attemptId: string;
   readonly taskId: string;
+  readonly routeEpoch: number;
   readonly capabilityVersionId: string;
   readonly parametersSnapshotSha256: string;
   readonly providerId: string;
@@ -354,6 +385,11 @@ export class ProviderExecutionService {
       eventType: 'generation.task-queued.v1',
       payloadSha256,
       taskId: event.data.taskId,
+      routeEpoch: event.data.routeEpoch,
+      failoverAuthorized: event.data.failoverAuthorized,
+      ...(event.data.priorExecutionId === undefined
+        ? {}
+        : { priorExecutionId: event.data.priorExecutionId }),
       capabilityVersionId: event.data.capabilityVersionId,
       parametersSnapshotSha256: event.data.parametersSnapshotSha256,
       receivedAt: now,
@@ -361,6 +397,13 @@ export class ProviderExecutionService {
     });
     if (preflight === 'REJECTED_BINDING') return { ack: true, outcome: 'REJECTED_BINDING' };
     const dispatch = await this.resolve(event.data);
+    if (
+      event.data.routeEpoch > 0 &&
+      (dispatch.providerId !== event.data.authorizedProviderId ||
+        dispatch.modelCode !== event.data.authorizedModelCode)
+    ) {
+      throw new ProviderRuntimeError('FAILOVER_ROUTE_MISMATCH');
+    }
     const executionId = this.dependencies.ids.next();
     const attemptId = this.dependencies.ids.next();
     const leaseToken = fencingToken(event.id, attemptId);
@@ -372,6 +415,11 @@ export class ProviderExecutionService {
       executionId,
       attemptId,
       taskId: event.data.taskId,
+      routeEpoch: event.data.routeEpoch,
+      failoverAuthorized: event.data.failoverAuthorized,
+      ...(event.data.priorExecutionId === undefined
+        ? {}
+        : { priorExecutionId: event.data.priorExecutionId }),
       capabilityVersionId: event.data.capabilityVersionId,
       parametersSnapshotSha256: event.data.parametersSnapshotSha256,
       providerId: dispatch.providerId,
@@ -428,6 +476,7 @@ export class ProviderExecutionService {
       executionId: event.data.executionId,
       attemptId,
       taskId: event.data.taskId,
+      routeEpoch: event.data.routeEpoch,
       capabilityVersionId: event.data.capabilityVersionId,
       parametersSnapshotSha256: event.data.parametersSnapshotSha256,
       providerId: event.data.providerId,
@@ -520,24 +569,27 @@ export class ProviderExecutionService {
     }
     await this.dependencies.circuit.record(circuitKey, permit, 'SUCCESS');
     const completedAt = this.dependencies.clock.now();
+    const immediateSuccess = created.state === 'SUCCEEDED';
+    const durableState = immediateSuccess ? ('ACCEPTED' as const) : created.state;
     const pollSchedule =
-      created.state === 'ACCEPTED' || created.state === 'RUNNING'
-        ? this.initialPollSchedule(active, created.providerTaskId, completedAt)
+      durableState === 'ACCEPTED' || durableState === 'RUNNING'
+        ? this.initialPollSchedule(active, created.providerTaskId, completedAt, immediateSuccess)
         : undefined;
     const completion: CompleteExecutionInput = {
       ...completionIdentity(active),
-      status: created.state,
+      status: durableState,
       providerTaskId: created.providerTaskId,
       nextAction: pollSchedule === undefined ? 'NONE' : 'POLL',
       completedAt,
-      outbox: this.outbox(active, eventTypeForState(created.state), created.state, completedAt, {
+      outbox: this.outbox(active, eventTypeForState(durableState), durableState, completedAt, {
         providerTaskId: created.providerTaskId,
+        ...(immediateSuccess ? { immediateSuccessRequiresQuery: true } : {}),
       }),
       ...(pollSchedule === undefined ? {} : { pollSchedule }),
     };
     try {
       await this.dependencies.repository.complete(completion);
-      return { ack: true, outcome: created.state };
+      return { ack: true, outcome: durableState };
     } catch {
       const ambiguity: CommitAmbiguityInput = {
         ...completionIdentity(active),
@@ -598,12 +650,15 @@ export class ProviderExecutionService {
     active: ActiveExecution,
     providerTaskId: string,
     occurredAt: Date,
+    immediate = false,
   ): NonNullable<CompleteExecutionInput['pollSchedule']> {
     const callbackExpected = (active.dispatch.callbackMode ?? 'EXPECTED') === 'EXPECTED';
-    const delayMs = callbackExpected
-      ? (active.dispatch.callbackDeadlineMs ?? 120_000)
-      : (active.dispatch.pollIntervalMs ?? 30_000);
-    if (!Number.isInteger(delayMs) || delayMs < 1)
+    const delayMs = immediate
+      ? 0
+      : callbackExpected
+        ? (active.dispatch.callbackDeadlineMs ?? 120_000)
+        : (active.dispatch.pollIntervalMs ?? 30_000);
+    if (!Number.isInteger(delayMs) || delayMs < 0)
       throw new ProviderRuntimeError('INVALID_POLL_CONFIGURATION');
     const nextPollAt = new Date(occurredAt.getTime() + delayMs);
     const callbackDeadlineAt = callbackExpected ? nextPollAt : undefined;
@@ -624,6 +679,7 @@ export class ProviderExecutionService {
           modelCode: active.dispatch.modelCode,
           providerTaskId,
           attemptNumber: active.attemptNumber,
+          routeEpoch: active.event.data.routeEpoch,
           pollNumber: 1,
           dueAt: nextPollAt.toISOString(),
         },
@@ -809,6 +865,7 @@ export class ProviderExecutionService {
       providerId: dispatch.providerId,
       modelCode: dispatch.modelCode,
       priorAttemptNumber: attemptNumber,
+      routeEpoch: event.data.routeEpoch,
       dueAt: nextAttemptAt,
     };
     return {
@@ -828,6 +885,7 @@ export class ProviderExecutionService {
               providerId: dispatch.providerId,
               modelCode: dispatch.modelCode,
               attemptNumber,
+              routeEpoch: event.data.routeEpoch,
               status,
               ...detail,
             },

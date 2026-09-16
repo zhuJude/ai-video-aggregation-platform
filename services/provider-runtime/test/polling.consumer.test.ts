@@ -99,6 +99,50 @@ function harness(
 }
 
 describe('durable callback-loss polling', () => {
+  it('uses a unique poll lease owner token for every delivery attempt', async () => {
+    const { repository, service } = harness();
+
+    await service.handle(pollEvent());
+    await service.handle(pollEvent());
+
+    expect(repository.claims).toHaveLength(2);
+    expect(repository.claims[0]?.leaseToken).not.toBe(repository.claims[1]?.leaseToken);
+  });
+
+  it('turns success without canonical result URLs into durable ambiguous reconciliation', async () => {
+    const { adapter, repository, service } = harness();
+    adapter.queryTask.mockResolvedValue({ state: 'SUCCEEDED' });
+
+    await expect(service.handle(pollEvent())).resolves.toEqual({
+      ack: true,
+      outcome: 'AMBIGUOUS',
+    });
+    expect(repository.completions[0]).toMatchObject({
+      state: 'AMBIGUOUS',
+      errorCode: 'PROVIDER_SUCCESS_RESULT_MISSING',
+      stateOutbox: {
+        eventType: 'provider.execution-ambiguous.v1',
+      },
+    });
+    expect(repository.completions[0]?.stateOutbox.payload).toMatchObject({
+      repairRequired: true,
+    });
+  });
+
+  it('turns an empty success result list into durable ambiguous reconciliation', async () => {
+    const { adapter, repository, service } = harness();
+    adapter.queryTask.mockResolvedValue({ state: 'SUCCEEDED', resultUrls: [] });
+
+    await expect(service.handle(pollEvent())).resolves.toEqual({
+      ack: true,
+      outcome: 'AMBIGUOUS',
+    });
+    expect(repository.completions[0]).toMatchObject({
+      state: 'AMBIGUOUS',
+      errorCode: 'PROVIDER_SUCCESS_RESULT_MISSING',
+    });
+  });
+
   it('claims a due poll with its create attempt number and schedules the next poll', async () => {
     const { adapter, circuit, repository, service } = harness();
     await expect(service.handle(pollEvent())).resolves.toEqual({ ack: true, outcome: 'RUNNING' });
@@ -129,7 +173,11 @@ describe('durable callback-loss polling', () => {
     'stops polling after terminal state %s',
     async (state) => {
       const { adapter, repository, service } = harness();
-      adapter.queryTask.mockResolvedValue({ state });
+      adapter.queryTask.mockResolvedValue(
+        state === 'SUCCEEDED'
+          ? { state, resultUrls: ['https://mock.invalid/result.mp4'] }
+          : { state },
+      );
       await expect(service.handle(pollEvent())).resolves.toEqual({ ack: true, outcome: state });
       expect(repository.completions[0]?.nextPollAt).toBeUndefined();
       expect(repository.completions[0]?.nextPollOutbox).toBeUndefined();

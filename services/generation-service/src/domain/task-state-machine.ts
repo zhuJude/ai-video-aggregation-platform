@@ -6,7 +6,7 @@ const allowedTransitions: Record<TaskStatus, readonly TaskStatus[]> = {
   QUOTED: ['RESERVED'],
   RESERVED: ['QUEUED', 'REFUNDED'],
   QUEUED: ['SUBMITTING', 'CANCELED', 'EXPIRED'],
-  SUBMITTING: ['RUNNING', 'FAILED'],
+  SUBMITTING: ['QUEUED', 'RUNNING', 'FAILED'],
   RUNNING: ['SUCCEEDED', 'FAILED', 'CANCELED', 'EXPIRED'],
   SUCCEEDED: ['SETTLED'],
   FAILED: ['REFUNDED'],

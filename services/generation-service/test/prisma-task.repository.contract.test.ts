@@ -196,6 +196,14 @@ describe('PrismaTaskRepository generated-client contract', () => {
               expect.objectContaining({ taskVersion: 2 }),
             ]),
           },
+          saga: {
+            create: expect.objectContaining({
+              quotedPoints: '1200',
+              settlementPoints: '1200',
+              providerAccepted: false,
+              routingFailoverAuthorized: false,
+            }),
+          },
         }),
       }),
     );

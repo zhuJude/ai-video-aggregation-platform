@@ -83,4 +83,26 @@ describe('generation persistence schema', () => {
 
     expect(task).toContain('@@index([userId, createdAt, id])');
   });
+
+  it('persists terminal Saga progress and provider reconciliation facts', () => {
+    const task = schemaBlock('model', 'GenerationTask');
+    const saga = schemaBlock('model', 'TaskSaga');
+
+    expect(task).toMatch(/\bsaga\s+TaskSaga\?/);
+    expect(saga).toMatch(/\btaskId\s+String\s+@id\s+@db\.Uuid/);
+    expect(saga).toMatch(/\bproviderAccepted\s+Boolean\s+@default\(false\)/);
+    expect(saga).toMatch(/\bproviderStateRank\s+Int\s+@default\(0\)/);
+    expect(saga).toMatch(/\bsettlementPoints\s+String\s+@db\.VarChar\(40\)/);
+    expect(saga).toMatch(/\bassetImportRequested\s+Boolean\s+@default\(false\)/);
+    expect(saga).toMatch(/\broutingFailoverAuthorized\s+Boolean\s+@default\(false\)/);
+  });
+
+  it('leases pending inbox work and deduplicates operator cases', () => {
+    const inbox = schemaBlock('model', 'InboxMessage');
+    const repair = schemaBlock('model', 'TaskRepairCase');
+
+    expect(inbox).toMatch(/\bleaseToken\s+String\?\s+@db\.Char\(64\)/);
+    expect(inbox).toMatch(/\bleaseExpiresAt\s+DateTime\?\s+@db\.Timestamptz\(3\)/);
+    expect(repair).toMatch(/\bdeduplicationKey\s+String\?\s+@unique\s+@db\.VarChar\(240\)/);
+  });
 });

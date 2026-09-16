@@ -24,6 +24,8 @@ function beginInput(): BeginExecutionInput {
     executionId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51b0',
     attemptId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51b1',
     taskId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51a2',
+    routeEpoch: 0,
+    failoverAuthorized: false,
     capabilityVersionId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51a5',
     parametersSnapshotSha256: 'b'.repeat(64),
     providerId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51a7',
@@ -56,6 +58,25 @@ function beginInput(): BeginExecutionInput {
       occurredAt: NOW,
       availableAt: NOW,
     },
+  };
+}
+
+function failoverInput(
+  overrides: Partial<BeginExecutionInput> = {},
+  includePriorExecution = true,
+): BeginExecutionInput {
+  const original = beginInput();
+  return {
+    ...original,
+    messageId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51d0',
+    executionId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51d1',
+    attemptId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51d2',
+    routeEpoch: 1,
+    failoverAuthorized: true,
+    ...(includePriorExecution ? { priorExecutionId: original.executionId } : {}),
+    providerId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51d3',
+    modelCode: 'substitute-model-v1',
+    ...overrides,
   };
 }
 
@@ -135,6 +156,7 @@ function claimInput(overrides: Partial<ClaimRetryInput> = {}): ClaimRetryInput {
     executionId: begin.executionId,
     attemptId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51c1',
     taskId: begin.taskId,
+    routeEpoch: begin.routeEpoch,
     capabilityVersionId: begin.capabilityVersionId,
     parametersSnapshotSha256: begin.parametersSnapshotSha256,
     providerId: begin.providerId,
@@ -225,6 +247,7 @@ describe('PrismaExecutionRepository', () => {
     vi.mocked(transaction.providerExecution.findUnique).mockResolvedValue({
       id: input.executionId,
       taskId: input.taskId,
+      routeEpoch: input.routeEpoch,
       capabilityVersionId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51ff',
       parametersSnapshotSha256: input.parametersSnapshotSha256,
       providerId: input.providerId,
@@ -239,6 +262,8 @@ describe('PrismaExecutionRepository', () => {
         eventType: input.eventType,
         payloadSha256: input.payloadSha256,
         taskId: input.taskId,
+        routeEpoch: input.routeEpoch,
+        failoverAuthorized: input.failoverAuthorized,
         capabilityVersionId: input.capabilityVersionId,
         parametersSnapshotSha256: input.parametersSnapshotSha256,
         receivedAt: input.receivedAt,
@@ -264,6 +289,8 @@ describe('PrismaExecutionRepository', () => {
         eventType: input.eventType,
         payloadSha256: input.payloadSha256,
         taskId: input.taskId,
+        routeEpoch: input.routeEpoch,
+        failoverAuthorized: input.failoverAuthorized,
         capabilityVersionId: input.capabilityVersionId,
         parametersSnapshotSha256: input.parametersSnapshotSha256,
         receivedAt: input.receivedAt,
@@ -295,6 +322,94 @@ describe('PrismaExecutionRepository', () => {
         status: 'STARTED',
       }),
     });
+  });
+
+  it('creates an explicitly authorized next route epoch against a different provider', async () => {
+    const input = failoverInput();
+    const original = beginInput();
+    const { transaction } = createTransaction();
+    vi.mocked(transaction.providerExecution.findUnique)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: original.executionId,
+        taskId: original.taskId,
+        routeEpoch: 0,
+        providerId: original.providerId,
+        status: 'SUBMITTING',
+      });
+
+    await expect(repository(transaction).repository.begin(input)).resolves.toMatchObject({
+      kind: 'STARTED',
+      executionId: input.executionId,
+    });
+    expect(transaction.providerExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        taskId: input.taskId,
+        routeEpoch: 1,
+        providerId: input.providerId,
+        idempotencyKey: input.taskId,
+      }),
+    });
+    expect(transaction.providerAttempt.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ idempotencyKey: input.taskId }),
+    });
+  });
+
+  it('durably rejects a failover begin without authorization proof', async () => {
+    const input = failoverInput({ failoverAuthorized: false }, false);
+    const { order, transaction } = createTransaction();
+
+    await expect(repository(transaction).repository.begin(input)).resolves.toEqual({
+      kind: 'REJECTED_BINDING',
+    });
+    expect(order).toEqual(['inbox:create', 'outbox:create', 'inbox:processed']);
+    expect(transaction.providerExecution.create).not.toHaveBeenCalled();
+  });
+
+  it('durably rejects a failover preflight whose prior epoch cannot be verified', async () => {
+    const input = failoverInput();
+    const { order, transaction } = createTransaction();
+
+    await expect(
+      repository(transaction).repository.preflightQueued({
+        consumer: input.consumer,
+        messageId: input.messageId,
+        eventType: input.eventType,
+        payloadSha256: input.payloadSha256,
+        taskId: input.taskId,
+        routeEpoch: input.routeEpoch,
+        failoverAuthorized: input.failoverAuthorized,
+        ...(input.priorExecutionId === undefined
+          ? {}
+          : { priorExecutionId: input.priorExecutionId }),
+        capabilityVersionId: input.capabilityVersionId,
+        parametersSnapshotSha256: input.parametersSnapshotSha256,
+        receivedAt: input.receivedAt,
+        bindingMismatchOutbox: input.bindingMismatchOutbox,
+      }),
+    ).resolves.toEqual('REJECTED_BINDING');
+    expect(order).toEqual(['inbox:create', 'outbox:create', 'inbox:processed']);
+  });
+
+  it('rejects same-provider failover even when the route epoch proof is otherwise valid', async () => {
+    const original = beginInput();
+    const input = failoverInput({ providerId: original.providerId });
+    const { order, transaction } = createTransaction();
+    vi.mocked(transaction.providerExecution.findUnique)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: original.executionId,
+        taskId: original.taskId,
+        routeEpoch: 0,
+        providerId: original.providerId,
+        status: 'SUBMITTING',
+      });
+
+    await expect(repository(transaction).repository.begin(input)).resolves.toEqual({
+      kind: 'REJECTED_BINDING',
+    });
+    expect(order).toEqual(['inbox:create', 'outbox:create', 'inbox:processed']);
+    expect(transaction.providerExecution.create).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -332,6 +447,7 @@ describe('PrismaExecutionRepository', () => {
     vi.mocked(transaction.providerExecution.findUnique).mockResolvedValue({
       id: beginInput().executionId,
       taskId: beginInput().taskId,
+      routeEpoch: beginInput().routeEpoch,
       capabilityVersionId: beginInput().capabilityVersionId,
       parametersSnapshotSha256: beginInput().parametersSnapshotSha256,
       providerId: beginInput().providerId,
@@ -354,6 +470,7 @@ describe('PrismaExecutionRepository', () => {
     vi.mocked(transaction.providerExecution.findUnique).mockResolvedValue({
       id: input.executionId,
       taskId: input.taskId,
+      routeEpoch: input.routeEpoch,
       capabilityVersionId: input.capabilityVersionId,
       parametersSnapshotSha256: input.parametersSnapshotSha256,
       providerId: input.providerId,
@@ -383,6 +500,7 @@ describe('PrismaExecutionRepository', () => {
       vi.mocked(transaction.providerExecution.findUnique).mockResolvedValue({
         id: input.executionId,
         taskId: input.taskId,
+        routeEpoch: input.routeEpoch,
         capabilityVersionId: input.capabilityVersionId,
         parametersSnapshotSha256: input.parametersSnapshotSha256,
         providerId: input.providerId,
@@ -675,6 +793,7 @@ describe('PrismaExecutionRepository', () => {
     vi.mocked(transaction.providerExecution.findUnique).mockResolvedValue({
       id: input.executionId,
       taskId: input.taskId,
+      routeEpoch: input.routeEpoch,
       capabilityVersionId: input.capabilityVersionId,
       parametersSnapshotSha256: input.parametersSnapshotSha256,
       providerId: input.providerId,
@@ -705,6 +824,7 @@ describe('PrismaExecutionRepository', () => {
     vi.mocked(transaction.providerExecution.findUnique).mockResolvedValue({
       id: input.executionId,
       taskId: input.taskId,
+      routeEpoch: input.routeEpoch,
       capabilityVersionId: input.capabilityVersionId,
       parametersSnapshotSha256: input.parametersSnapshotSha256,
       providerId: input.providerId,
@@ -736,6 +856,7 @@ describe('PrismaExecutionRepository', () => {
       vi.mocked(transaction.providerExecution.findUnique).mockResolvedValue({
         id: input.executionId,
         taskId: input.taskId,
+        routeEpoch: input.routeEpoch,
         capabilityVersionId: input.capabilityVersionId,
         parametersSnapshotSha256: input.parametersSnapshotSha256,
         providerId: input.providerId,

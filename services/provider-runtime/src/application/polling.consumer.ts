@@ -25,6 +25,7 @@ const PollDataSchema = z.strictObject({
   providerTaskId: z.string().min(1).max(512),
   attemptNumber: z.int().positive(),
   pollNumber: z.int().positive(),
+  routeEpoch: z.int().nonnegative().default(0),
   dueAt: z.iso.datetime({ offset: true }),
 });
 const ProviderQueryResultSchema = z.strictObject({
@@ -44,6 +45,7 @@ export interface PollOutboxEvent {
     | 'provider.execution-succeeded.v1'
     | 'provider.execution-failed.v1'
     | 'provider.execution-canceled.v1'
+    | 'provider.execution-ambiguous.v1'
     | 'provider.health.auth-failed.v1'
     | 'provider.health.zero-balance.v1';
   readonly eventVersion: 1;
@@ -66,6 +68,7 @@ export interface ClaimPollInput {
   readonly providerTaskId: string;
   readonly attemptNumber: number;
   readonly pollNumber: number;
+  readonly routeEpoch: number;
   readonly dueAt: Date;
   readonly receivedAt: Date;
   readonly leaseToken: string;
@@ -99,8 +102,9 @@ export interface CompletePollInput {
   readonly providerTaskId: string;
   readonly attemptNumber: number;
   readonly pollNumber: number;
+  readonly routeEpoch: number;
   readonly leaseToken: string;
-  readonly state: ObservableProviderStatus;
+  readonly state: ObservableProviderStatus | 'AMBIGUOUS';
   readonly resultUrls?: readonly string[];
   readonly errorCode?: string;
   readonly completedAt: Date;
@@ -120,6 +124,7 @@ export interface DeferPollInput {
   readonly providerTaskId: string;
   readonly attemptNumber: number;
   readonly pollNumber: number;
+  readonly routeEpoch: number;
   readonly leaseToken: string;
   readonly errorCode: string;
   readonly deferredAt: Date;
@@ -164,6 +169,7 @@ export interface PollResult {
   readonly ack: boolean;
   readonly outcome:
     | ObservableProviderStatus
+    | 'AMBIGUOUS'
     | 'NOT_DUE'
     | 'TERMINAL'
     | 'MANUAL_RECONCILE'
@@ -208,8 +214,9 @@ export class ProviderPollingService {
       throw new Error('INVALID_POLL_EVENT');
     const payloadSha256 = sha256(rawEvent);
     const now = this.dependencies.clock.now();
+    const ownerId = this.dependencies.ids.next();
     const leaseToken = createHash('sha256')
-      .update(`${envelope.data.id}:${String(data.data.pollNumber)}`)
+      .update(`${envelope.data.id}:${String(data.data.pollNumber)}:${ownerId}`)
       .digest('hex');
     const claim = await this.dependencies.repository.claim({
       consumer: PollConsumerName,
@@ -266,7 +273,11 @@ export class ProviderPollingService {
     await this.dependencies.circuit.record(circuitKey, permit, 'SUCCESS');
     const providerResult = parsedProviderResult.data;
     const completedAt = this.dependencies.clock.now();
-    const terminal = isTerminalProviderStatus(providerResult.state);
+    const missingSuccessResult =
+      providerResult.state === 'SUCCEEDED' &&
+      (providerResult.resultUrls === undefined || providerResult.resultUrls.length === 0);
+    const durableState = missingSuccessResult ? ('AMBIGUOUS' as const) : providerResult.state;
+    const terminal = missingSuccessResult || isTerminalProviderStatus(providerResult.state);
     const nextPollAt = terminal ? undefined : new Date(completedAt.getTime() + this.intervalMs);
     const headers = {
       traceId: envelope.data.traceId,
@@ -281,6 +292,7 @@ export class ProviderPollingService {
       providerTaskId: claim.providerTaskId,
       attemptNumber: claim.attemptNumber,
       pollNumber: claim.pollNumber,
+      routeEpoch: data.data.routeEpoch,
     };
     await this.dependencies.repository.complete({
       consumer: PollConsumerName,
@@ -288,19 +300,26 @@ export class ProviderPollingService {
       payloadSha256,
       ...basePayload,
       leaseToken: claim.leaseToken,
-      state: providerResult.state,
+      state: durableState,
       ...(providerResult.resultUrls === undefined ? {} : { resultUrls: providerResult.resultUrls }),
-      ...(providerResult.errorCode === undefined ? {} : { errorCode: providerResult.errorCode }),
+      ...(missingSuccessResult
+        ? { errorCode: 'PROVIDER_SUCCESS_RESULT_MISSING' }
+        : providerResult.errorCode === undefined
+          ? {}
+          : { errorCode: providerResult.errorCode }),
       completedAt,
       stateOutbox: {
         id: this.dependencies.ids.next(),
         aggregateId: claim.taskId,
-        eventType: eventTypeForState(providerResult.state),
+        eventType: eventTypeForState(durableState),
         eventVersion: 1,
         deduplicationKey: `${envelope.data.id}:state:${providerResult.state}`,
         payload: {
           ...basePayload,
-          status: providerResult.state,
+          status: durableState,
+          ...(missingSuccessResult
+            ? { errorCode: 'PROVIDER_SUCCESS_RESULT_MISSING', repairRequired: true }
+            : {}),
           ...(providerResult.resultUrls === undefined
             ? {}
             : { resultUrls: providerResult.resultUrls }),
@@ -333,7 +352,7 @@ export class ProviderPollingService {
             },
           }),
     });
-    return { ack: true, outcome: providerResult.state };
+    return { ack: true, outcome: durableState };
   }
 
   private async recordFailure(key: CircuitKey, permit: CircuitPermit, code: string): Promise<void> {
@@ -369,6 +388,7 @@ export class ProviderPollingService {
       modelCode: data.modelCode,
       providerTaskId: claim.providerTaskId,
       attemptNumber: claim.attemptNumber,
+      routeEpoch: data.routeEpoch,
       pollNumber: claim.pollNumber + 1,
       dueAt: nextPollAt.toISOString(),
     };
@@ -383,6 +403,7 @@ export class ProviderPollingService {
       providerTaskId: claim.providerTaskId,
       attemptNumber: claim.attemptNumber,
       pollNumber: claim.pollNumber,
+      routeEpoch: data.routeEpoch,
       leaseToken: claim.leaseToken,
       errorCode,
       deferredAt,
@@ -424,13 +445,16 @@ export class PollingConsumer {
   }
 }
 
-function eventTypeForState(state: ObservableProviderStatus): PollOutboxEvent['eventType'] {
+function eventTypeForState(
+  state: ObservableProviderStatus | 'AMBIGUOUS',
+): PollOutboxEvent['eventType'] {
   return {
     ACCEPTED: 'provider.execution-accepted.v1',
     RUNNING: 'provider.execution-running.v1',
     SUCCEEDED: 'provider.execution-succeeded.v1',
     FAILED: 'provider.execution-failed.v1',
     CANCELED: 'provider.execution-canceled.v1',
+    AMBIGUOUS: 'provider.execution-ambiguous.v1',
   }[state] as PollOutboxEvent['eventType'];
 }
 

@@ -186,6 +186,91 @@ function harness(
 }
 
 describe('ProviderExecutionService', () => {
+  it('accepts a proof-bound failover epoch while preserving adapter taskId idempotency', async () => {
+    const substituteProviderId = '0198f4d4-21c2-7b7d-8a03-08a0da2a51d7';
+    const priorExecutionId = '0198f4d4-21c2-7b7d-8a03-08a0da2a51d8';
+    const adapter = createAdapter();
+    const { repository, service } = harness({
+      adapter,
+      dispatch: { providerId: substituteProviderId, modelCode: 'internal-model-v2' },
+    });
+    const base = queuedEvent() as { data: Record<string, unknown> };
+    const failover = queuedEvent({
+      id: '0198f4d4-21c2-7b7d-8a03-08a0da2a51d9',
+      data: {
+        ...base.data,
+        taskVersion: 4,
+        routeEpoch: 1,
+        failoverAuthorized: true,
+        originalConfirmedUnaccepted: true,
+        originalConfirmedUnbilled: true,
+        priorExecutionId,
+        authorizedProviderId: substituteProviderId,
+        authorizedModelCode: 'internal-model-v2',
+      },
+    });
+
+    await expect(service.handle(failover)).resolves.toMatchObject({ ack: true });
+    expect(repository.begins[0]).toMatchObject({
+      routeEpoch: 1,
+      failoverAuthorized: true,
+      priorExecutionId,
+      idempotencyKey: TASK_ID,
+      providerId: substituteProviderId,
+      modelCode: 'internal-model-v2',
+    });
+    expect(adapter.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: TASK_ID, idempotencyKey: TASK_ID }),
+    );
+  });
+
+  it('rejects failover when the trusted resolver does not match the authorized substitute route', async () => {
+    const base = queuedEvent() as { data: Record<string, unknown> };
+    const { adapter, repository, service } = harness();
+    const failover = queuedEvent({
+      id: '0198f4d4-21c2-7b7d-8a03-08a0da2a51da',
+      data: {
+        ...base.data,
+        routeEpoch: 1,
+        failoverAuthorized: true,
+        originalConfirmedUnaccepted: true,
+        originalConfirmedUnbilled: true,
+        priorExecutionId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51db',
+        authorizedProviderId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51dc',
+        authorizedModelCode: 'different-model',
+      },
+    });
+
+    await expect(service.handle(failover)).rejects.toMatchObject({
+      code: 'FAILOVER_ROUTE_MISMATCH',
+    });
+    expect(repository.begins).toHaveLength(0);
+    expect(adapter.createTask).not.toHaveBeenCalled();
+  });
+
+  it('normalizes an immediate create success to accepted and schedules an immediate canonical query', async () => {
+    const adapter = createAdapter();
+    vi.mocked(adapter.createTask).mockResolvedValue({
+      providerTaskId: 'remote-1',
+      state: 'SUCCEEDED',
+    });
+    const { repository, service } = harness({ adapter });
+
+    await expect(service.handle(queuedEvent())).resolves.toEqual({
+      ack: true,
+      outcome: 'ACCEPTED',
+    });
+    expect(repository.completions[0]).toMatchObject({
+      status: 'ACCEPTED',
+      nextAction: 'POLL',
+      outbox: { eventType: 'provider.execution-accepted.v1' },
+      pollSchedule: {
+        nextPollAt: NOW,
+        outbox: { eventType: 'provider.execution-poll-due.v1', availableAt: NOW },
+      },
+    });
+  });
+
   it('persists execution and attempt before invoking the adapter and ACKs after outbox commit', async () => {
     const { adapter, repository, service } = harness();
     vi.mocked(adapter.createTask).mockImplementation(async (input) => {
@@ -209,7 +294,6 @@ describe('ProviderExecutionService', () => {
 
   it.each([
     ['RUNNING', 'provider.execution-running.v1'],
-    ['SUCCEEDED', 'provider.execution-succeeded.v1'],
     ['FAILED', 'provider.execution-failed.v1'],
     ['CANCELED', 'provider.execution-canceled.v1'],
   ] as const)(

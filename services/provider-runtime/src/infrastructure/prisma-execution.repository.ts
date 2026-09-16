@@ -24,6 +24,7 @@ interface InboxRecord {
 interface ExecutionRecord {
   readonly id: string;
   readonly taskId?: string;
+  readonly routeEpoch?: number;
   readonly capabilityVersionId?: string;
   readonly parametersSnapshotSha256?: string;
   readonly providerId?: string;
@@ -65,11 +66,30 @@ export class PrismaExecutionRepository implements ExecutionRepository {
       const inbox = await readInbox(transaction, input);
       if (inbox?.processedAt)
         return inbox.lastError === 'IMMUTABLE_BINDING_MISMATCH' ? 'REJECTED_BINDING' : 'CONTINUE';
+      if (input.routeEpoch > 0) {
+        if (!input.failoverAuthorized || input.priorExecutionId === undefined) {
+          await rejectBinding(transaction, input, inbox, undefined);
+          return 'REJECTED_BINDING';
+        }
+        const prior = await transaction.providerExecution.findUnique({
+          where: { id: input.priorExecutionId },
+          select: { id: true, taskId: true, routeEpoch: true, status: true },
+        });
+        if (
+          prior === null ||
+          prior.taskId !== input.taskId ||
+          prior.routeEpoch !== input.routeEpoch - 1
+        ) {
+          await rejectBinding(transaction, input, inbox, prior?.id);
+          return 'REJECTED_BINDING';
+        }
+      }
       const execution = await transaction.providerExecution.findUnique({
-        where: { taskId: input.taskId },
+        where: { taskId_routeEpoch: { taskId: input.taskId, routeEpoch: input.routeEpoch } },
         select: {
           id: true,
           taskId: true,
+          routeEpoch: true,
           capabilityVersionId: true,
           parametersSnapshotSha256: true,
           status: true,
@@ -78,22 +98,13 @@ export class PrismaExecutionRepository implements ExecutionRepository {
       if (
         execution === null ||
         (execution.taskId === input.taskId &&
+          execution.routeEpoch === input.routeEpoch &&
           execution.capabilityVersionId === input.capabilityVersionId &&
           execution.parametersSnapshotSha256 === input.parametersSnapshotSha256)
       ) {
         return 'CONTINUE';
       }
-      if (inbox === null) await createInbox(transaction, input, false);
-      await createOutbox(transaction, {
-        ...input.bindingMismatchOutbox,
-        payload: {
-          ...input.bindingMismatchOutbox.payload,
-          executionId: execution.id,
-          errorCode: 'IMMUTABLE_BINDING_MISMATCH',
-          securityDisposition: true,
-        },
-      });
-      await processInbox(transaction, input, input.receivedAt, 'IMMUTABLE_BINDING_MISMATCH');
+      await rejectBinding(transaction, input, inbox, execution.id);
       return 'REJECTED_BINDING';
     });
   }
@@ -103,11 +114,19 @@ export class PrismaExecutionRepository implements ExecutionRepository {
       return await this.prisma.$transaction(async (transaction) => {
         const inbox = await readInbox(transaction, input);
         if (inbox?.processedAt) return { kind: 'DUPLICATE_COMPLETE' };
+        if (
+          input.routeEpoch > 0 &&
+          (!input.failoverAuthorized || input.priorExecutionId === undefined)
+        ) {
+          await rejectBinding(transaction, input, inbox, undefined);
+          return { kind: 'REJECTED_BINDING' };
+        }
         const existing = await transaction.providerExecution.findUnique({
-          where: { taskId: input.taskId },
+          where: { taskId_routeEpoch: { taskId: input.taskId, routeEpoch: input.routeEpoch } },
           select: {
             id: true,
             taskId: true,
+            routeEpoch: true,
             capabilityVersionId: true,
             parametersSnapshotSha256: true,
             providerId: true,
@@ -123,11 +142,27 @@ export class PrismaExecutionRepository implements ExecutionRepository {
           await createInbox(transaction, input, false);
           return resolveExistingQueued(transaction, input, existing);
         }
+        if (input.routeEpoch > 0 && input.priorExecutionId !== undefined) {
+          const prior = await transaction.providerExecution.findUnique({
+            where: { id: input.priorExecutionId },
+            select: { id: true, taskId: true, routeEpoch: true, providerId: true, status: true },
+          });
+          if (
+            prior === null ||
+            prior.taskId !== input.taskId ||
+            prior.routeEpoch !== input.routeEpoch - 1 ||
+            prior.providerId === input.providerId
+          ) {
+            await rejectBinding(transaction, input, inbox, prior?.id);
+            return { kind: 'REJECTED_BINDING' };
+          }
+        }
         await createInbox(transaction, input, false);
         await transaction.providerExecution.create({
           data: {
             id: input.executionId,
             taskId: input.taskId,
+            routeEpoch: input.routeEpoch,
             capabilityVersionId: input.capabilityVersionId,
             parametersSnapshotSha256: input.parametersSnapshotSha256,
             providerId: input.providerId,
@@ -170,10 +205,11 @@ export class PrismaExecutionRepository implements ExecutionRepository {
         if (inbox === null) throw error;
         if (inbox.processedAt !== null) return { kind: 'DUPLICATE_COMPLETE' };
         const existing = await transaction.providerExecution.findUnique({
-          where: { taskId: input.taskId },
+          where: { taskId_routeEpoch: { taskId: input.taskId, routeEpoch: input.routeEpoch } },
           select: {
             id: true,
             taskId: true,
+            routeEpoch: true,
             capabilityVersionId: true,
             parametersSnapshotSha256: true,
             providerId: true,
@@ -202,6 +238,7 @@ export class PrismaExecutionRepository implements ExecutionRepository {
         const binding = {
           id: input.executionId,
           taskId: input.taskId,
+          routeEpoch: input.routeEpoch,
           capabilityVersionId: input.capabilityVersionId,
           parametersSnapshotSha256: input.parametersSnapshotSha256,
           providerId: input.providerId,
@@ -453,6 +490,7 @@ async function resolveExistingQueued(
 function immutableBindingMatches(input: BeginExecutionInput, execution: ExecutionRecord): boolean {
   return (
     execution.taskId === input.taskId &&
+    execution.routeEpoch === input.routeEpoch &&
     execution.capabilityVersionId === input.capabilityVersionId &&
     execution.parametersSnapshotSha256 === input.parametersSnapshotSha256 &&
     execution.providerId === input.providerId &&
@@ -617,6 +655,31 @@ async function requirePendingInbox(
   const inbox = await readInbox(transaction, input);
   if (inbox === null) throw new ProviderRuntimeError('INBOX_MESSAGE_NOT_FOUND');
   return inbox.processedAt === null ? 'PENDING' : 'COMPLETE';
+}
+async function rejectBinding(
+  transaction: ProviderRuntimePrismaTransaction,
+  input: {
+    consumer: string;
+    messageId: string;
+    eventType: string;
+    payloadSha256: string;
+    receivedAt: Date;
+    bindingMismatchOutbox: PendingOutboxEvent;
+  },
+  inbox: InboxRecord | null,
+  executionId: string | undefined,
+): Promise<void> {
+  if (inbox === null) await createInbox(transaction, input, false);
+  await createOutbox(transaction, {
+    ...input.bindingMismatchOutbox,
+    payload: {
+      ...input.bindingMismatchOutbox.payload,
+      ...(executionId === undefined ? {} : { executionId }),
+      errorCode: 'IMMUTABLE_BINDING_MISMATCH',
+      securityDisposition: true,
+    },
+  });
+  await processInbox(transaction, input, input.receivedAt, 'IMMUTABLE_BINDING_MISMATCH');
 }
 async function processInbox(
   transaction: ProviderRuntimePrismaTransaction,
