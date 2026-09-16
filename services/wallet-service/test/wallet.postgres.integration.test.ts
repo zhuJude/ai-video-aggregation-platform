@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../generated/prisma/client.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WalletService } from '../src/application/wallet.service.js';
 import { AdjustmentService } from '../src/application/adjustment.service.js';

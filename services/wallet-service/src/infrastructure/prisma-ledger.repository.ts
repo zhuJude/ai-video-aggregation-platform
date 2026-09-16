@@ -1,4 +1,8 @@
-import { Prisma, type LedgerTransaction, type PrismaClient } from '@prisma/client';
+import {
+  Prisma,
+  type LedgerTransaction,
+  type PrismaClient,
+} from '../../generated/prisma/client.js';
 import {
   type LedgerPostCommand,
   type LedgerRepository,

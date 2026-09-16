@@ -1,4 +1,8 @@
-import { type AdjustmentApproval, type AdjustmentRequest, type PrismaClient } from '@prisma/client';
+import {
+  type AdjustmentApproval,
+  type AdjustmentRequest,
+  type PrismaClient,
+} from '../../generated/prisma/client.js';
 import type {
   AdjustmentRequestRecord,
   FinancialControlRepository,
