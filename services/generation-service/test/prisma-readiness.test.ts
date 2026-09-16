@@ -31,7 +31,8 @@ describe('Prisma readiness', () => {
     expect(packageJson.scripts).toMatchObject({
       'prisma:check': 'pnpm run prisma:validate && pnpm run prisma:migrate:smoke',
       'prisma:validate': 'prisma validate',
-      'prisma:generate': 'prisma generate',
+      'prisma:generate':
+        'prisma generate && prettier --write --ignore-path ../../.prettierignore "src/generated/prisma/**/*.ts"',
       'prisma:migrate:smoke':
         'prisma migrate diff --config prisma.schema-tools.config.ts --from-empty --to-schema prisma/schema.prisma --script',
     });
