@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PrismaClient } from '../generated/prisma/client.js';
 import { FakePaymentGateway } from '../src/adapters/fake-payment.gateway.js';
+import { PaymentCallbackService } from '../src/application/payment-callback.service.js';
 import { OrderService } from '../src/application/order.service.js';
 import { PrismaPaymentRepository } from '../src/infrastructure/prisma-payment.repository.js';
 
@@ -31,6 +32,8 @@ describe('payment PostgreSQL persistence', { concurrent: false }, () => {
   let containerId: string;
   let prisma: PrismaClient;
   let service: OrderService;
+  let repository: PrismaPaymentRepository;
+  let gateway: FakePaymentGateway;
 
   beforeAll(async () => {
     containerId = docker(
@@ -57,20 +60,19 @@ describe('payment PostgreSQL persistence', { concurrent: false }, () => {
       stdio: 'pipe',
     });
     prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) });
-    service = new OrderService(
-      new PrismaPaymentRepository(prisma, {
-        findPackage: () =>
-          Promise.resolve({
-            id: 'pkg-database',
-            title: '数据库套餐',
-            amountMinor: 2_000n,
-            points: 20_000n,
-            currency: 'CNY',
-            active: true,
-          }),
-      }),
-      new FakePaymentGateway(),
-    );
+    repository = new PrismaPaymentRepository(prisma, {
+      findPackage: () =>
+        Promise.resolve({
+          id: 'pkg-database',
+          title: '数据库套餐',
+          amountMinor: 2_000n,
+          points: 20_000n,
+          currency: 'CNY',
+          active: true,
+        }),
+    });
+    gateway = new FakePaymentGateway();
+    service = new OrderService(repository, gateway);
   }, 120_000);
 
   afterAll(async () => {
@@ -101,5 +103,39 @@ describe('payment PostgreSQL persistence', { concurrent: false }, () => {
         data: { amountMinor: 1n },
       }),
     ).rejects.toThrow(/PAYMENT_FACTS_ARE_IMMUTABLE/);
+  });
+
+  it('serializes concurrent duplicate callbacks into one outbox event and wallet credit', async () => {
+    const order = await service.create({
+      userId,
+      packageId: 'pkg-database',
+      traceId: 'fedcba9876543210fedcba9876543210',
+    });
+    vi.spyOn(gateway, 'verifyCallback').mockResolvedValue({
+      transactionId: 'wx-database-transaction',
+      orderNo: order.orderNo,
+      merchantId: '1900000109',
+      amountMinor: 2_000n,
+      currency: 'CNY',
+      paidAt: new Date('2026-08-31T12:00:00.000Z'),
+    });
+    const wallet = { credit: vi.fn(() => Promise.resolve({ ledgerTransactionId: 'ledger-1' })) };
+    const callback = new PaymentCallbackService(repository, gateway, wallet, {
+      merchantId: '1900000109',
+    });
+    const rawBody = '{"id":"callback-database"}';
+
+    const results = await Promise.all([callback.handle({}, rawBody), callback.handle({}, rawBody)]);
+
+    expect(results.filter((result) => result.accepted)).toHaveLength(1);
+    expect(wallet.credit).toHaveBeenCalledTimes(1);
+    await expect(
+      prisma.paymentOrder.findUniqueOrThrow({ where: { id: order.id } }),
+    ).resolves.toMatchObject({ status: 'PAID', transactionId: 'wx-database-transaction' });
+    await expect(
+      prisma.outboxEvent.count({
+        where: { aggregateId: order.id, eventType: 'payment.paid.v1' },
+      }),
+    ).resolves.toBe(1);
   });
 });

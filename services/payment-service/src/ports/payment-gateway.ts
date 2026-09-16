@@ -3,7 +3,7 @@ export interface VerifiedPayment {
   orderNo: string;
   merchantId: string;
   amountMinor: bigint;
-  currency: 'CNY';
+  currency: string;
   paidAt: Date;
 }
 
