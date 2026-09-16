@@ -63,4 +63,25 @@ describe('recharge order creation', () => {
     ).rejects.toMatchObject({ code: 'RECHARGE_PACKAGE_UNAVAILABLE' });
     expect(gateway.createdOrders).toHaveLength(0);
   });
+
+  it('rejects a server package with a non-positive amount or points', async () => {
+    const repository = new InMemoryPaymentRepository([
+      {
+        id: 'pkg-invalid',
+        title: '错误套餐',
+        amountMinor: 0n,
+        points: 10_000n,
+        currency: 'CNY',
+        active: true,
+      },
+    ]);
+
+    await expect(
+      new OrderService(repository, new FakePaymentGateway()).create({
+        userId,
+        packageId: 'pkg-invalid',
+        traceId: '0123456789abcdef0123456789abcdef',
+      }),
+    ).rejects.toMatchObject({ code: 'RECHARGE_PACKAGE_INVALID' });
+  });
 });

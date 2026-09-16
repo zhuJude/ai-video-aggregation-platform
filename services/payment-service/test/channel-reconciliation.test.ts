@@ -110,6 +110,39 @@ describe('payment financial workflows', () => {
     );
   });
 
+  it('reports amount, transaction and status mismatches separately', async () => {
+    const { gateway, order, repository } = await paidOrderFixture();
+    gateway.billText =
+      'order_no,transaction_id,amount_minor,status\n' + `${order.orderNo},wx-wrong,9999,FAILED\n`;
+
+    const result = await new ChannelReconciliationJob(repository, gateway).run('2026-08-28');
+
+    expect(result.differences.map((difference) => difference.kind)).toEqual([
+      'AMOUNT_MISMATCH',
+      'TRANSACTION_ID_MISMATCH',
+      'STATUS_MISMATCH',
+    ]);
+  });
+
+  it.each([
+    ['bad-date', '2026/08/28', 'order_no,transaction_id,amount_minor,status\n'],
+    ['bad-header', '2026-08-28', 'wrong,header\n'],
+    [
+      'bad-row',
+      '2026-08-28',
+      'order_no,transaction_id,amount_minor,status\norder,transaction,100,SUCCESS,extra\n',
+    ],
+    [
+      'bad-amount',
+      '2026-08-28',
+      'order_no,transaction_id,amount_minor,status\norder,transaction,10.5,SUCCESS\n',
+    ],
+  ] as const)('rejects an invalid channel bill: %s', async (_label, date, billText) => {
+    const { gateway, repository } = await paidOrderFixture();
+    gateway.billText = billText;
+    await expect(new ChannelReconciliationJob(repository, gateway).run(date)).rejects.toThrow();
+  });
+
   it('retries a failed refund with one refund number and idempotent wallet compensation', async () => {
     const { gateway, order, repository } = await paidOrderFixture();
     gateway.refundFailures = 1;
@@ -143,6 +176,44 @@ describe('payment financial workflows', () => {
     expect(walletCommand?.businessKey).toMatch(/^refund:.+:wallet$/);
   });
 
+  it('rejects unauthorized, malformed and wrong-owner refund commands', async () => {
+    const { gateway, order, repository } = await paidOrderFixture();
+    const service = new RefundService(
+      repository,
+      gateway,
+      { compensateRefund: () => Promise.resolve({ ledgerTransactionId: 'unused' }) },
+      { authorizedReasons: new Set(['USER_REQUEST']) },
+    );
+
+    await expect(
+      service.refund({
+        orderId: order.id,
+        userId,
+        refundNo: 'REFUND-002',
+        reason: 'NOT_ALLOWED',
+        traceId: '0123456789abcdef0123456789abcdef',
+      }),
+    ).rejects.toMatchObject({ code: 'REFUND_REASON_NOT_AUTHORIZED' });
+    await expect(
+      service.refund({
+        orderId: order.id,
+        userId,
+        refundNo: 'bad!',
+        reason: 'USER_REQUEST',
+        traceId: '0123456789abcdef0123456789abcdef',
+      }),
+    ).rejects.toMatchObject({ code: 'REFUND_NUMBER_INVALID' });
+    await expect(
+      service.refund({
+        orderId: order.id,
+        userId: anotherUserId,
+        refundNo: 'REFUND-003',
+        reason: 'USER_REQUEST',
+        traceId: '0123456789abcdef0123456789abcdef',
+      }),
+    ).rejects.toMatchObject({ code: 'REFUND_ORDER_OWNERSHIP_MISMATCH' });
+  });
+
   it('enforces paid ownership, one invoice per order, and the invoice status flow', async () => {
     const { order, repository } = await paidOrderFixture();
     const service = new InvoiceService(repository);
@@ -158,6 +229,23 @@ describe('payment financial workflows', () => {
     await expect(service.issue(invoice.id)).resolves.toMatchObject({ status: 'ISSUED' });
     await expect(service.reject(invoice.id, 'too late')).rejects.toMatchObject({
       code: 'INVOICE_STATUS_INVALID',
+    });
+  });
+
+  it('requires an invoice title and rejection reason, then permits rejection', async () => {
+    const { order, repository } = await paidOrderFixture();
+    const service = new InvoiceService(repository);
+
+    await expect(service.apply({ userId, orderId: order.id, title: '  ' })).rejects.toMatchObject({
+      code: 'INVOICE_TITLE_REQUIRED',
+    });
+    const invoice = await service.apply({ userId, orderId: order.id, title: '企业' });
+    await expect(service.reject(invoice.id, ' ')).rejects.toMatchObject({
+      code: 'INVOICE_REJECTION_REASON_REQUIRED',
+    });
+    await expect(service.reject(invoice.id, '资料不完整')).resolves.toMatchObject({
+      status: 'REJECTED',
+      rejectionReason: '资料不完整',
     });
   });
 });
