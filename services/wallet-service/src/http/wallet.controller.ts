@@ -11,7 +11,7 @@ import type { PostedLedgerTransaction } from '../application/ledger.repository.j
 import { AuthenticatedUserId } from './authenticated-user.decorator.js';
 import { InternalAuthGuard, UserAuthGuard } from './internal-auth.guard.js';
 
-interface WalletCommandBody {
+export interface WalletCommandBody {
   businessKey: unknown;
   userId: unknown;
   points: unknown;
@@ -29,7 +29,7 @@ interface TransactionResponse {
   createdAt: string;
 }
 
-interface AdjustmentRequestBody {
+export interface AdjustmentRequestBody {
   userId: unknown;
   direction: unknown;
   points: unknown;
@@ -38,7 +38,7 @@ interface AdjustmentRequestBody {
   traceId: unknown;
 }
 
-interface AdjustmentApprovalBody {
+export interface AdjustmentApprovalBody {
   approvedBy: unknown;
   traceId: unknown;
 }
@@ -105,6 +105,11 @@ export class InternalWalletController {
   @Post('credit')
   async credit(@Body() body: WalletCommandBody): Promise<TransactionResponse> {
     return transactionResponse(await this.wallet.credit(parseCommand(body)));
+  }
+
+  @Post('refund')
+  async refund(@Body() body: WalletCommandBody): Promise<TransactionResponse> {
+    return transactionResponse(await this.wallet.refund(parseCommand(body)));
   }
 
   @Post('reserve')

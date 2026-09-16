@@ -55,6 +55,20 @@ export class PaymentCallbackService {
     return { checked: orderNumbers.length, settled };
   }
 
+  async drainPendingWalletCredits(): Promise<{ checked: number; credited: number }> {
+    const pending = await this.repository.listPendingWalletCredits(this.recoveryBatchSize);
+    let credited = 0;
+    for (const settlement of pending) {
+      try {
+        await this.creditWallet(settlement);
+        credited += 1;
+      } catch {
+        // Leave the outbox event unpublished so a later worker pass retries it.
+      }
+    }
+    return { checked: pending.length, credited };
+  }
+
   private async settle(
     payment: VerifiedPayment,
     rawBodyHash: string,
@@ -68,13 +82,18 @@ export class PaymentCallbackService {
       source,
     });
     if (settlement.accepted) {
-      await this.wallet.credit({
-        userId: settlement.userId,
-        points: settlement.points,
-        businessKey: `payment:${settlement.orderId}:credit`,
-        traceId: settlement.traceId,
-      });
+      await this.creditWallet(settlement);
     }
     return settlement;
+  }
+
+  private async creditWallet(settlement: PaymentSettlement): Promise<void> {
+    await this.wallet.credit({
+      userId: settlement.userId,
+      points: settlement.points,
+      businessKey: `payment:${settlement.orderId}:credit`,
+      traceId: settlement.traceId,
+    });
+    await this.repository.markWalletCreditPublished(settlement.orderId);
   }
 }

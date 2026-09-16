@@ -1,6 +1,7 @@
 import {
   adjustmentEntries,
   creditEntries,
+  refundEntries,
   releaseEntries,
   reserveEntries,
   settleEntries,
@@ -28,6 +29,10 @@ export class WalletService {
 
   credit(command: WalletCommand): Promise<PostedLedgerTransaction> {
     return this.post('CREDIT', creditEntries, command);
+  }
+
+  refund(command: WalletCommand): Promise<PostedLedgerTransaction> {
+    return this.post('REFUND', refundEntries, command);
   }
 
   reserve(command: WalletCommand): Promise<PostedLedgerTransaction> {

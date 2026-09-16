@@ -121,4 +121,19 @@ describe('payment callback settlement', () => {
     expect(repository.outboxEvents()).toHaveLength(1);
     expect(wallet.credit).toHaveBeenCalledTimes(1);
   });
+
+  it('retries an unpublished wallet credit after a post-commit wallet outage', async () => {
+    const { repository, service, wallet } = await fixture();
+    wallet.credit.mockRejectedValueOnce(new Error('wallet unavailable'));
+
+    await expect(service.handle({}, '{"id":"wallet-outage"}')).rejects.toThrow(
+      /wallet unavailable/,
+    );
+    wallet.credit.mockResolvedValue({ ledgerTransactionId: 'ledger-recovered' });
+
+    await expect(service.drainPendingWalletCredits()).resolves.toEqual({ checked: 1, credited: 1 });
+    await expect(service.drainPendingWalletCredits()).resolves.toEqual({ checked: 0, credited: 0 });
+    expect(wallet.credit).toHaveBeenCalledTimes(2);
+    expect(repository.outboxEvents()[0]).toMatchObject({ published: true });
+  });
 });

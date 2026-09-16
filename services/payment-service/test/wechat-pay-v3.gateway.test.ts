@@ -93,6 +93,7 @@ describe('WeChat Pay API v3 cryptography', () => {
       notifyUrl: 'https://example.test/payment/callback',
       now: () => new Date('2026-08-31T12:00:00.000Z'),
     });
+    expect(gateway.hasUsableCertificate()).toBe(true);
 
     await expect(
       gateway.verifyCallback(

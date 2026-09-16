@@ -69,6 +69,23 @@ describe('wallet HTTP boundary', () => {
     expect(() => JSON.stringify({ balance, transactions })).not.toThrow();
   });
 
+  it('exposes refund compensation with decimal-string points', async () => {
+    await internalController.credit({
+      businessKey: 'payment:http:refund-seed',
+      userId,
+      points: '25',
+      traceId: '0123456789abcdef0123456789abcdef',
+    });
+    await expect(
+      internalController.refund({
+        businessKey: 'refund:http:wallet',
+        userId,
+        points: '10',
+        traceId: '0123456789abcdef0123456789abcdef',
+      }),
+    ).resolves.toMatchObject({ kind: 'REFUND', points: '10' });
+  });
+
   it('authenticates internal service name and bearer secret', () => {
     const guard = new InternalAuthGuard({
       bearerSecret: 'kms-resolved-test-secret',

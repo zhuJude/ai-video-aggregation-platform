@@ -42,6 +42,14 @@ export function creditEntries(userId: string, points: bigint): EntryDraft[] {
   ]);
 }
 
+export function refundEntries(userId: string, points: bigint): EntryDraft[] {
+  positive(points);
+  return balanced([
+    { account: 'USER_AVAILABLE', ownerId: userId, delta: -points },
+    { account: 'PLATFORM_LIABILITY', ownerId: 'platform', delta: points },
+  ]);
+}
+
 export function adjustmentEntries(userId: string, signedPoints: bigint): EntryDraft[] {
   if (signedPoints === 0n) {
     throw Object.assign(new Error('INVALID_POINTS'), { code: 'INVALID_POINTS' });

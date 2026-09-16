@@ -127,4 +127,24 @@ describe('WalletService concurrent commands', () => {
       }),
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_FROZEN_POINTS' });
   });
+
+  it('posts an idempotent refund compensation that reverses credited points', async () => {
+    const command = {
+      businessKey: 'refund:order-1:wallet',
+      userId,
+      points: 30n,
+      traceId: 'trace-refund',
+    };
+
+    const first = await service.refund(command);
+    const repeated = await service.refund(command);
+
+    expect(first.kind).toBe('REFUND');
+    expect(repeated.transactionId).toBe(first.transactionId);
+    await expect(service.getBalance(userId)).resolves.toEqual({
+      userId,
+      available: 70n,
+      frozen: 0n,
+    });
+  });
 });

@@ -27,4 +27,6 @@ export interface PaymentSettlementRepository {
     source: 'CALLBACK' | 'ACTIVE_QUERY';
   }): Promise<PaymentSettlement>;
   findPendingBefore(cutoff: Date, limit: number): Promise<readonly string[]>;
+  listPendingWalletCredits(limit: number): Promise<readonly PaymentSettlement[]>;
+  markWalletCreditPublished(orderId: string): Promise<void>;
 }

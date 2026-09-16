@@ -6,6 +6,7 @@
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.json",
     "lint": "eslint src test",
+    "start": "node dist/src/main.js",
     "typecheck": "prisma generate && tsc -p tsconfig.json --noEmit",
     "test": "vitest run --exclude dist/**",
     "test:coverage": "vitest run --coverage --exclude dist/**"

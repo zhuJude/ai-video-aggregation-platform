@@ -1,4 +1,10 @@
-import { createDecipheriv, createSign, createVerify, randomBytes } from 'node:crypto';
+import {
+  createDecipheriv,
+  createPublicKey,
+  createSign,
+  createVerify,
+  randomBytes,
+} from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { PaymentGateway, VerifiedPayment } from '../ports/payment-gateway.js';
 
@@ -185,6 +191,17 @@ export class WechatPayV3Gateway implements PaymentGateway {
       apiV3Key,
       platformCertificates: new Map(certificatePairs),
       notifyUrl: config.notifyUrl,
+    });
+  }
+
+  hasUsableCertificate(): boolean {
+    return [...this.secrets.platformCertificates.values()].some((certificate) => {
+      try {
+        createPublicKey(certificate);
+        return true;
+      } catch {
+        return false;
+      }
     });
   }
 

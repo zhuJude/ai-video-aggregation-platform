@@ -1,10 +1,20 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { releaseEntries, reserveEntries, settleEntries } from '../src/domain/ledger.js';
+import {
+  adjustmentEntries,
+  assertBalanced,
+  creditEntries,
+  refundEntries,
+  releaseEntries,
+  reserveEntries,
+  settleEntries,
+} from '../src/domain/ledger.js';
 
 describe('balanced ledger entry drafts', () => {
   it.each([
     ['reserve', reserveEntries],
+    ['credit', creditEntries],
+    ['refund', refundEntries],
     ['settle', settleEntries],
     ['release', releaseEntries],
   ] as const)('balances every positive %s transaction', (_name, createEntries) => {
@@ -19,6 +29,21 @@ describe('balanced ledger entry drafts', () => {
 
   it.each([0n, -1n])('rejects invalid point command %s', (points) => {
     expect(() => reserveEntries('user-1', points)).toThrow(
+      expect.objectContaining({ code: 'INVALID_POINTS' }),
+    );
+  });
+
+  it('rejects unbalanced or single-entry postings and zero adjustments', () => {
+    expect(() =>
+      assertBalanced([
+        { account: 'USER_AVAILABLE', ownerId: 'user-1', delta: 2n },
+        { account: 'PLATFORM_LIABILITY', ownerId: 'platform', delta: -1n },
+      ]),
+    ).toThrow(expect.objectContaining({ code: 'UNBALANCED_LEDGER_TRANSACTION' }));
+    expect(() =>
+      assertBalanced([{ account: 'USER_AVAILABLE', ownerId: 'user-1', delta: 0n }]),
+    ).toThrow(expect.objectContaining({ code: 'UNBALANCED_LEDGER_TRANSACTION' }));
+    expect(() => adjustmentEntries('user-1', 0n)).toThrow(
       expect.objectContaining({ code: 'INVALID_POINTS' }),
     );
   });

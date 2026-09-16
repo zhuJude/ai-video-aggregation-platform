@@ -217,6 +217,36 @@ export class PrismaPaymentRepository
     return orders.map((order) => order.orderNo);
   }
 
+  async listPendingWalletCredits(limit: number): Promise<readonly PaymentSettlement[]> {
+    const events = await this.prisma.outboxEvent.findMany({
+      where: { eventType: 'payment.paid.v1', publishedAt: null },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      take: limit,
+      select: { aggregateId: true },
+    });
+    if (events.length === 0) return [];
+    const orders = await this.prisma.paymentOrder.findMany({
+      where: { id: { in: events.map((event) => event.aggregateId) } },
+    });
+    const byId = new Map(orders.map((order) => [order.id, order]));
+    return events.map((event) => {
+      const order = byId.get(event.aggregateId);
+      if (!order) throw settlementError('PAYMENT_ORDER_NOT_FOUND');
+      return this.toSettlement(order, false);
+    });
+  }
+
+  async markWalletCreditPublished(orderId: string): Promise<void> {
+    await this.prisma.outboxEvent.updateMany({
+      where: {
+        aggregateId: orderId,
+        eventType: 'payment.paid.v1',
+        publishedAt: null,
+      },
+      data: { publishedAt: new Date() },
+    });
+  }
+
   async findFinancialOrder(orderId: string): Promise<FinancialOrder | undefined> {
     const order = await this.prisma.paymentOrder.findUnique({ where: { id: orderId } });
     return order ? this.toFinancialOrder(order) : undefined;

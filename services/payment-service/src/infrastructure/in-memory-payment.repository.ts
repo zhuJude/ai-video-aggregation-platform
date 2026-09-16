@@ -45,6 +45,7 @@ interface StoredOutboxEvent {
   eventType: string;
   aggregateId: string;
   payload: Record<string, string>;
+  published: boolean;
 }
 
 function settlementError(code: string): Error & { code: string } {
@@ -159,6 +160,7 @@ export class InMemoryPaymentRepository
         amountMinor: order.amountMinor.toString(),
         transactionId: input.payment.transactionId,
       },
+      published: false,
     });
     return Promise.resolve(this.settlement(order, true));
   }
@@ -185,6 +187,27 @@ export class InMemoryPaymentRepository
 
   outboxEvents(): readonly StoredOutboxEvent[] {
     return this.outbox.map((event) => ({ ...event, payload: { ...event.payload } }));
+  }
+
+  listPendingWalletCredits(limit: number): Promise<readonly PaymentSettlement[]> {
+    const settlements = this.outbox
+      .filter((event) => event.eventType === 'payment.paid.v1' && !event.published)
+      .slice(0, limit)
+      .map((event) => {
+        const order = this.orders.get(event.aggregateId);
+        if (!order) throw settlementError('PAYMENT_ORDER_NOT_FOUND');
+        return this.settlement(order, false);
+      });
+    return Promise.resolve(settlements);
+  }
+
+  markWalletCreditPublished(orderId: string): Promise<void> {
+    const event = this.outbox.find(
+      (candidate) => candidate.aggregateId === orderId && candidate.eventType === 'payment.paid.v1',
+    );
+    if (!event) return Promise.reject(settlementError('PAYMENT_OUTBOX_NOT_FOUND'));
+    event.published = true;
+    return Promise.resolve();
   }
 
   findFinancialOrder(orderId: string): Promise<FinancialOrder | undefined> {
@@ -259,6 +282,7 @@ export class InMemoryPaymentRepository
           differenceCount: input.differences.length.toString(),
           severity,
         },
+        published: false,
       });
     }
     return Promise.resolve();

@@ -14,6 +14,7 @@ import { uuidV7 } from '../domain/uuid-v7.js';
 
 interface RetryOptions {
   jitter?: (attempt: number) => Promise<void>;
+  onSerializableRetry?: () => void;
 }
 
 function domainError(code: string): Error & { code: string } {
@@ -73,12 +74,14 @@ async function defaultJitter(attempt: number): Promise<void> {
 
 export class PrismaLedgerRepository implements LedgerRepository {
   private readonly jitter: (attempt: number) => Promise<void>;
+  private readonly onSerializableRetry: () => void;
 
   constructor(
     private readonly prisma: PrismaClient,
     options: RetryOptions = {},
   ) {
     this.jitter = options.jitter ?? defaultJitter;
+    this.onSerializableRetry = options.onSerializableRetry ?? (() => undefined);
   }
 
   async post(command: LedgerPostCommand): Promise<PostedLedgerTransaction> {
@@ -96,6 +99,7 @@ export class PrismaLedgerRepository implements LedgerRepository {
           if (existing) return ensureSameCommand(existing, command);
         }
         if (isSerializationFailure(error) && attempt < 3) {
+          this.onSerializableRetry();
           await this.jitter(attempt);
           continue;
         }
