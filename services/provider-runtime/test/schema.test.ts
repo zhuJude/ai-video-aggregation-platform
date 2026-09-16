@@ -10,6 +10,7 @@ describe('provider runtime persistence schema', () => {
       'InboxMessage',
       'CallbackInbox',
       'CircuitState',
+      'CircuitObservation',
       'OutboxEvent',
     ]) {
       expect(schema).toContain(`model ${model}`);
@@ -22,7 +23,8 @@ describe('provider runtime persistence schema', () => {
     expect(schema).toMatch(/taskId\s+String\s+@unique\s+@db\.Uuid/);
     expect(schema).toContain('@@unique([consumer, messageId])');
     expect(schema).toContain('@@unique([executionId, attemptNumber])');
-    expect(schema).toMatch(/providerEventId\s+String\s+@unique/);
+    expect(schema).not.toMatch(/providerEventId\s+String\s+@unique/);
+    expect(schema).toContain('@@unique([providerId, providerEventId])');
     expect(schema).toMatch(/deduplicationKey\s+String\?\s+@unique/);
   });
 
@@ -34,6 +36,11 @@ describe('provider runtime persistence schema', () => {
     expect(schema).toContain('@@index([publishedAt, availableAt])');
     expect(schema).toMatch(/leaseToken\s+String\?\s+@db\.Char\(64\)/);
     expect(schema).toMatch(/leaseExpiresAt\s+DateTime\?\s+@db\.Timestamptz\(3\)/);
+    expect(schema).toContain('@@index([status, nextPollAt])');
+    expect(schema).toContain('@@index([circuitId, observedAt])');
+    expect(schema).toMatch(/lastProviderSequence\s+Int\s+@default\(-1\)/);
+    expect(schema).toMatch(/halfOpenProbeToken\s+String\?\s+@db\.VarChar\(160\)/);
+    expect(schema).toMatch(/halfOpenProbeExpiresAt\s+DateTime\?\s+@db\.Timestamptz\(3\)/);
   });
 
   it('ships an initial PostgreSQL migration for empty databases', async () => {
@@ -46,5 +53,21 @@ describe('provider runtime persistence schema', () => {
     expect(migration).toContain('CREATE TABLE "InboxMessage"');
     expect(migration).toContain('CREATE TABLE "OutboxEvent"');
     expect(migration).toContain('ProviderAttempt_executionId_fkey');
+  });
+
+  it('ships the callback, polling and rolling-circuit migration', async () => {
+    const migration = await readFile(
+      new URL(
+        '../prisma/migrations/20260916090000_callback_polling_circuit/migration.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(migration).toContain('ADD COLUMN "lastProviderSequence"');
+    expect(migration).toContain('ADD COLUMN "nextPollAt"');
+    expect(migration).toContain('CREATE TABLE "CircuitObservation"');
+    expect(migration).toContain('CircuitObservation_circuitId_fkey');
+    expect(migration).toContain('CallbackInbox_providerId_providerEventId_key');
+    expect(migration).toContain('halfOpenProbeExpiresAt');
   });
 });

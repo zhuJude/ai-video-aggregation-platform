@@ -173,6 +173,11 @@ function harness(
   const service = new ProviderExecutionService({
     repository,
     resolver,
+    circuit: {
+      acquire: vi.fn().mockResolvedValue({ kind: 'ALLOW', token: 'permit-1' }),
+      record: vi.fn().mockResolvedValue(undefined),
+      tripImmediately: vi.fn().mockResolvedValue(undefined),
+    },
     clock: { now: () => NOW },
     ids: { next: () => ids[idIndex++] ?? '0198f4d4-21c2-7b7d-8a03-08a0da2a51bf' },
     ...(options.createTimeoutMs === undefined ? {} : { createTimeoutMs: options.createTimeoutMs }),

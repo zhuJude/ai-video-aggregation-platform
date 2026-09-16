@@ -104,6 +104,11 @@ function harness(repository = new RetryRepository(), now = DUE, maxAttempts = 5)
   ];
   const service = new ProviderExecutionService({
     repository,
+    circuit: {
+      acquire: vi.fn().mockResolvedValue({ kind: 'ALLOW', token: 'permit-1' }),
+      record: vi.fn().mockResolvedValue(undefined),
+      tripImmediately: vi.fn().mockResolvedValue(undefined),
+    },
     resolver: {
       resolve: vi.fn().mockResolvedValue({
         taskId: TASK_ID,

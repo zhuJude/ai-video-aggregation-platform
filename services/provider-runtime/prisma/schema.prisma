@@ -62,6 +62,13 @@ model ProviderExecution {
   currentAttempt           Int                     @default(1)
   nextAction               ProviderNextAction      @default(NONE)
   nextAttemptAt            DateTime?               @db.Timestamptz(3)
+  callbackExpected         Boolean                 @default(true)
+  callbackDeadlineAt       DateTime?               @db.Timestamptz(3)
+  nextPollAt               DateTime?               @db.Timestamptz(3)
+  pollCount                Int                     @default(0)
+  pollLeaseToken           String?                 @db.Char(64)
+  pollLeaseExpiresAt       DateTime?               @db.Timestamptz(3)
+  lastProviderSequence     Int                     @default(-1)
   lastErrorCode            String?                 @db.VarChar(120)
   lastHttpStatus           Int?
   traceId                  String                  @db.Char(32)
@@ -76,6 +83,7 @@ model ProviderExecution {
 
   @@unique([providerId, providerTaskId])
   @@index([status, nextAttemptAt])
+  @@index([status, nextPollAt])
   @@index([providerId, modelCode, status])
   @@index([providerTaskId])
   @@index([updatedAt])
@@ -117,38 +125,54 @@ model InboxMessage {
 
 model CallbackInbox {
   id              String            @id @db.Uuid
-  providerEventId String            @unique @db.VarChar(256)
+  providerId      String            @db.Uuid
+  providerEventId String            @db.VarChar(256)
   executionId     String            @db.Uuid
   providerTaskId  String            @db.VarChar(512)
   sequence        Int
   payloadSha256   String            @db.Char(64)
   receivedAt      DateTime          @db.Timestamptz(3)
   processedAt     DateTime?         @db.Timestamptz(3)
+  outcome         String?           @db.VarChar(40)
   execution       ProviderExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
 
-  @@unique([executionId, providerEventId])
+  @@unique([providerId, providerEventId])
   @@index([executionId, sequence])
   @@index([providerTaskId, sequence])
   @@index([processedAt, receivedAt])
 }
 
 model CircuitState {
-  id                   String        @id @db.Uuid
-  providerId           String        @db.Uuid
-  modelCode            String        @db.VarChar(160)
-  status               CircuitStatus @default(CLOSED)
-  windowStartedAt      DateTime?     @db.Timestamptz(3)
-  windowRequests       Int           @default(0)
-  windowFailures       Int           @default(0)
-  openedAt             DateTime?     @db.Timestamptz(3)
-  openUntil            DateTime?     @db.Timestamptz(3)
-  halfOpenProbeInFlight Boolean       @default(false)
-  reasonCode           String?       @db.VarChar(120)
-  version              Int           @default(0)
-  updatedAt            DateTime      @updatedAt @db.Timestamptz(3)
+  id                     String               @id @db.Uuid
+  providerId             String               @db.Uuid
+  modelCode              String               @db.VarChar(160)
+  status                 CircuitStatus        @default(CLOSED)
+  windowStartedAt        DateTime?            @db.Timestamptz(3)
+  windowRequests         Int                  @default(0)
+  windowFailures         Int                  @default(0)
+  openedAt               DateTime?            @db.Timestamptz(3)
+  openUntil              DateTime?            @db.Timestamptz(3)
+  halfOpenProbeInFlight  Boolean              @default(false)
+  halfOpenProbeToken     String?              @db.VarChar(160)
+  halfOpenProbeExpiresAt DateTime?            @db.Timestamptz(3)
+  reasonCode             String?              @db.VarChar(120)
+  version                Int                  @default(0)
+  updatedAt              DateTime             @updatedAt @db.Timestamptz(3)
+  observations           CircuitObservation[]
 
   @@unique([providerId, modelCode])
   @@index([status, openUntil])
+}
+
+model CircuitObservation {
+  id         String       @id @db.Uuid
+  circuitId  String       @db.Uuid
+  failed     Boolean
+  observedAt DateTime     @db.Timestamptz(3)
+  circuit    CircuitState @relation(fields: [circuitId], references: [id], onDelete: Cascade)
+
+  @@index([circuitId, observedAt])
+  @@index([observedAt])
 }
 
 model OutboxEvent {

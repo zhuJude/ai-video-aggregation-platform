@@ -3,6 +3,13 @@ import { EventEnvelopeSchema, PointsStringSchema, UuidSchema } from '@repo/contr
 import type { VideoProviderAdapter } from '@repo/provider-sdk';
 import { z } from 'zod';
 import { canonicalJson, StrictJsonError } from '../domain/canonical-json.js';
+import type {
+  CircuitAcquireResult,
+  CircuitKey,
+  CircuitOutcome,
+  CircuitPermit,
+  ImmediateCircuitReason,
+} from '../domain/circuit-breaker.js';
 import {
   backoffMs,
   classifyProviderFailure,
@@ -44,6 +51,9 @@ export interface ResolvedDispatch {
   readonly modelCode: string;
   readonly parameters: Readonly<Record<string, unknown>>;
   readonly adapter: VideoProviderAdapter;
+  readonly callbackMode?: 'EXPECTED' | 'UNAVAILABLE';
+  readonly callbackDeadlineMs?: number;
+  readonly pollIntervalMs?: number;
 }
 export interface DispatchResolver {
   resolve(input: {
@@ -65,7 +75,10 @@ export interface PendingOutboxEvent {
     | 'provider.execution-retry-scheduled.v1'
     | 'provider.execution-ambiguous.v1'
     | 'provider.execution-late-result.v1'
-    | 'provider.security-binding-rejected.v1';
+    | 'provider.security-binding-rejected.v1'
+    | 'provider.execution-poll-due.v1'
+    | 'provider.health.auth-failed.v1'
+    | 'provider.health.zero-balance.v1';
   readonly eventVersion: 1;
   readonly deduplicationKey: string;
   readonly payload: Readonly<Record<string, unknown>>;
@@ -171,10 +184,16 @@ export interface CompleteExecutionInput {
   readonly providerTaskId?: string;
   readonly errorCode?: string;
   readonly httpStatus?: number;
-  readonly nextAction: 'NONE' | 'CREATE_RETRY' | 'RECONCILE';
+  readonly nextAction: 'NONE' | 'CREATE_RETRY' | 'RECONCILE' | 'POLL';
   readonly nextAttemptAt?: Date;
   readonly completedAt: Date;
   readonly outbox: PendingOutboxEvent;
+  readonly pollSchedule?: {
+    readonly callbackExpected: boolean;
+    readonly callbackDeadlineAt?: Date;
+    readonly nextPollAt: Date;
+    readonly outbox: PendingOutboxEvent;
+  };
 }
 export interface CommitAmbiguityInput {
   readonly consumer: ConsumerName;
@@ -207,6 +226,11 @@ export interface ExecutionRepository {
   complete(input: CompleteExecutionInput): Promise<void>;
   recordCommitAmbiguity(input: CommitAmbiguityInput): Promise<void>;
   recordLateResult(input: RecordLateResultInput): Promise<boolean>;
+}
+export interface ProviderCircuitGate {
+  acquire(key: CircuitKey): Promise<CircuitAcquireResult>;
+  record(key: CircuitKey, permit: CircuitPermit, outcome: CircuitOutcome): Promise<void>;
+  tripImmediately(key: CircuitKey, reason: ImmediateCircuitReason): Promise<void>;
 }
 export interface ProviderExecutionResult {
   readonly ack: boolean;
@@ -242,6 +266,7 @@ interface Dependencies {
     set(callback: () => void, delayMs: number): unknown;
     clear(handle: unknown): void;
   };
+  readonly circuit: ProviderCircuitGate;
 }
 interface ParsedEvent<T> {
   readonly id: string;
@@ -454,40 +479,61 @@ export class ProviderExecutionService {
   }
 
   private async invoke(active: ActiveExecution): Promise<ProviderExecutionResult> {
+    const circuitKey = {
+      providerId: active.dispatch.providerId,
+      modelCode: active.dispatch.modelCode,
+    };
+    const permit = await this.acquireCircuit(circuitKey);
+    if (permit === null) return this.completeCircuitOpen(active);
     let raced: Awaited<ReturnType<ProviderExecutionService['createWithDeadline']>>;
     try {
       raced = await this.createWithDeadline(active);
     } catch (error) {
-      return this.completeFailure(active, classifyProviderFailure(error));
+      const failure = classifyProviderFailure(error);
+      await this.recordCircuitFailure(circuitKey, permit, failure);
+      return this.completeFailure(active, failure);
     }
     if (raced.kind === 'TIMED_OUT') {
+      const timeoutFailure = {
+        kind: 'TIMEOUT' as const,
+        retryable: true as const,
+        ambiguous: true as const,
+        code: 'PROVIDER_TIMEOUT' as const,
+      };
+      await this.recordCircuitFailure(circuitKey, permit, timeoutFailure);
       const completion = this.completeFailure(active, {
-        kind: 'TIMEOUT',
-        retryable: true,
-        ambiguous: true,
-        code: 'PROVIDER_TIMEOUT',
+        ...timeoutFailure,
       });
       this.observeLateResult(active, raced.operation, completion);
       return completion;
     }
     const created: Awaited<ReturnType<VideoProviderAdapter['createTask']>> = raced.result;
-    if (!isValidCreateResult(created))
-      return this.completeFailure(active, {
+    if (!isValidCreateResult(created)) {
+      const failure = {
         kind: 'UNKNOWN',
         retryable: false,
         ambiguous: false,
         code: 'PROVIDER_PROTOCOL_ERROR',
-      });
+      } as const;
+      await this.recordCircuitFailure(circuitKey, permit, failure);
+      return this.completeFailure(active, failure);
+    }
+    await this.dependencies.circuit.record(circuitKey, permit, 'SUCCESS');
     const completedAt = this.dependencies.clock.now();
+    const pollSchedule =
+      created.state === 'ACCEPTED' || created.state === 'RUNNING'
+        ? this.initialPollSchedule(active, created.providerTaskId, completedAt)
+        : undefined;
     const completion: CompleteExecutionInput = {
       ...completionIdentity(active),
       status: created.state,
       providerTaskId: created.providerTaskId,
-      nextAction: 'NONE',
+      nextAction: pollSchedule === undefined ? 'NONE' : 'POLL',
       completedAt,
       outbox: this.outbox(active, eventTypeForState(created.state), created.state, completedAt, {
         providerTaskId: created.providerTaskId,
       }),
+      ...(pollSchedule === undefined ? {} : { pollSchedule }),
     };
     try {
       await this.dependencies.repository.complete(completion);
@@ -507,6 +553,89 @@ export class ProviderExecutionService {
       await this.dependencies.repository.recordCommitAmbiguity(ambiguity);
       return { ack: true, outcome: 'AMBIGUOUS' };
     }
+  }
+
+  private async acquireCircuit(key: CircuitKey): Promise<CircuitPermit | null> {
+    const permit = await this.dependencies.circuit.acquire(key);
+    return permit.kind === 'REJECT' ? null : permit;
+  }
+
+  private async recordCircuitFailure(
+    key: CircuitKey,
+    permit: CircuitPermit,
+    failure: ProviderFailure,
+  ): Promise<void> {
+    const circuit = this.dependencies.circuit;
+    if (failure.code === 'PROVIDER_AUTH_FAILED') {
+      await circuit.tripImmediately(key, 'AUTH_FAILURE');
+      return;
+    }
+    const qualifying =
+      failure.ambiguous ||
+      failure.code === 'PROVIDER_RATE_LIMITED' ||
+      failure.code === 'PROVIDER_UNAVAILABLE' ||
+      failure.code === 'PROVIDER_PROTOCOL_ERROR';
+    await circuit.record(key, permit, qualifying ? 'QUALIFYING_FAILURE' : 'SUCCESS');
+  }
+
+  private async completeCircuitOpen(active: ActiveExecution): Promise<ProviderExecutionResult> {
+    const completedAt = this.dependencies.clock.now();
+    await this.dependencies.repository.complete({
+      ...completionIdentity(active),
+      status: 'FAILED',
+      errorCode: 'PROVIDER_CIRCUIT_OPEN',
+      nextAction: 'NONE',
+      completedAt,
+      outbox: this.outbox(active, 'provider.execution-failed.v1', 'FAILED', completedAt, {
+        errorCode: 'PROVIDER_CIRCUIT_OPEN',
+        nextAction: 'NONE',
+      }),
+    });
+    return { ack: true, outcome: 'FAILED' };
+  }
+
+  private initialPollSchedule(
+    active: ActiveExecution,
+    providerTaskId: string,
+    occurredAt: Date,
+  ): NonNullable<CompleteExecutionInput['pollSchedule']> {
+    const callbackExpected = (active.dispatch.callbackMode ?? 'EXPECTED') === 'EXPECTED';
+    const delayMs = callbackExpected
+      ? (active.dispatch.callbackDeadlineMs ?? 120_000)
+      : (active.dispatch.pollIntervalMs ?? 30_000);
+    if (!Number.isInteger(delayMs) || delayMs < 1)
+      throw new ProviderRuntimeError('INVALID_POLL_CONFIGURATION');
+    const nextPollAt = new Date(occurredAt.getTime() + delayMs);
+    const callbackDeadlineAt = callbackExpected ? nextPollAt : undefined;
+    return {
+      callbackExpected,
+      ...(callbackDeadlineAt === undefined ? {} : { callbackDeadlineAt }),
+      nextPollAt,
+      outbox: {
+        id: this.dependencies.ids.next(),
+        aggregateId: active.event.data.taskId,
+        eventType: 'provider.execution-poll-due.v1',
+        eventVersion: 1,
+        deduplicationKey: `${active.executionId}:poll:${String(active.attemptNumber)}:1`,
+        payload: {
+          executionId: active.executionId,
+          taskId: active.event.data.taskId,
+          providerId: active.dispatch.providerId,
+          modelCode: active.dispatch.modelCode,
+          providerTaskId,
+          attemptNumber: active.attemptNumber,
+          pollNumber: 1,
+          dueAt: nextPollAt.toISOString(),
+        },
+        headers: {
+          traceId: active.event.traceId,
+          correlationId: active.event.correlationId,
+          causationId: active.event.id,
+        },
+        occurredAt,
+        availableAt: nextPollAt,
+      },
+    };
   }
 
   private async createWithDeadline(active: ActiveExecution): Promise<

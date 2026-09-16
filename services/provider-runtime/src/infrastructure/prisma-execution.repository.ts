@@ -297,6 +297,14 @@ export class PrismaExecutionRepository implements ExecutionRepository {
             ? { nextAttemptAt: null }
             : { nextAttemptAt: input.nextAttemptAt }),
           ...(input.status === 'AMBIGUOUS' ? {} : { leaseToken: null, leaseExpiresAt: null }),
+          ...(input.pollSchedule === undefined
+            ? {}
+            : {
+                callbackExpected: input.pollSchedule.callbackExpected,
+                callbackDeadlineAt: input.pollSchedule.callbackDeadlineAt ?? null,
+                nextPollAt: input.pollSchedule.nextPollAt,
+                pollCount: 0,
+              }),
           version: { increment: 1 },
         },
       });
@@ -319,6 +327,8 @@ export class PrismaExecutionRepository implements ExecutionRepository {
       });
       if (attempt.count !== 1) throw new ProviderRuntimeError('STALE_EXECUTION_ATTEMPT');
       await createOutbox(transaction, input.outbox);
+      if (input.pollSchedule !== undefined)
+        await createOutbox(transaction, input.pollSchedule.outbox);
       await processInbox(transaction, input, input.completedAt, null);
     });
   }
