@@ -1,9 +1,5 @@
 export type AccountKind =
-  | 'USER_AVAILABLE'
-  | 'USER_FROZEN'
-  | 'PLATFORM_LIABILITY'
-  | 'PLATFORM_CONSUMED'
-  | 'ADJUSTMENT';
+  'USER_AVAILABLE' | 'USER_FROZEN' | 'PLATFORM_LIABILITY' | 'PLATFORM_CONSUMED' | 'ADJUSTMENT';
 
 export interface EntryDraft {
   account: AccountKind;
@@ -35,6 +31,14 @@ export function reserveEntries(userId: string, points: bigint): EntryDraft[] {
   return balanced([
     { account: 'USER_AVAILABLE', ownerId: userId, delta: -points },
     { account: 'USER_FROZEN', ownerId: userId, delta: points },
+  ]);
+}
+
+export function creditEntries(userId: string, points: bigint): EntryDraft[] {
+  positive(points);
+  return balanced([
+    { account: 'PLATFORM_LIABILITY', ownerId: 'platform', delta: -points },
+    { account: 'USER_AVAILABLE', ownerId: userId, delta: points },
   ]);
 }
 

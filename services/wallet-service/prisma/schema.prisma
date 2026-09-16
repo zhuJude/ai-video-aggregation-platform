@@ -1,6 +1,5 @@
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -47,8 +46,10 @@ model WalletAccount {
 model LedgerTransaction {
   id          String                @id @db.Uuid
   businessKey String                @unique @db.VarChar(120)
+  commandFingerprint String         @db.VarChar(320)
   kind        LedgerTransactionKind
   userId      String?               @db.Uuid
+  points      BigInt
   reason      String?               @db.VarChar(240)
   traceId     String                @db.VarChar(64)
   createdAt   DateTime              @default(now()) @db.Timestamptz(3)
@@ -93,12 +94,12 @@ model OutboxEvent {
 }
 
 model InboxMessage {
-  messageId   String   @id @db.VarChar(120)
+  messageId   String   @db.VarChar(120)
   consumer    String   @db.VarChar(120)
   processedAt DateTime @default(now()) @db.Timestamptz(3)
   result      Json?
 
-  @@unique([messageId, consumer])
+  @@id([messageId, consumer])
 }
 
 model ReconciliationRun {
