@@ -7,6 +7,14 @@ import type {
   PaymentSettlement,
   PaymentSettlementRepository,
 } from '../application/payment-settlement.repository.js';
+import type {
+  FinancialOrder,
+  InvoiceRecord,
+  InvoiceRecordStatus,
+  PaymentFinancialRepository,
+  ReconciliationDifference,
+  RefundRecord,
+} from '../application/payment-financial.repository.js';
 import type { VerifiedPayment } from '../ports/payment-gateway.js';
 
 interface PackageSnapshot {
@@ -43,12 +51,17 @@ function settlementError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
 }
 
-export class InMemoryPaymentRepository implements PaymentRepository, PaymentSettlementRepository {
+export class InMemoryPaymentRepository
+  implements PaymentRepository, PaymentSettlementRepository, PaymentFinancialRepository
+{
   private readonly packages = new Map<string, RechargePackage>();
   private readonly orders = new Map<string, StoredOrder>();
   private readonly snapshots = new Map<string, PackageSnapshot>();
   private readonly callbacks = new Map<string, StoredCallback>();
   private readonly outbox: StoredOutboxEvent[] = [];
+  private readonly refunds = new Map<string, RefundRecord>();
+  private readonly invoices = new Map<string, InvoiceRecord>();
+  private readonly invoiceByOrder = new Map<string, string>();
 
   constructor(packages: readonly RechargePackage[]) {
     for (const rechargePackage of packages) this.packages.set(rechargePackage.id, rechargePackage);
@@ -174,6 +187,114 @@ export class InMemoryPaymentRepository implements PaymentRepository, PaymentSett
     return this.outbox.map((event) => ({ ...event, payload: { ...event.payload } }));
   }
 
+  findFinancialOrder(orderId: string): Promise<FinancialOrder | undefined> {
+    const order = this.orders.get(orderId);
+    return Promise.resolve(order ? this.toFinancialOrder(order) : undefined);
+  }
+
+  createOrGetRefund(input: RefundRecord): Promise<RefundRecord> {
+    const existing = this.refunds.get(input.refundNo);
+    if (existing) {
+      if (
+        existing.orderId !== input.orderId ||
+        existing.amountMinor !== input.amountMinor ||
+        existing.reason !== input.reason
+      ) {
+        return Promise.reject(settlementError('REFUND_IDEMPOTENCY_CONFLICT'));
+      }
+      return Promise.resolve({ ...existing });
+    }
+    this.refunds.set(input.refundNo, { ...input });
+    return Promise.resolve({ ...input });
+  }
+
+  markRefundProcessing(refundId: string): Promise<RefundRecord> {
+    const refund = this.refundById(refundId);
+    refund.status = 'PROCESSING';
+    delete refund.lastError;
+    return Promise.resolve({ ...refund });
+  }
+
+  markRefundFailed(refundId: string, error: string): Promise<RefundRecord> {
+    return this.updateRefund(refundId, { status: 'FAILED', lastError: error });
+  }
+
+  completeRefund(refundId: string, gatewayRefundId: string): Promise<RefundRecord> {
+    const refund = this.refundById(refundId);
+    const order = this.orders.get(refund.orderId);
+    if (!order) return Promise.reject(settlementError('PAYMENT_ORDER_NOT_FOUND'));
+    refund.status = 'SUCCEEDED';
+    refund.gatewayRefundId = gatewayRefundId;
+    delete refund.lastError;
+    order.status = 'REFUNDED';
+    return Promise.resolve({ ...refund });
+  }
+
+  listPaidOrders(from: Date, to: Date): Promise<readonly FinancialOrder[]> {
+    return Promise.resolve(
+      [...this.orders.values()]
+        .filter(
+          (order) =>
+            order.status === 'PAID' &&
+            order.paidAt !== undefined &&
+            order.paidAt >= from &&
+            order.paidAt < to,
+        )
+        .map((order) => this.toFinancialOrder(order)),
+    );
+  }
+
+  saveReconciliation(input: {
+    id: string;
+    billDate: Date;
+    differences: readonly ReconciliationDifference[];
+  }): Promise<void> {
+    const severities = new Set(input.differences.map((difference) => difference.severity));
+    for (const severity of severities) {
+      this.outbox.push({
+        eventType: `payment.reconciliation.${severity.toLowerCase()}.v1`,
+        aggregateId: input.id,
+        payload: {
+          billDate: input.billDate.toISOString().slice(0, 10),
+          differenceCount: input.differences.length.toString(),
+          severity,
+        },
+      });
+    }
+    return Promise.resolve();
+  }
+
+  createInvoice(input: InvoiceRecord): Promise<InvoiceRecord> {
+    if (this.invoiceByOrder.has(input.orderId)) {
+      return Promise.reject(settlementError('INVOICE_ORDER_ALREADY_USED'));
+    }
+    this.invoices.set(input.id, { ...input });
+    this.invoiceByOrder.set(input.orderId, input.id);
+    return Promise.resolve({ ...input });
+  }
+
+  findInvoice(invoiceId: string): Promise<InvoiceRecord | undefined> {
+    const invoice = this.invoices.get(invoiceId);
+    return Promise.resolve(invoice ? { ...invoice } : undefined);
+  }
+
+  updateInvoice(input: {
+    invoiceId: string;
+    expectedStatus: readonly InvoiceRecordStatus[];
+    nextStatus: InvoiceRecordStatus;
+    rejectionReason?: string;
+    issuedAt?: Date;
+  }): Promise<InvoiceRecord> {
+    const invoice = this.invoices.get(input.invoiceId);
+    if (!invoice) return Promise.reject(settlementError('INVOICE_NOT_FOUND'));
+    if (!input.expectedStatus.includes(invoice.status)) {
+      return Promise.reject(settlementError('INVOICE_STATUS_INVALID'));
+    }
+    invoice.status = input.nextStatus;
+    if (input.rejectionReason) invoice.rejectionReason = input.rejectionReason;
+    return Promise.resolve({ ...invoice });
+  }
+
   private settlement(order: StoredOrder, accepted: boolean): PaymentSettlement {
     return {
       accepted,
@@ -183,5 +304,32 @@ export class InMemoryPaymentRepository implements PaymentRepository, PaymentSett
       points: order.points,
       traceId: order.traceId,
     };
+  }
+
+  private toFinancialOrder(order: StoredOrder): FinancialOrder {
+    return {
+      id: order.id,
+      orderNo: order.orderNo,
+      userId: order.userId,
+      amountMinor: order.amountMinor,
+      points: order.points,
+      currency: order.currency,
+      status: order.status,
+      traceId: order.traceId,
+      ...(order.transactionId ? { transactionId: order.transactionId } : {}),
+      ...(order.paidAt ? { paidAt: order.paidAt } : {}),
+    };
+  }
+
+  private refundById(refundId: string): RefundRecord {
+    const refund = [...this.refunds.values()].find((candidate) => candidate.id === refundId);
+    if (!refund) throw settlementError('REFUND_NOT_FOUND');
+    return refund;
+  }
+
+  private updateRefund(refundId: string, changes: Partial<RefundRecord>): Promise<RefundRecord> {
+    const refund = this.refundById(refundId);
+    Object.assign(refund, changes);
+    return Promise.resolve({ ...refund });
   }
 }

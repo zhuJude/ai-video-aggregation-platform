@@ -94,6 +94,7 @@ model RefundOrder {
   status            RefundStatus @default(PENDING)
   gatewayRefundId   String?      @unique @db.VarChar(80)
   walletBusinessKey String       @unique @db.VarChar(120)
+  traceId           String       @db.VarChar(64)
   attempts          Int          @default(0)
   lastError         String?      @db.VarChar(500)
   createdAt         DateTime     @default(now()) @db.Timestamptz(3)

@@ -1,11 +1,15 @@
 import { execFileSync } from 'node:child_process';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrismaClient } from '../generated/prisma/client.js';
 import { FakePaymentGateway } from '../src/adapters/fake-payment.gateway.js';
 import { PaymentCallbackService } from '../src/application/payment-callback.service.js';
+import { ChannelReconciliationJob } from '../src/application/channel-reconciliation.job.js';
+import { InvoiceService } from '../src/application/invoice.service.js';
 import { OrderService } from '../src/application/order.service.js';
+import { RefundService } from '../src/application/refund.service.js';
 import { PrismaPaymentRepository } from '../src/infrastructure/prisma-payment.repository.js';
 
 const serviceRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -34,6 +38,8 @@ describe('payment PostgreSQL persistence', { concurrent: false }, () => {
   let service: OrderService;
   let repository: PrismaPaymentRepository;
   let gateway: FakePaymentGateway;
+
+  beforeEach(() => vi.restoreAllMocks());
 
   beforeAll(async () => {
     containerId = docker(
@@ -137,5 +143,67 @@ describe('payment PostgreSQL persistence', { concurrent: false }, () => {
         where: { aggregateId: order.id, eventType: 'payment.paid.v1' },
       }),
     ).resolves.toBe(1);
+  });
+
+  it('persists reconciliation, refund retry state and one invoice per paid order', async () => {
+    const order = await service.create({
+      userId,
+      packageId: 'pkg-database',
+      traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+    vi.spyOn(gateway, 'verifyCallback').mockResolvedValue({
+      transactionId: 'wx-financial-workflows',
+      orderNo: order.orderNo,
+      merchantId: '1900000109',
+      amountMinor: 2_000n,
+      currency: 'CNY',
+      paidAt: new Date('2026-08-28T12:00:00.000Z'),
+    });
+    await new PaymentCallbackService(
+      repository,
+      gateway,
+      { credit: () => Promise.resolve({ ledgerTransactionId: 'ledger-credit-2' }) },
+      { merchantId: '1900000109' },
+    ).handle({}, '{"id":"financial-workflows"}');
+
+    const invoices = new InvoiceService(repository);
+    await invoices.apply({ userId, orderId: order.id, title: '个人' });
+    await expect(
+      invoices.apply({ userId, orderId: order.id, title: '重复' }),
+    ).rejects.toMatchObject({ code: 'INVOICE_ORDER_ALREADY_USED' });
+
+    vi.spyOn(gateway, 'downloadBill').mockResolvedValue(
+      Readable.from(
+        'order_no,transaction_id,amount_minor,status\n' +
+          `${order.orderNo},wx-financial-workflows,2000,SUCCESS\n`,
+      ),
+    );
+    await expect(
+      new ChannelReconciliationJob(repository, gateway).run('2026-08-28'),
+    ).resolves.toMatchObject({ status: 'MATCHED', differences: [] });
+    await expect(
+      prisma.channelReconciliation.findUniqueOrThrow({
+        where: { billDate: new Date('2026-08-28T00:00:00.000Z') },
+      }),
+    ).resolves.toMatchObject({ status: 'MATCHED', differenceCount: 0 });
+
+    vi.spyOn(gateway, 'refund').mockResolvedValue({ refundId: 'wx-refund-database' });
+    const wallet = {
+      compensateRefund: vi.fn(() =>
+        Promise.resolve({ ledgerTransactionId: 'ledger-refund-database' }),
+      ),
+    };
+    await expect(
+      new RefundService(repository, gateway, wallet, {
+        authorizedReasons: new Set(['USER_REQUEST']),
+      }).refund({
+        orderId: order.id,
+        userId,
+        refundNo: 'REFUND-DATABASE-001',
+        reason: 'USER_REQUEST',
+        traceId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      }),
+    ).resolves.toMatchObject({ status: 'SUCCEEDED', gatewayRefundId: 'wx-refund-database' });
+    expect(wallet.compensateRefund).toHaveBeenCalledTimes(1);
   });
 });
