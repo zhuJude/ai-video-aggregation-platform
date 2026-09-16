@@ -131,6 +131,13 @@ export class PrismaLedgerRepository implements LedgerRepository {
     });
     if (existing) return ensureSameCommand(existing, command);
 
+    if (command.kind !== 'ADJUST' && command.kind !== 'REPAIR') {
+      const restriction = await tx.walletRestriction.findFirst({
+        where: { userId: { in: [command.userId, '*'] }, unblockedAt: null },
+      });
+      if (restriction) throw domainError('WALLET_BLOCKED');
+    }
+
     const uniqueAccounts = [
       ...new Map(
         command.entries.map((entry) => [accountKey(entry.account, entry.ownerId), entry]),

@@ -1,8 +1,13 @@
 import type { ExecutionContext } from '@nestjs/common';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { AdjustmentService } from '../src/application/adjustment.service.js';
 import { WalletService } from '../src/application/wallet.service.js';
 import { InternalAuthGuard } from '../src/http/internal-auth.guard.js';
-import { InternalWalletController, UserWalletController } from '../src/http/wallet.controller.js';
+import {
+  InternalWalletController,
+  UserWalletController,
+  WalletAdjustmentController,
+} from '../src/http/wallet.controller.js';
 import { InMemoryLedgerRepository } from '../src/infrastructure/in-memory-ledger.repository.js';
 
 const userId = '0198f5f6-b5c9-7d33-a4a5-608b27b9d776';
@@ -16,11 +21,16 @@ function executionContext(headers: Record<string, string>): ExecutionContext {
 describe('wallet HTTP boundary', () => {
   let internalController: InternalWalletController;
   let userController: UserWalletController;
+  let adjustmentController: WalletAdjustmentController;
 
   beforeEach(() => {
-    const wallet = new WalletService(new InMemoryLedgerRepository());
+    const repository = new InMemoryLedgerRepository();
+    const wallet = new WalletService(repository);
     internalController = new InternalWalletController(wallet);
     userController = new UserWalletController(wallet);
+    adjustmentController = new WalletAdjustmentController(
+      new AdjustmentService(repository, wallet, { canApprove: () => true }),
+    );
   });
 
   it('accepts points only as an unsigned decimal string', async () => {
@@ -81,5 +91,24 @@ describe('wallet HTTP boundary', () => {
         }),
       ),
     ).toThrow(expect.objectContaining({ status: 401 }));
+  });
+
+  it('exposes adjustment request and approval without numeric point values', async () => {
+    const request = await adjustmentController.request({
+      userId,
+      direction: 'CREDIT',
+      points: '10',
+      requestedBy: 'admin-requester',
+      reason: 'service compensation',
+      traceId: '0123456789abcdef0123456789abcdef',
+    });
+
+    expect(request).toMatchObject({ points: '10', status: 'PENDING' });
+    await expect(
+      adjustmentController.approve(request.id, {
+        approvedBy: 'admin-requester',
+        traceId: '0123456789abcdef0123456789abcdef',
+      }),
+    ).rejects.toMatchObject({ code: 'DUAL_APPROVAL_REQUIRED' });
   });
 });

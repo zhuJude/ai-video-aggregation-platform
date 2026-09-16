@@ -31,6 +31,17 @@ enum ReconciliationStatus {
   REPAIRED
 }
 
+enum AdjustmentDirection {
+  CREDIT
+  DEBIT
+}
+
+enum AdjustmentStatus {
+  PENDING
+  POSTED
+  REJECTED
+}
+
 model WalletAccount {
   id        String            @id @db.Uuid
   ownerId   String            @db.VarChar(80)
@@ -109,4 +120,55 @@ model ReconciliationRun {
   completedAt   DateTime?            @db.Timestamptz(3)
   mismatchCount Int                  @default(0)
   summary       Json?
+  mismatches    ReconciliationMismatch[]
+}
+
+model ReconciliationMismatch {
+  id         String            @id @db.Uuid
+  runId      String            @db.Uuid
+  accountId  String            @db.Uuid
+  userId     String            @db.VarChar(80)
+  account    WalletAccountKind
+  expected   BigInt
+  actual     BigInt
+  createdAt  DateTime          @default(now()) @db.Timestamptz(3)
+  run        ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@index([runId])
+  @@index([userId, createdAt])
+}
+
+model WalletRestriction {
+  userId              String    @id @db.VarChar(80)
+  reconciliationRunId String    @db.Uuid
+  reason              String    @db.VarChar(120)
+  blockedAt           DateTime  @default(now()) @db.Timestamptz(3)
+  unblockedAt         DateTime? @db.Timestamptz(3)
+}
+
+model AdjustmentRequest {
+  id                  String              @id @db.Uuid
+  userId              String              @db.Uuid
+  direction           AdjustmentDirection
+  points              BigInt
+  requestedBy         String              @db.VarChar(80)
+  reason              String              @db.VarChar(240)
+  traceId             String              @db.VarChar(64)
+  status              AdjustmentStatus    @default(PENDING)
+  postedTransactionId String?             @db.Uuid
+  createdAt           DateTime            @default(now()) @db.Timestamptz(3)
+  completedAt         DateTime?           @db.Timestamptz(3)
+  approvals           AdjustmentApproval[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AdjustmentApproval {
+  requestId  String            @db.Uuid
+  adminId    String            @db.VarChar(80)
+  approvedAt DateTime          @default(now()) @db.Timestamptz(3)
+  request    AdjustmentRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+
+  @@id([requestId, adminId])
 }

@@ -1,4 +1,5 @@
 import {
+  adjustmentEntries,
   creditEntries,
   releaseEntries,
   reserveEntries,
@@ -39,6 +40,10 @@ export class WalletService {
 
   release(command: WalletCommand): Promise<PostedLedgerTransaction> {
     return this.post('RELEASE', releaseEntries, command);
+  }
+
+  adjust(command: WalletCommand): Promise<PostedLedgerTransaction> {
+    return this.post('ADJUST', adjustmentEntries, command);
   }
 
   getBalance(userId: string): Promise<WalletBalance> {

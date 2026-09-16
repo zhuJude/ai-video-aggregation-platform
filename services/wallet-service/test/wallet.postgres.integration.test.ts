@@ -4,6 +4,9 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WalletService } from '../src/application/wallet.service.js';
+import { AdjustmentService } from '../src/application/adjustment.service.js';
+import { ReconciliationJob } from '../src/application/reconciliation.job.js';
+import { PrismaFinancialControlRepository } from '../src/infrastructure/prisma-financial-control.repository.js';
 import { PrismaLedgerRepository } from '../src/infrastructure/prisma-ledger.repository.js';
 
 const userId = '0198f5f6-b5c9-7d33-a4a5-608b27b9d776';
@@ -30,6 +33,7 @@ describe('WalletService PostgreSQL concurrency', { concurrent: false }, () => {
   let containerId: string;
   let prisma: PrismaClient;
   let service: WalletService;
+  let controls: PrismaFinancialControlRepository;
 
   beforeAll(async () => {
     containerId = docker(
@@ -59,6 +63,7 @@ describe('WalletService PostgreSQL concurrency', { concurrent: false }, () => {
     service = new WalletService(
       new PrismaLedgerRepository(prisma, { jitter: () => Promise.resolve() }),
     );
+    controls = new PrismaFinancialControlRepository(prisma);
   }, 120_000);
 
   afterAll(async () => {
@@ -125,5 +130,60 @@ describe('WalletService PostgreSQL concurrency', { concurrent: false }, () => {
     await expect(
       prisma.$executeRaw`DELETE FROM "LedgerEntry" WHERE "transactionId" IN (SELECT "id" FROM "LedgerTransaction" LIMIT 1)`,
     ).rejects.toThrow(/LEDGER_FACTS_ARE_IMMUTABLE/);
+  });
+
+  it('persists mismatches, P0 events and blocks affected wallets', async () => {
+    const available = await prisma.walletAccount.findUniqueOrThrow({
+      where: { ownerId_kind: { ownerId: userId, kind: 'USER_AVAILABLE' } },
+    });
+    await prisma.balanceSnapshot.update({
+      where: { accountId: available.id },
+      data: { balance: 999n },
+    });
+
+    const report = await new ReconciliationJob(controls).run('trace-postgres-reconciliation');
+
+    expect(report.mismatches).toContainEqual(
+      expect.objectContaining({ userId, account: 'USER_AVAILABLE', expected: 10n, actual: 999n }),
+    );
+    await expect(
+      prisma.outboxEvent.count({ where: { eventType: 'wallet.ledger-mismatch.v1' } }),
+    ).resolves.toBe(1);
+    await expect(
+      service.reserve({
+        businessKey: 'postgres:blocked:reserve',
+        userId,
+        points: 1n,
+        traceId: 'trace-postgres-blocked',
+      }),
+    ).rejects.toMatchObject({ code: 'WALLET_BLOCKED' });
+  });
+
+  it('posts a single adjustment after two persisted approvals', async () => {
+    const adjustments = new AdjustmentService(controls, service, { canApprove: () => true });
+    const request = await adjustments.request({
+      userId,
+      direction: 'CREDIT',
+      points: 5n,
+      requestedBy: 'admin-requester',
+      reason: 'approved repair',
+      traceId: 'trace-postgres-adjustment',
+    });
+
+    await adjustments.approve(request.id, 'admin-a', 'trace-postgres-approval-a');
+    const posted = await adjustments.approve(request.id, 'admin-b', 'trace-postgres-approval-b');
+    const duplicate = await adjustments.approve(
+      request.id,
+      'admin-b',
+      'trace-postgres-approval-b-duplicate',
+    );
+
+    expect(posted.status).toBe('POSTED');
+    expect(duplicate.transactionId).toBe(posted.transactionId);
+    await expect(
+      prisma.ledgerTransaction.count({
+        where: { businessKey: `adjustment:${request.id}:apply` },
+      }),
+    ).resolves.toBe(1);
   });
 });
