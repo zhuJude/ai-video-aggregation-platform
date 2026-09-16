@@ -712,10 +712,7 @@ export class PrismaCircuitRepository implements CircuitRepository {
           deduplicationKey,
           payload: input.outbox.payload as unknown as Prisma.InputJsonValue,
           headers: {
-            traceId: createHash('sha256')
-              .update(input.outbox.id)
-              .digest('hex')
-              .slice(0, 32),
+            traceId: createHash('sha256').update(input.outbox.id).digest('hex').slice(0, 32),
             correlationId: input.outbox.id,
             producer: 'provider-runtime',
           },
