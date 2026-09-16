@@ -110,6 +110,16 @@ describe('Prisma callback atomicity', () => {
       expect.objectContaining({ data: expect.objectContaining({ status: 'SUCCEEDED' }) }),
     );
     expect(transaction.outboxEvent.create).toHaveBeenCalledOnce();
+    expect(transaction.outboxEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        headers: {
+          traceId: '0123456789abcdef0123456789abcdef',
+          correlationId: TASK_ID,
+          providerEventId: 'provider-event-3',
+          producer: 'provider-runtime',
+        },
+      }),
+    });
     expect(transaction.callbackInbox.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ outcome: 'APPLIED' }) }),
     );

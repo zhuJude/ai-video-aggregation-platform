@@ -9,6 +9,7 @@ import {
   type PollRepository,
   type ProviderCircuitGate,
 } from '../src/index.js';
+import { ProviderRuntimeMetrics } from '../src/runtime/operations.js';
 
 const TASK_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a2';
 const EXECUTION_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b0';
@@ -74,6 +75,7 @@ function harness(
       set(callback: () => void, delayMs: number): unknown;
       clear(handle: unknown): void;
     };
+    readonly observer?: ProviderRuntimeMetrics;
   } = {},
 ) {
   const repository = new PollRepo();
@@ -99,6 +101,17 @@ function harness(
 }
 
 describe('durable callback-loss polling', () => {
+  it('records query latency from the durable poll path', async () => {
+    const metrics = new ProviderRuntimeMetrics();
+    const { service } = harness(DUE, { observer: metrics });
+
+    await service.handle(pollEvent());
+
+    const output = metrics.render();
+    expect(output).toContain(
+      'provider_request_duration_seconds_count{operation="QUERY",outcome="SUCCESS"} 1',
+    );
+  });
   it('uses a unique poll lease owner token for every delivery attempt', async () => {
     const { repository, service } = harness();
 
@@ -165,7 +178,11 @@ describe('durable callback-loss polling', () => {
       nextPollOutbox: {
         eventType: 'provider.execution-poll-due.v1',
         availableAt: new Date(DUE.getTime() + 30_000),
+        headers: { producer: 'provider-runtime' },
       },
+    });
+    expect(repository.completions[0]?.stateOutbox.headers).toMatchObject({
+      producer: 'provider-runtime',
     });
   });
 

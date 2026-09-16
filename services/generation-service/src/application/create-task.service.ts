@@ -14,6 +14,7 @@ import type {
   Sleep,
   WalletLedgerPort,
 } from './ports.js';
+import type { GenerationDomainObserver } from './observability.js';
 
 export interface CreateTaskCommand {
   readonly userId: string;
@@ -187,6 +188,7 @@ interface CreateTaskDependencies {
   readonly contenderMaxAttempts?: number;
   readonly contenderBackoffMs?: number;
   readonly idempotencyTtlMs?: number;
+  readonly observer?: GenerationDomainObserver;
 }
 
 interface ExecuteContext {
@@ -259,6 +261,7 @@ export class CreateTaskService {
   private readonly contenderMaxAttempts: number;
   private readonly contenderBackoffMs: number;
   private readonly idempotencyTtlMs: number;
+  private readonly observer: GenerationDomainObserver | undefined;
 
   constructor(dependencies: CreateTaskDependencies) {
     this.repository = dependencies.repository;
@@ -272,6 +275,7 @@ export class CreateTaskService {
     this.contenderMaxAttempts = dependencies.contenderMaxAttempts ?? 20;
     this.contenderBackoffMs = dependencies.contenderBackoffMs ?? 25;
     this.idempotencyTtlMs = dependencies.idempotencyTtlMs ?? 86_400_000;
+    this.observer = dependencies.observer;
   }
 
   async execute(
@@ -654,7 +658,10 @@ export class CreateTaskService {
   private async persistWithRetry(input: PersistTaskInput): Promise<CreateTaskPersistence> {
     for (let attempt = 1; attempt <= this.maxPersistenceAttempts; attempt += 1) {
       try {
-        return await this.repository.persistTask(input);
+        const persisted = await this.repository.persistTask(input);
+        this.observer?.recordTaskState('RESERVED');
+        this.observer?.recordTaskState('QUEUED');
+        return persisted;
       } catch (error) {
         if (!isPersistenceTransient(error) || attempt === this.maxPersistenceAttempts) throw error;
         await this.sleep(this.contenderBackoffMs * attempt);

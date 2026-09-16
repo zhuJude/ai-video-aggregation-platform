@@ -99,6 +99,7 @@ interface ErrorBody {
 
 interface RouteContext {
   callbackSecret: string;
+  callbackTargetConfigured: boolean;
   deliverCallback: NonNullable<MockProviderServerOptions['deliverCallback']>;
   callbackDeliveryTimeoutMs: number;
   callbackMaxAttempts: number;
@@ -229,6 +230,7 @@ export async function createMockProviderServer(
   const callbackSecret = await resolveCallbackSecret(options);
   return new NodeMockProviderServer({
     callbackSecret,
+    callbackTargetConfigured: options.deliverCallback !== undefined,
     deliverCallback: options.deliverCallback ?? (() => Promise.resolve()),
     callbackDeliveryTimeoutMs: boundedInteger(options.callbackDeliveryTimeoutMs, 1_000, 1, 60_000),
     callbackMaxAttempts: boundedInteger(options.callbackMaxAttempts, 1, 1, 10),
@@ -278,6 +280,28 @@ async function routeRequest(
     url = new URL(request.url ?? '/', 'http://mock-provider.invalid');
   } catch {
     sendError(response, 400, 'INVALID_REQUEST', 'The request is invalid.');
+    return;
+  }
+  if (method === 'GET' && url.pathname === '/health/live') {
+    if (rejectUnexpectedBody(request, response)) return;
+    sendJson(response, 200, { status: 'ok' });
+    return;
+  }
+  if (method === 'GET' && url.pathname === '/health/ready') {
+    if (rejectUnexpectedBody(request, response)) return;
+    const ready = context.callbackSecret.length > 0 && context.callbackTargetConfigured;
+    sendJson(response, ready ? 200 : 503, {
+      status: ready ? 'ready' : 'not_ready',
+      checks: {
+        callback_signing_key: context.callbackSecret.length > 0,
+        callback_target: context.callbackTargetConfigured,
+      },
+    });
+    return;
+  }
+  if (method === 'GET' && url.pathname === '/metrics') {
+    if (rejectUnexpectedBody(request, response)) return;
+    sendText(response, 200, renderMetrics(context));
     return;
   }
   if (method === 'POST' && url.pathname === '/tasks') {
@@ -717,6 +741,35 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
 function sendError(response: ServerResponse, status: number, code: string, message: string): void {
   const body: ErrorBody = { error: { code, message } };
   sendJson(response, status, body);
+}
+
+function sendText(response: ServerResponse, status: number, body: string): void {
+  if (response.destroyed || response.writableEnded) return;
+  const bytes = Buffer.from(body);
+  response.writeHead(status, {
+    'cache-control': 'no-store',
+    'content-length': String(bytes.length),
+    'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+  });
+  response.end(bytes);
+}
+
+function renderMetrics(context: RouteContext): string {
+  return [
+    '# HELP mock_provider_callback_attempts_total Callback delivery attempts.',
+    '# TYPE mock_provider_callback_attempts_total counter',
+    `mock_provider_callback_attempts_total ${String(context.diagnostics.callbackAttempts)}`,
+    '# HELP mock_provider_callback_successes_total Successful callback deliveries.',
+    '# TYPE mock_provider_callback_successes_total counter',
+    `mock_provider_callback_successes_total ${String(context.diagnostics.callbackSuccesses)}`,
+    '# HELP mock_provider_callback_failures_total Exhausted callback deliveries.',
+    '# TYPE mock_provider_callback_failures_total counter',
+    `mock_provider_callback_failures_total ${String(context.diagnostics.callbackFailures)}`,
+    '# HELP mock_provider_retained_tasks In-memory deterministic task records.',
+    '# TYPE mock_provider_retained_tasks gauge',
+    `mock_provider_retained_tasks ${String(context.tasks.size)}`,
+    '',
+  ].join('\n');
 }
 
 export interface MockProviderClientOptions {

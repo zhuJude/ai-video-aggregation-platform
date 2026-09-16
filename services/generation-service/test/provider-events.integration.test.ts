@@ -12,6 +12,8 @@ import {
   type SagaWrite,
   type WalletEffectsPort,
 } from '../src/application/provider-events.consumer.js';
+import { GenerationMetrics } from '../src/runtime/operations.js';
+import type { GenerationDomainObserver } from '../src/application/observability.js';
 
 const TASK_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b0';
 const USER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a2';
@@ -153,7 +155,7 @@ function assetImportedEvent(id = '0198f4d4-21c2-7b7d-8a03-08a0da2a51c1') {
   };
 }
 
-function harness(initial = task()) {
+function harness(initial = task(), observer?: GenerationDomainObserver) {
   const repository = new MemoryRepository(initial);
   const asset: AssetImportPort = { requestImport: vi.fn(async () => undefined) };
   const wallet: WalletEffectsPort = {
@@ -175,11 +177,34 @@ function harness(initial = task()) {
         return () => `0198f4d4-21c2-7b7d-8a03-08a0da2a51${(sequence++).toString(16)}`;
       })(),
     },
+    ...(observer === undefined ? {} : { observer }),
   });
   return { repository, asset, wallet, cancellation, consumer };
 }
 
 describe('ProviderEventsConsumer', () => {
+  it('emits transition and queue metrics from the durable consumer path', async () => {
+    const metrics = new GenerationMetrics();
+    const { consumer } = harness(
+      task({
+        status: 'QUEUED',
+        version: 2,
+        providerAccepted: false,
+        providerStateRank: 0,
+        providerId: null,
+        providerTaskId: null,
+        modelCode: null,
+      }),
+      metrics,
+    );
+
+    await consumer.consume(providerEvent('provider.execution-accepted.v1'));
+
+    const output = metrics.render();
+    expect(output).toContain('generation_tasks_total{status="SUBMITTING"} 1');
+    expect(output).toContain('generation_tasks_total{status="RUNNING"} 1');
+    expect(output).toContain('generation_queue_age_seconds_count 1');
+  });
   it('durably records import intent before dispatch so an immediate asset event cannot be lost', async () => {
     const { consumer, asset, repository, wallet } = harness();
     vi.mocked(asset.requestImport).mockImplementationOnce(async () => {
@@ -314,6 +339,7 @@ describe('ProviderEventsConsumer', () => {
   });
 
   it('persists ambiguous provider identity for later reconciliation', async () => {
+    const metrics = new GenerationMetrics();
     const { consumer, repository } = harness(
       task({
         status: 'QUEUED',
@@ -324,6 +350,7 @@ describe('ProviderEventsConsumer', () => {
         providerAccepted: false,
         providerStateRank: 0,
       }),
+      metrics,
     );
     const event = providerEvent('provider.execution-ambiguous.v1');
     Object.assign(event.data, { routeEpoch: 0 });
@@ -354,6 +381,16 @@ describe('ProviderEventsConsumer', () => {
       providerTaskId: 'provider-task-1',
       routeEpoch: 0,
     });
+
+    const secondAmbiguous = providerEvent(
+      'provider.execution-ambiguous.v1',
+      '0198f4d4-21c2-7b7d-8a03-08a0da2a51cf',
+    );
+    Object.assign(secondAmbiguous.data, { sequence: 2 });
+    await consumer.consume(secondAmbiguous);
+    expect(metrics.render()).toContain(
+      'generation_repair_cases{reason="AMBIGUOUS_PROVIDER_RESULT"} 2',
+    );
   });
 
   it('does not roll an already-running task back when a later ambiguous observation arrives', async () => {

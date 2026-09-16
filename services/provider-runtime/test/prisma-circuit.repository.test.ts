@@ -115,6 +115,17 @@ describe('Prisma circuit concurrency', () => {
       },
     });
     expect(transaction.outboxEvent.upsert).toHaveBeenCalledOnce();
+    expect(transaction.outboxEvent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          headers: {
+            traceId: '459c23c021f016eea4ee3e9365432364',
+            correlationId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51c0',
+            producer: 'provider-runtime',
+          },
+        }),
+      }),
+    );
     expect(transaction.outboxEvent.create).not.toHaveBeenCalled();
   });
 

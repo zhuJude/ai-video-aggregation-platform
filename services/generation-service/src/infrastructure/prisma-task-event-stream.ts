@@ -12,6 +12,7 @@ export class PrismaTaskEventStream implements TaskEventStreamPort {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly notifications: ObservableInput<TransitionNotification>,
+    private readonly pollIntervalMs = 1_000,
   ) {}
 
   stream(input: {
@@ -89,6 +90,10 @@ export class PrismaTaskEventStream implements TaskEventStreamPort {
         if (ready) void drain();
       };
 
+      // Notifications reduce latency, while the bounded durable poll makes an
+      // active stream correct across replicas and after a lost notification.
+      const pollTimer = setInterval(wake, this.pollIntervalMs);
+
       const live = from(this.notifications).subscribe({
         next: (event) => {
           if (event.taskId !== input.taskId) return;
@@ -123,6 +128,7 @@ export class PrismaTaskEventStream implements TaskEventStreamPort {
 
       return () => {
         active = false;
+        clearInterval(pollTimer);
         live.unsubscribe();
       };
     });

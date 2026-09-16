@@ -1,6 +1,7 @@
 import type { TaskStatus } from '../domain/task-state-machine.js';
 import { GenerationApplicationError } from './errors.js';
 import { TaskCursorCodec, type TaskCursor } from './task-cursor.js';
+import type { GenerationDomainObserver } from './observability.js';
 
 export interface OwnedTask {
   readonly id: string;
@@ -51,6 +52,7 @@ export class TaskManagementService {
   constructor(
     private readonly repository: TaskManagementRepository,
     private readonly cursors = new TaskCursorCodec(),
+    private readonly observer?: GenerationDomainObserver,
   ) {}
 
   async list(
@@ -84,6 +86,7 @@ export class TaskManagementService {
   async assertRetryable(userId: string, taskId: string): Promise<OwnedTask> {
     const task = await this.get(userId, taskId);
     if (!retryStatuses.some((status) => status === task.status)) {
+      this.observer?.recordTransitionFailure(task.status, 'QUEUED', 'ILLEGAL_TRANSITION');
       throw new GenerationApplicationError('TASK_STATE_CONFLICT');
     }
     return task;
@@ -105,6 +108,8 @@ export class TaskManagementService {
       traceId,
     });
     if (accepted === null) {
+      const current = await this.get(userId, taskId);
+      this.observer?.recordTransitionFailure(current.status, 'CANCELED', 'ILLEGAL_TRANSITION');
       throw new GenerationApplicationError('TASK_STATE_CONFLICT');
     }
     return { accepted: true, taskId: accepted.id, status: accepted.status };

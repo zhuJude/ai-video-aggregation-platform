@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/require-await */
-import { firstValueFrom, Subject, take, toArray } from 'rxjs';
+import { firstValueFrom, NEVER, Subject, take, toArray } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '../src/generated/prisma/client.js';
 import {
@@ -12,7 +12,7 @@ const TRANSITION_A = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b1';
 const TRANSITION_B = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b2';
 
 describe('PrismaTaskEventStream', () => {
-  it('replays once from a stable cursor and then follows notifications without polling', async () => {
+  it('replays once from a stable cursor and then follows notifications promptly', async () => {
     const durableRows: Array<{
       id: string;
       taskId: string;
@@ -68,6 +68,40 @@ describe('PrismaTaskEventStream', () => {
       { transitionId: TRANSITION_B, taskVersion: 4, status: 'SUCCEEDED' },
     ]);
     expect(findMany).toHaveBeenCalled();
+  });
+
+  it('discovers a durable transition created on another replica without a local notification', async () => {
+    const durableRows: Array<{
+      id: string;
+      taskId: string;
+      taskVersion: number;
+      toStatus: 'RUNNING';
+      createdAt: Date;
+    }> = [];
+    const findMany = vi.fn(async () => [...durableRows]);
+    const prisma = {
+      taskTransition: { findFirst: vi.fn(), findMany },
+    } as unknown as PrismaClient;
+    const stream = new PrismaTaskEventStream(prisma, NEVER, 10);
+    const resultPromise = firstValueFrom(stream.stream({ taskId: TASK_ID }));
+
+    await vi.waitFor(() => {
+      expect(findMany).toHaveBeenCalledOnce();
+    });
+    durableRows.push({
+      id: TRANSITION_A,
+      taskId: TASK_ID,
+      taskVersion: 1,
+      toStatus: 'RUNNING',
+      createdAt: new Date('2026-08-31T08:00:00.000Z'),
+    });
+
+    await expect(resultPromise).resolves.toMatchObject({
+      transitionId: TRANSITION_A,
+      taskVersion: 1,
+      status: 'RUNNING',
+    });
+    expect(findMany.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('uses out-of-order duplicate live notifications only to wake ordered durable catch-up', async () => {

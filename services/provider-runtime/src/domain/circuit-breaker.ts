@@ -20,6 +20,7 @@ export interface CircuitHealthOutbox {
 }
 
 export interface CircuitRepository {
+  status?(key: CircuitKey): Promise<'CLOSED' | 'OPEN' | 'HALF_OPEN'>;
   acquire(input: {
     readonly key: CircuitKey;
     readonly now: Date;
@@ -55,6 +56,9 @@ interface CircuitBreakerDependencies {
   readonly failureThreshold?: number;
   readonly openDurationMs?: number;
   readonly probeLeaseMs?: number;
+  readonly observer?: {
+    observeCircuitState(channelKey: string, state: 'CLOSED' | 'OPEN' | 'HALF_OPEN'): void;
+  };
 }
 
 export class CircuitBreaker {
@@ -81,18 +85,29 @@ export class CircuitBreaker {
       throw new Error('INVALID_CIRCUIT_CONFIGURATION');
   }
 
-  acquire(key: CircuitKey): Promise<CircuitAcquireResult> {
-    return this.dependencies.repository.acquire({
+  async acquire(key: CircuitKey): Promise<CircuitAcquireResult> {
+    const result = await this.dependencies.repository.acquire({
       key,
       now: this.dependencies.clock.now(),
       probeToken: this.dependencies.ids.next(),
       openDurationMs: this.openDurationMs,
       probeLeaseMs: this.probeLeaseMs,
     });
+    const durableState = await this.dependencies.repository.status?.(key);
+    this.dependencies.observer?.observeCircuitState(
+      circuitMetricKey(key),
+      durableState ??
+        (result.kind === 'REJECT'
+          ? 'OPEN'
+          : result.kind === 'HALF_OPEN_PROBE'
+            ? 'HALF_OPEN'
+            : 'CLOSED'),
+    );
+    return result;
   }
 
-  record(key: CircuitKey, permit: CircuitPermit, outcome: CircuitOutcome): Promise<void> {
-    return this.dependencies.repository.record({
+  async record(key: CircuitKey, permit: CircuitPermit, outcome: CircuitOutcome): Promise<void> {
+    await this.dependencies.repository.record({
       key,
       permit,
       outcome,
@@ -102,16 +117,25 @@ export class CircuitBreaker {
       failureThreshold: this.failureThreshold,
       openDurationMs: this.openDurationMs,
     });
+    const durableState = await this.dependencies.repository.status?.(key);
+    if (durableState !== undefined) {
+      this.dependencies.observer?.observeCircuitState(circuitMetricKey(key), durableState);
+    } else if (permit.kind === 'HALF_OPEN_PROBE') {
+      this.dependencies.observer?.observeCircuitState(
+        circuitMetricKey(key),
+        outcome === 'SUCCESS' ? 'CLOSED' : 'OPEN',
+      );
+    }
   }
 
-  tripImmediately(key: CircuitKey, reason: ImmediateCircuitReason): Promise<void> {
+  async tripImmediately(key: CircuitKey, reason: ImmediateCircuitReason): Promise<void> {
     const now = this.dependencies.clock.now();
     const severity = reason === 'AUTH_FAILURE' ? 'P1' : 'P2';
     const eventType =
       reason === 'AUTH_FAILURE'
         ? ('provider.health.auth-failed.v1' as const)
         : ('provider.health.zero-balance.v1' as const);
-    return this.dependencies.repository.tripImmediately({
+    await this.dependencies.repository.tripImmediately({
       key,
       reason,
       now,
@@ -124,7 +148,12 @@ export class CircuitBreaker {
         occurredAt: now,
       },
     });
+    this.dependencies.observer?.observeCircuitState(circuitMetricKey(key), 'OPEN');
   }
+}
+
+function circuitMetricKey(key: CircuitKey): string {
+  return `${key.providerId}\u0000${key.modelCode}`;
 }
 
 interface MemoryCircuitState {
@@ -141,6 +170,10 @@ export class InMemoryCircuitRepository implements CircuitRepository {
   private readonly states = new Map<string, MemoryCircuitState>();
   private chain: Promise<void> = Promise.resolve();
   readonly outbox: CircuitHealthOutbox[] = [];
+
+  status(key: CircuitKey): Promise<'CLOSED' | 'OPEN' | 'HALF_OPEN'> {
+    return Promise.resolve(this.state(key).status);
+  }
 
   acquire(input: Parameters<CircuitRepository['acquire']>[0]): Promise<CircuitAcquireResult> {
     return this.exclusive(() => {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { CircuitAcquireResult, CircuitRepository } from '../domain/circuit-breaker.js';
 import {
   decideProviderUpdate,
@@ -160,6 +161,7 @@ export class PrismaCallbackRepository implements CallbackRepository {
             traceId: execution.traceId,
             correlationId: execution.correlationId,
             providerEventId: input.providerEventId,
+            producer: 'provider-runtime',
           },
           occurredAt: input.receivedAt,
           availableAt: input.receivedAt,
@@ -481,6 +483,16 @@ export class PrismaCircuitRepository implements CircuitRepository {
     private readonly ids: { next(): string },
   ) {}
 
+  async status(key: Parameters<NonNullable<CircuitRepository['status']>>[0]) {
+    const state = await this.prisma.$transaction((transaction) =>
+      transaction.circuitState.findUnique({
+        where: { providerId_modelCode: key },
+        select: { status: true },
+      }),
+    );
+    return state?.status ?? 'CLOSED';
+  }
+
   async acquire(input: Parameters<CircuitRepository['acquire']>[0]): Promise<CircuitAcquireResult> {
     for (let retry = 0; retry < 2; retry += 1) {
       try {
@@ -699,7 +711,14 @@ export class PrismaCircuitRepository implements CircuitRepository {
           eventVersion: 1,
           deduplicationKey,
           payload: input.outbox.payload as unknown as Prisma.InputJsonValue,
-          headers: {},
+          headers: {
+            traceId: createHash('sha256')
+              .update(input.outbox.id)
+              .digest('hex')
+              .slice(0, 32),
+            correlationId: input.outbox.id,
+            producer: 'provider-runtime',
+          },
           occurredAt: input.outbox.occurredAt,
           availableAt: input.outbox.occurredAt,
         },

@@ -15,6 +15,7 @@ import {
   classifyProviderFailure,
   type ProviderFailure,
 } from '../domain/retry-policy.js';
+import type { ProviderRuntimeObserver } from './observability.js';
 
 export const QueuedConsumerName = 'provider-runtime:generation-task-queued:v1' as const;
 export const RetryConsumerName = 'provider-runtime:execution-retry-scheduled:v1' as const;
@@ -298,6 +299,7 @@ interface Dependencies {
     clear(handle: unknown): void;
   };
   readonly circuit: ProviderCircuitGate;
+  readonly observer?: ProviderRuntimeObserver;
 }
 interface ParsedEvent<T> {
   readonly id: string;
@@ -375,6 +377,7 @@ export class ProviderExecutionService {
         traceId: event.traceId,
         correlationId: event.correlationId,
         causationId: event.id,
+        producer: 'provider-runtime',
       },
       occurredAt: now,
       availableAt: now,
@@ -534,11 +537,13 @@ export class ProviderExecutionService {
     };
     const permit = await this.acquireCircuit(circuitKey);
     if (permit === null) return this.completeCircuitOpen(active);
+    const callStartedAt = this.dependencies.clock.now();
     let raced: Awaited<ReturnType<ProviderExecutionService['createWithDeadline']>>;
     try {
       raced = await this.createWithDeadline(active);
     } catch (error) {
       const failure = classifyProviderFailure(error);
+      this.observeCreate(callStartedAt, 'FAILURE', failure.code);
       await this.recordCircuitFailure(circuitKey, permit, failure);
       return this.completeFailure(active, failure);
     }
@@ -549,6 +554,7 @@ export class ProviderExecutionService {
         ambiguous: true as const,
         code: 'PROVIDER_TIMEOUT' as const,
       };
+      this.observeCreate(callStartedAt, 'FAILURE', timeoutFailure.code);
       await this.recordCircuitFailure(circuitKey, permit, timeoutFailure);
       const completion = this.completeFailure(active, {
         ...timeoutFailure,
@@ -564,9 +570,11 @@ export class ProviderExecutionService {
         ambiguous: false,
         code: 'PROVIDER_PROTOCOL_ERROR',
       } as const;
+      this.observeCreate(callStartedAt, 'FAILURE', failure.code);
       await this.recordCircuitFailure(circuitKey, permit, failure);
       return this.completeFailure(active, failure);
     }
+    this.observeCreate(callStartedAt, 'SUCCESS');
     await this.dependencies.circuit.record(circuitKey, permit, 'SUCCESS');
     const completedAt = this.dependencies.clock.now();
     const immediateSuccess = created.state === 'SUCCEEDED';
@@ -687,6 +695,7 @@ export class ProviderExecutionService {
           traceId: active.event.traceId,
           correlationId: active.event.correlationId,
           causationId: active.event.id,
+          producer: 'provider-runtime',
         },
         occurredAt,
         availableAt: nextPollAt,
@@ -893,6 +902,7 @@ export class ProviderExecutionService {
         traceId: event.traceId,
         correlationId: event.correlationId,
         causationId: event.id,
+        producer: 'provider-runtime',
       },
       occurredAt,
       availableAt:
@@ -900,6 +910,17 @@ export class ProviderExecutionService {
           ? new Date(nextAttemptAt)
           : occurredAt,
     };
+  }
+
+  private observeCreate(startedAt: Date, outcome: 'SUCCESS' | 'FAILURE', code?: string): void {
+    const elapsed = Math.max(
+      0,
+      (this.dependencies.clock.now().getTime() - startedAt.getTime()) / 1_000,
+    );
+    this.dependencies.observer?.observeProviderCall('CREATE', outcome, elapsed);
+    if (outcome === 'FAILURE') {
+      this.dependencies.observer?.recordProviderError('CREATE', providerMetricError(code));
+    }
   }
 }
 
@@ -933,6 +954,17 @@ function completionIdentity(active: ActiveExecution) {
     attemptNumber: active.attemptNumber,
     leaseToken: active.leaseToken,
   };
+}
+
+function providerMetricError(
+  code: string | undefined,
+): 'RATE_LIMITED' | 'UNAVAILABLE' | 'TIMEOUT' | 'AUTH' | 'BALANCE' | 'PROTOCOL' {
+  if (code === 'PROVIDER_RATE_LIMITED') return 'RATE_LIMITED';
+  if (code === 'PROVIDER_TIMEOUT') return 'TIMEOUT';
+  if (code === 'PROVIDER_AUTH_FAILED') return 'AUTH';
+  if (code === 'PROVIDER_BALANCE_EXHAUSTED') return 'BALANCE';
+  if (code === 'PROVIDER_PROTOCOL_ERROR') return 'PROTOCOL';
+  return 'UNAVAILABLE';
 }
 function parseQueuedEvent(rawEvent: unknown): ParsedEvent<QueuedTaskData> {
   const parsed = EventEnvelopeSchema.strict().safeParse(rawEvent);

@@ -386,4 +386,45 @@ describe('PrismaProviderEventRepository', () => {
     expect(sagaUpdate).not.toHaveBeenCalled();
     expect(outboxCreate).not.toHaveBeenCalled();
   });
+
+  it('maps durable open repair kinds to bounded categories and keeps financial phases exclusive', async () => {
+    const taskFindFirst = vi.fn().mockResolvedValue(null);
+    const repairGroupBy = vi.fn().mockResolvedValue([
+      { kind: 'PROVIDER_ACCEPTANCE_OR_BILLING_AMBIGUOUS', _count: { _all: 2 } },
+      { kind: 'TASK_CREATION_FINANCIAL_UNCERTAIN', _count: { _all: 3 } },
+      { kind: 'REPAIR_TASK_ERROR', _count: { _all: 4 } },
+    ]);
+    const repository = new PrismaProviderEventRepository({
+      taskRepairCase: { groupBy: repairGroupBy },
+      generationTask: { findFirst: taskFindFirst },
+    } as unknown as PrismaClient);
+
+    await expect(repository.repairMetricsSnapshot({ now: NOW, deadlinesMs: {} })).resolves.toEqual({
+      repairCases: {
+        AMBIGUOUS_PROVIDER_RESULT: 2,
+        FINANCIAL_EFFECT_PENDING: 3,
+        STALE_STATUS: 4,
+      },
+      financialSagaLag: { ASSET_IMPORT: 0, RELEASE: 0, SETTLEMENT: 0 },
+    });
+
+    const settlementFilter = {
+      status: { notIn: ['SETTLED', 'REFUNDED'] },
+      saga: {
+        is: {
+          financialDisposition: 'SUCCESS_SETTLEMENT',
+          NOT: { assetImportRequested: true, assetId: null },
+        },
+      },
+    };
+    expect(repairGroupBy).toHaveBeenCalledWith({
+      by: ['kind'],
+      where: { status: { in: ['OPEN', 'IN_PROGRESS'] } },
+      _count: { _all: true },
+    });
+    expect(taskFindFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ where: settlementFilter }),
+    );
+  });
 });

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { canonicalJson, StrictJsonError } from '../domain/canonical-json.js';
 import { transition, type TaskStatus } from '../domain/task-state-machine.js';
 import type { Clock, IdGenerator, LedgerCommand } from './ports.js';
+import type { GenerationDomainObserver } from './observability.js';
 
 export const ProviderEventsConsumerName = 'generation-service:provider-events:v1' as const;
 
@@ -182,6 +183,15 @@ export interface ProviderEventRepository {
   ): Promise<{ readonly kind: 'APPLIED'; readonly task: SagaTask } | { readonly kind: 'STALE' }>;
   getTask(taskId: string): Promise<SagaTask | null>;
   findStale(query: StaleTaskQuery): Promise<readonly SagaTask[]>;
+  repairMetricsSnapshot?(input: {
+    readonly now: Date;
+    readonly deadlinesMs: Readonly<Partial<Record<TaskStatus, number>>>;
+  }): Promise<{
+    readonly repairCases: Readonly<
+      Record<'AMBIGUOUS_PROVIDER_RESULT' | 'FINANCIAL_EFFECT_PENDING' | 'STALE_STATUS', number>
+    >;
+    readonly financialSagaLag: Readonly<Record<'ASSET_IMPORT' | 'SETTLEMENT' | 'RELEASE', number>>;
+  }>;
 }
 
 export interface AssetImportPort {
@@ -216,6 +226,7 @@ interface ProviderEventsDependencies {
   readonly clock: Clock;
   readonly ids: IdGenerator;
   readonly leaseDurationMs?: number;
+  readonly observer?: GenerationDomainObserver;
 }
 
 export interface ConsumerResult {
@@ -783,6 +794,7 @@ export class ProviderEventsConsumer {
       true,
       this.operatorCase(message, task, kind, summary, patch),
     );
+    this.dependencies.observer?.incrementRepairCases('AMBIGUOUS_PROVIDER_RESULT');
     return { ack: true, outcome: 'OPERATOR_REQUIRED' };
   }
 
@@ -815,6 +827,7 @@ export class ProviderEventsConsumer {
       true,
       this.operatorCase(message, task, kind, summary, patch),
     );
+    this.dependencies.observer?.incrementRepairCases('AMBIGUOUS_PROVIDER_RESULT');
     return { ack: true, outcome: 'OPERATOR_REQUIRED' };
   }
 
@@ -884,7 +897,17 @@ export class ProviderEventsConsumer {
     patch: SagaWrite['patch'],
     completeMessage = false,
   ): Promise<SagaTask> {
-    const statuses = taskTransitionPath(task.status, target);
+    let statuses: readonly TaskStatus[];
+    try {
+      statuses = taskTransitionPath(task.status, target);
+    } catch (error) {
+      this.dependencies.observer?.recordTransitionFailure(
+        task.status,
+        target,
+        'ILLEGAL_TRANSITION',
+      );
+      throw error;
+    }
     let from = task.status;
     let version = task.version;
     const transitions: SagaTransition[] = [];
@@ -908,7 +931,32 @@ export class ProviderEventsConsumer {
       });
       from = to;
     }
-    return this.write(message, task, { ...patch, status: target }, transitions, completeMessage);
+    let written: SagaTask;
+    try {
+      written = await this.write(
+        message,
+        task,
+        { ...patch, status: target },
+        transitions,
+        completeMessage,
+      );
+    } catch (error) {
+      this.dependencies.observer?.recordTransitionFailure(
+        task.status,
+        target,
+        error instanceof Error && error.message === 'TASK_SAGA_FENCED'
+          ? 'VERSION_CONFLICT'
+          : 'PERSISTENCE_ERROR',
+      );
+      throw error;
+    }
+    for (const item of transitions) this.dependencies.observer?.recordTaskState(item.toStatus);
+    if (task.status === 'QUEUED' && target !== 'QUEUED') {
+      this.dependencies.observer?.observeQueueAge(
+        Math.max(0, (this.dependencies.clock.now().getTime() - task.updatedAt.getTime()) / 1_000),
+      );
+    }
+    return written;
   }
 
   private async write(

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { LedgerCommandSchema } from '@repo/contracts/wallet';
 import { transition, type TaskStatus } from '../domain/task-state-machine.js';
 import type { Clock, IdGenerator, LedgerCommand } from './ports.js';
+import type { GenerationDomainObserver } from './observability.js';
 import {
   ProviderEventsConsumerName,
   type OperatorCaseInput,
@@ -47,6 +48,7 @@ interface RepairJobDependencies {
   readonly ids: IdGenerator;
   readonly batchSize?: number;
   readonly deadlinesMs?: Readonly<Partial<Record<TaskStatus, number>>>;
+  readonly observer?: GenerationDomainObserver;
 }
 
 export interface RepairRunResult {
@@ -113,6 +115,43 @@ export class TaskRepairJob {
     for (const task of tasks) {
       const outcome = await this.repair(task);
       result[outcome] += 1;
+    }
+    const batchRepairSnapshot = {
+      AMBIGUOUS_PROVIDER_RESULT: result.operatorRequired,
+      FINANCIAL_EFFECT_PENDING: 0,
+      STALE_STATUS: result.unchanged,
+    };
+    const financial = tasks.filter(
+      (task) => task.financialDisposition !== null || task.assetImportRequested,
+    );
+    if (financial.length > 0) {
+      batchRepairSnapshot.FINANCIAL_EFFECT_PENDING = financial.length;
+      const batchFinancialSnapshot = { ASSET_IMPORT: 0, SETTLEMENT: 0, RELEASE: 0 };
+      for (const phase of ['ASSET_IMPORT', 'SETTLEMENT', 'RELEASE'] as const) {
+        const ages = financial
+          .filter((task) => financialPhase(task) === phase)
+          .map((task) => Math.max(0, scanNow.getTime() - task.updatedAt.getTime()));
+        if (ages.length > 0) {
+          batchFinancialSnapshot[phase] = Math.max(...ages) / 1_000;
+        }
+      }
+      this.dependencies.observer?.refreshFinancialSagaLag(batchFinancialSnapshot);
+    } else {
+      this.dependencies.observer?.refreshFinancialSagaLag({
+        ASSET_IMPORT: 0,
+        SETTLEMENT: 0,
+        RELEASE: 0,
+      });
+    }
+    const durableSnapshot = await this.dependencies.repository.repairMetricsSnapshot?.({
+      now: scanNow,
+      deadlinesMs: this.deadlinesMs,
+    });
+    if (durableSnapshot !== undefined) {
+      this.dependencies.observer?.refreshRepairCases(durableSnapshot.repairCases);
+      this.dependencies.observer?.refreshFinancialSagaLag(durableSnapshot.financialSagaLag);
+    } else {
+      this.dependencies.observer?.refreshRepairCases(batchRepairSnapshot);
     }
     return result;
   }
@@ -663,6 +702,12 @@ export class TaskRepairJob {
     }
     return { id, payloadSha256, traceId, leaseToken };
   }
+}
+
+function financialPhase(task: SagaTask): 'ASSET_IMPORT' | 'SETTLEMENT' | 'RELEASE' {
+  if (task.assetImportRequested && task.assetId === null) return 'ASSET_IMPORT';
+  if (task.financialDisposition === 'SUCCESS_SETTLEMENT') return 'SETTLEMENT';
+  return 'RELEASE';
 }
 
 export function isSafeFailoverAuthorized(task: SagaTask): task is SagaTask & {

@@ -22,6 +22,8 @@ import type {
 } from '../src/application/ports.js';
 import { canonicalJson } from '../src/domain/canonical-json.js';
 import { UuidV7Generator } from '../src/domain/uuid-v7.js';
+import { GenerationMetrics } from '../src/runtime/operations.js';
+import type { GenerationDomainObserver } from '../src/application/observability.js';
 
 const USER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a2';
 const OTHER_USER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a9';
@@ -355,6 +357,7 @@ function harness(
     readonly wallet?: WalletLedgerPort;
     readonly leaseTokens?: SequenceLeaseTokenGenerator;
     readonly idempotencyTtlMs?: number;
+    readonly observer?: GenerationDomainObserver;
   } = {},
 ) {
   const repository = options.repository ?? new MemoryTaskCreationRepository();
@@ -383,6 +386,7 @@ function harness(
     sleep: async () => Promise.resolve(),
     maxPersistenceAttempts: 3,
     contenderMaxAttempts: 10,
+    ...(options.observer === undefined ? {} : { observer: options.observer }),
     ...(options.idempotencyTtlMs === undefined
       ? {}
       : { idempotencyTtlMs: options.idempotencyTtlMs }),
@@ -394,6 +398,16 @@ function harness(
 describe('CreateTaskService integration', () => {
   it('uses contract-compatible UUIDv7 identifiers in production', () => {
     expect(UuidSchema.safeParse(new UuidV7Generator().next()).success).toBe(true);
+  });
+
+  it('records both durable creation transitions after the task transaction commits', async () => {
+    const metrics = new GenerationMetrics();
+    const { service } = harness({ observer: metrics });
+
+    await service.execute(command, 'creation-metrics');
+
+    expect(metrics.render()).toContain('generation_tasks_total{status="RESERVED"} 1');
+    expect(metrics.render()).toContain('generation_tasks_total{status="QUEUED"} 1');
   });
 
   it('elects one winner for concurrent identical idempotency requests', async () => {

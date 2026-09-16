@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "files": [
+    "dist",
+    "prisma/migrations",
+    "package.json"
+  ],
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
@@ -25,9 +30,12 @@
     "test:coverage": "vitest run --coverage --exclude dist/**"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "7.2.0",
     "@prisma/client": "7.2.0",
     "@repo/contracts": "workspace:*",
     "@repo/provider-sdk": "workspace:*",
+    "@repo/mock-provider": "workspace:*",
+    "pg": "8.16.3",
     "zod": "4.4.3"
   },
   "devDependencies": {

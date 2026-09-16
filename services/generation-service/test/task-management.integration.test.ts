@@ -8,6 +8,7 @@ import {
   type TaskManagementRepository,
 } from '../src/application/task-management.service.js';
 import { TaskCursorCodec } from '../src/application/task-cursor.js';
+import { GenerationMetrics } from '../src/runtime/operations.js';
 
 const USER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a2';
 const OTHER_USER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a9';
@@ -121,6 +122,21 @@ describe('TaskManagementService', () => {
     });
     expect(requestSpy).toHaveBeenCalledTimes(2);
     expect(repository.commands).toEqual([{ type: 'CANCEL', taskId: TASK_A }]);
+  });
+
+  it('records rejected task-management transitions on the real command path', async () => {
+    const repository = new MemoryManagementRepository();
+    repository.tasks.set(TASK_A, task(TASK_A, USER_ID, 'SUCCEEDED', '2026-08-31T08:00:00Z'));
+    const metrics = new GenerationMetrics();
+    const service = new TaskManagementService(repository, new TaskCursorCodec(), metrics);
+
+    await expect(service.cancel(USER_ID, TASK_A, 'a'.repeat(32))).rejects.toMatchObject({
+      code: 'TASK_STATE_CONFLICT',
+    });
+
+    expect(metrics.render()).toContain(
+      'generation_transition_failures_total{from_status="SUCCEEDED",reason="ILLEGAL_TRANSITION",to_status="CANCELED"} 1',
+    );
   });
 
   it('authorizes a new quoted task only from failed or refunded source work', async () => {

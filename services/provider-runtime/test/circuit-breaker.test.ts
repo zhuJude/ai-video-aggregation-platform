@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CircuitBreaker, InMemoryCircuitRepository, type CircuitPermit } from '../src/index.js';
+import { ProviderRuntimeMetrics } from '../src/runtime/operations.js';
 
 const KEY = {
   providerId: '0198f4d4-21c2-7b7d-8a03-08a0da2a51a7',
@@ -29,6 +30,66 @@ async function observe(
 }
 
 describe('provider/model circuit breaker', () => {
+  it('aggregates circuit state counts without exporting channel identifiers', async () => {
+    const metrics = new ProviderRuntimeMetrics();
+    const repository = new InMemoryCircuitRepository();
+    const circuit = new CircuitBreaker({
+      repository,
+      clock: { now: () => START },
+      ids: { next: () => 'permit' },
+      observer: metrics,
+    });
+
+    await circuit.tripImmediately(KEY, 'AUTH_FAILURE');
+    await circuit.acquire(KEY);
+
+    const output = metrics.render();
+    expect(output).toContain('provider_circuit_state{state="OPEN"} 1');
+    expect(output).not.toContain(KEY.providerId);
+    expect(output).not.toContain(KEY.modelCode);
+  });
+  it('refreshes the circuit gauge on the exact CLOSED to OPEN threshold transition', async () => {
+    const metrics = new ProviderRuntimeMetrics();
+    const repository = new InMemoryCircuitRepository();
+    const circuit = new CircuitBreaker({
+      repository,
+      clock: { now: () => START },
+      ids: { next: () => 'permit' },
+      observer: metrics,
+    });
+
+    for (let index = 0; index < 10; index += 1) {
+      const permit = await circuit.acquire(KEY);
+      if (permit.kind !== 'ALLOW') throw new Error('permit missing');
+      await circuit.record(KEY, permit, 'QUALIFYING_FAILURE');
+    }
+
+    expect(metrics.render()).toContain('provider_circuit_state{state="OPEN"} 1');
+    expect(metrics.render()).toContain('provider_circuit_state{state="CLOSED"} 0');
+  });
+  it('keeps the gauge HALF_OPEN when a concurrent request is rejected behind the probe', async () => {
+    let now = START;
+    const metrics = new ProviderRuntimeMetrics();
+    const repository = new InMemoryCircuitRepository();
+    const circuit = new CircuitBreaker({
+      repository,
+      clock: { now: () => now },
+      ids: { next: () => 'permit' },
+      observer: metrics,
+    });
+    for (let index = 0; index < 10; index += 1) {
+      const permit = await circuit.acquire(KEY);
+      if (permit.kind !== 'ALLOW') throw new Error('permit missing');
+      await circuit.record(KEY, permit, 'QUALIFYING_FAILURE');
+    }
+    now = new Date(START.getTime() + 60_000);
+
+    await expect(circuit.acquire(KEY)).resolves.toMatchObject({ kind: 'HALF_OPEN_PROBE' });
+    await expect(circuit.acquire(KEY)).resolves.toEqual({ kind: 'REJECT', reason: 'OPEN' });
+
+    expect(metrics.render()).toContain('provider_circuit_state{state="HALF_OPEN"} 1');
+    expect(metrics.render()).toContain('provider_circuit_state{state="OPEN"} 0');
+  });
   it('stays closed at five failures out of ten samples', async () => {
     const { circuit, repository } = breaker();
     for (let index = 0; index < 5; index += 1) await observe(circuit, 'SUCCESS');

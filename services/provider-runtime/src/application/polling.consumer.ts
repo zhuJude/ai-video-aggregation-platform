@@ -9,6 +9,7 @@ import {
 import { classifyProviderFailure } from '../domain/retry-policy.js';
 import type { CircuitKey, CircuitPermit } from '../domain/circuit-breaker.js';
 import type { ProviderCircuitGate } from './execution.service.js';
+import type { ProviderRuntimeObserver } from './observability.js';
 import {
   callProviderWithDeadline,
   defaultProviderCallTimers,
@@ -163,6 +164,7 @@ interface PollDependencies {
   readonly leaseDurationMs?: number;
   readonly queryTimeoutMs?: number;
   readonly timers?: ProviderCallTimers;
+  readonly observer?: ProviderRuntimeObserver;
 }
 
 export interface PollResult {
@@ -247,6 +249,7 @@ export class ProviderPollingService {
       return { ack: true, outcome: 'DEFERRED' };
     }
     let rawProviderResult: unknown;
+    const callStartedAt = this.dependencies.clock.now();
     try {
       const raced = await callProviderWithDeadline({
         operation: () => adapter.queryTask({ providerTaskId: claim.providerTaskId }),
@@ -254,6 +257,7 @@ export class ProviderPollingService {
         timers: this.timers,
       });
       if (raced.kind === 'TIMED_OUT') {
+        this.observeQuery(callStartedAt, 'FAILURE', 'TIMEOUT');
         await this.recordFailure(circuitKey, permit, 'PROVIDER_TIMEOUT');
         await this.defer(envelope.data, data.data, claim, payloadSha256, 'PROVIDER_TIMEOUT');
         return { ack: true, outcome: 'DEFERRED' };
@@ -261,15 +265,18 @@ export class ProviderPollingService {
       rawProviderResult = raced.result;
     } catch (error) {
       const failure = classifyProviderFailure(error);
+      this.observeQuery(callStartedAt, 'FAILURE', providerMetricError(failure.code));
       await this.recordFailure(circuitKey, permit, failure.code);
       await this.defer(envelope.data, data.data, claim, payloadSha256, failure.code);
       return { ack: true, outcome: 'DEFERRED' };
     }
     const parsedProviderResult = ProviderQueryResultSchema.safeParse(rawProviderResult);
     if (!parsedProviderResult.success) {
+      this.observeQuery(callStartedAt, 'FAILURE', 'PROTOCOL');
       await this.dependencies.circuit.record(circuitKey, permit, 'QUALIFYING_FAILURE');
       throw new Error('INVALID_PROVIDER_POLL_RESULT');
     }
+    this.observeQuery(callStartedAt, 'SUCCESS');
     await this.dependencies.circuit.record(circuitKey, permit, 'SUCCESS');
     const providerResult = parsedProviderResult.data;
     const completedAt = this.dependencies.clock.now();
@@ -283,6 +290,7 @@ export class ProviderPollingService {
       traceId: envelope.data.traceId,
       correlationId: envelope.data.correlationId,
       causationId: envelope.data.id,
+      producer: 'provider-runtime',
     };
     const basePayload = {
       executionId: claim.executionId,
@@ -355,6 +363,21 @@ export class ProviderPollingService {
     return { ack: true, outcome: durableState };
   }
 
+  private observeQuery(
+    startedAt: Date,
+    outcome: 'SUCCESS' | 'FAILURE',
+    errorClass?: 'RATE_LIMITED' | 'UNAVAILABLE' | 'TIMEOUT' | 'AUTH' | 'BALANCE' | 'PROTOCOL',
+  ): void {
+    const elapsed = Math.max(
+      0,
+      (this.dependencies.clock.now().getTime() - startedAt.getTime()) / 1_000,
+    );
+    this.dependencies.observer?.observeProviderCall('QUERY', outcome, elapsed);
+    if (errorClass !== undefined) {
+      this.dependencies.observer?.recordProviderError('QUERY', errorClass);
+    }
+  }
+
   private async recordFailure(key: CircuitKey, permit: CircuitPermit, code: string): Promise<void> {
     if (code === 'PROVIDER_AUTH_FAILED') {
       await this.dependencies.circuit.tripImmediately(key, 'AUTH_FAILURE');
@@ -419,12 +442,24 @@ export class ProviderPollingService {
           traceId: envelope.traceId,
           correlationId: envelope.correlationId,
           causationId: envelope.id,
+          producer: 'provider-runtime',
         },
         occurredAt: deferredAt,
         availableAt: nextPollAt,
       },
     });
   }
+}
+
+function providerMetricError(
+  code: string,
+): 'RATE_LIMITED' | 'UNAVAILABLE' | 'TIMEOUT' | 'AUTH' | 'BALANCE' | 'PROTOCOL' {
+  if (code === 'PROVIDER_RATE_LIMITED') return 'RATE_LIMITED';
+  if (code === 'PROVIDER_TIMEOUT') return 'TIMEOUT';
+  if (code === 'PROVIDER_AUTH_FAILED') return 'AUTH';
+  if (code === 'PROVIDER_BALANCE_EXHAUSTED') return 'BALANCE';
+  if (code === 'INVALID_PROVIDER_POLL_RESULT') return 'PROTOCOL';
+  return 'UNAVAILABLE';
 }
 
 export class PollingConsumer {

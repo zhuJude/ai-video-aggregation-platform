@@ -16,6 +16,7 @@ import {
   type ResolvedDispatch,
 } from '../src/application/execution.service.js';
 import { backoffMs } from '../src/domain/retry-policy.js';
+import { ProviderRuntimeMetrics } from '../src/runtime/operations.js';
 
 const TASK_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a2';
 const USER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a3';
@@ -154,6 +155,7 @@ function harness(
     repository?: FakeRepository;
     dispatch?: Partial<ResolvedDispatch> | null;
     createTimeoutMs?: number;
+    observer?: ProviderRuntimeMetrics;
   } = {},
 ) {
   const adapter = options.adapter ?? createAdapter();
@@ -181,11 +183,22 @@ function harness(
     clock: { now: () => NOW },
     ids: { next: () => ids[idIndex++] ?? '0198f4d4-21c2-7b7d-8a03-08a0da2a51bf' },
     ...(options.createTimeoutMs === undefined ? {} : { createTimeoutMs: options.createTimeoutMs }),
+    ...(options.observer === undefined ? {} : { observer: options.observer }),
   });
   return { adapter, repository, resolver, service };
 }
 
 describe('ProviderExecutionService', () => {
+  it('records provider latency on the real execution path', async () => {
+    const metrics = new ProviderRuntimeMetrics();
+    const { service } = harness({ observer: metrics });
+
+    await service.handle(queuedEvent());
+
+    expect(metrics.render()).toContain(
+      'provider_request_duration_seconds_count{operation="CREATE",outcome="SUCCESS"} 1',
+    );
+  });
   it('accepts a proof-bound failover epoch while preserving adapter taskId idempotency', async () => {
     const substituteProviderId = '0198f4d4-21c2-7b7d-8a03-08a0da2a51d7';
     const priorExecutionId = '0198f4d4-21c2-7b7d-8a03-08a0da2a51d8';
@@ -263,10 +276,17 @@ describe('ProviderExecutionService', () => {
     expect(repository.completions[0]).toMatchObject({
       status: 'ACCEPTED',
       nextAction: 'POLL',
-      outbox: { eventType: 'provider.execution-accepted.v1' },
+      outbox: {
+        eventType: 'provider.execution-accepted.v1',
+        headers: { producer: 'provider-runtime' },
+      },
       pollSchedule: {
         nextPollAt: NOW,
-        outbox: { eventType: 'provider.execution-poll-due.v1', availableAt: NOW },
+        outbox: {
+          eventType: 'provider.execution-poll-due.v1',
+          availableAt: NOW,
+          headers: { producer: 'provider-runtime' },
+        },
       },
     });
   });

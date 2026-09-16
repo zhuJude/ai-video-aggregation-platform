@@ -56,4 +56,13 @@ describe('strict JSON normalization', () => {
 
     expect(() => normalizeJson(input)).toThrow(StrictJsonError);
   });
+
+  it('rejects symbol keys and non-index array properties', () => {
+    const symbolKey = { ordinary: true, [Symbol('hidden')]: 'not-json' };
+    const decorated = [1, 2] as unknown[] & { metadata?: string };
+    decorated.metadata = 'not-json';
+
+    expect(() => normalizeJson(symbolKey)).toThrow(StrictJsonError);
+    expect(() => normalizeJson(decorated)).toThrow(StrictJsonError);
+  });
 });

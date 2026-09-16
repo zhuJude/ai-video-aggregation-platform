@@ -13,6 +13,8 @@ import {
   type ProviderRuntimeStatusPort,
 } from '../src/application/task-repair.job.js';
 import type { LedgerCommand } from '../src/application/ports.js';
+import { GenerationMetrics } from '../src/runtime/operations.js';
+import type { GenerationDomainObserver } from '../src/application/observability.js';
 
 const TASK_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51b0';
 const USER_ID = '0198f4d4-21c2-7b7d-8a03-08a0da2a51a2';
@@ -150,7 +152,10 @@ function harness(
         'taskId' | 'providerId' | 'executionId' | 'providerTaskId' | 'routeEpoch'
       >
     >,
-  options: { readonly clock?: { now(): Date } } = {},
+  options: {
+    readonly clock?: { now(): Date };
+    readonly observer?: GenerationDomainObserver;
+  } = {},
 ) {
   const repository = new RepairRepository(initial);
   const boundInspection = {
@@ -174,6 +179,7 @@ function harness(
     cancellation: null,
     clock,
     ids,
+    ...(options.observer === undefined ? {} : { observer: options.observer }),
   });
   const job = new TaskRepairJob({
     repository,
@@ -182,11 +188,73 @@ function harness(
     wallet,
     clock,
     ids,
+    ...(options.observer === undefined ? {} : { observer: options.observer }),
   });
   return { repository, provider, asset, wallet, consumer, job };
 }
 
 describe('TaskRepairJob', () => {
+  it('refreshes gauges from the durable global snapshot rather than the bounded scan batch', async () => {
+    const metrics = new GenerationMetrics();
+    const { job, repository } = harness(
+      staleTask(),
+      { state: 'RUNNING', acceptance: 'ACCEPTED', billing: 'BILLED' },
+      { observer: metrics },
+    );
+    Object.assign(repository, {
+      repairMetricsSnapshot: vi.fn().mockResolvedValue({
+        repairCases: {
+          AMBIGUOUS_PROVIDER_RESULT: 7,
+          FINANCIAL_EFFECT_PENDING: 5,
+          STALE_STATUS: 11,
+        },
+        financialSagaLag: { ASSET_IMPORT: 13, SETTLEMENT: 17, RELEASE: 19 },
+      }),
+    });
+
+    await job.run();
+
+    const output = metrics.render();
+    expect(output).toContain('generation_repair_cases{reason="AMBIGUOUS_PROVIDER_RESULT"} 7');
+    expect(output).toContain('generation_repair_cases{reason="FINANCIAL_EFFECT_PENDING"} 5');
+    expect(output).toContain('generation_repair_cases{reason="STALE_STATUS"} 11');
+    expect(output).toContain('generation_financial_saga_lag_seconds{phase="RELEASE"} 19');
+  });
+
+  it('publishes repair and financial lag metrics from an actual repair scan', async () => {
+    const metrics = new GenerationMetrics();
+    const initial = staleTask({
+      status: 'FAILED',
+      providerTaskId: null,
+      executionId: null,
+      financialDisposition: 'PROVIDER_FAILED_FULL_RELEASE',
+      financialReleaseKey: `task:${TASK_ID}:provider-failure-release`,
+    });
+    const { job, repository } = harness(
+      initial,
+      { state: 'FAILED', acceptance: 'UNKNOWN', billing: 'UNKNOWN' },
+      { observer: metrics },
+    );
+
+    await job.run();
+
+    const output = metrics.render();
+    expect(output).toContain('generation_repair_cases{reason="FINANCIAL_EFFECT_PENDING"} 1');
+    expect(output).toContain('generation_financial_saga_lag_seconds{phase="RELEASE"} 3600');
+
+    repository.current = staleTask({
+      status: 'RUNNING',
+      financialDisposition: null,
+      financialReleaseKey: null,
+      assetImportRequested: false,
+    });
+    await job.run();
+    const refreshed = metrics.render();
+    expect(refreshed).toContain('generation_repair_cases{reason="FINANCIAL_EFFECT_PENDING"} 0');
+    expect(refreshed).toContain('generation_financial_saga_lag_seconds{phase="RELEASE"} 0');
+    expect(refreshed).toContain('generation_financial_saga_lag_seconds{phase="SETTLEMENT"} 0');
+    expect(refreshed).toContain('generation_financial_saga_lag_seconds{phase="ASSET_IMPORT"} 0');
+  });
   it('uses fresh trusted time for each task claim instead of the batch scan time', async () => {
     let instant = NOW.getTime();
     const clock = {

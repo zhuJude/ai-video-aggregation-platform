@@ -302,6 +302,74 @@ export class PrismaProviderEventRepository implements ProviderEventRepository {
       .map(toSagaTask);
   }
 
+  async repairMetricsSnapshot(input: {
+    readonly now: Date;
+    readonly deadlinesMs: Readonly<Partial<Record<TaskStatus, number>>>;
+  }) {
+    const assetWhere = {
+      status: { notIn: ['SETTLED', 'REFUNDED'] as TaskStatus[] },
+      saga: { is: { assetImportRequested: true, assetId: null } },
+    };
+    const settlementWhere = {
+      status: { notIn: ['SETTLED', 'REFUNDED'] as TaskStatus[] },
+      saga: {
+        is: {
+          financialDisposition: 'SUCCESS_SETTLEMENT',
+          NOT: { assetImportRequested: true, assetId: null },
+        },
+      },
+    };
+    const releaseWhere = {
+      status: { notIn: ['SETTLED', 'REFUNDED'] as TaskStatus[] },
+      saga: {
+        is: {
+          financialDisposition: { not: null, notIn: ['SUCCESS_SETTLEMENT'] },
+          NOT: { assetImportRequested: true, assetId: null },
+        },
+      },
+    };
+    const [openCasesByKind, asset, settlement, release] = await Promise.all([
+      this.prisma.taskRepairCase.groupBy({
+        by: ['kind'],
+        where: { status: { in: ['OPEN', 'IN_PROGRESS'] } },
+        _count: { _all: true },
+      }),
+      this.prisma.generationTask.findFirst({
+        where: assetWhere,
+        orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+        select: { updatedAt: true },
+      }),
+      this.prisma.generationTask.findFirst({
+        where: settlementWhere,
+        orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+        select: { updatedAt: true },
+      }),
+      this.prisma.generationTask.findFirst({
+        where: releaseWhere,
+        orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+        select: { updatedAt: true },
+      }),
+    ]);
+    const repairCases = {
+      AMBIGUOUS_PROVIDER_RESULT: 0,
+      FINANCIAL_EFFECT_PENDING: 0,
+      STALE_STATUS: 0,
+    };
+    for (const row of openCasesByKind) {
+      repairCases[repairMetricCategory(row.kind)] += row._count._all;
+    }
+    const lag = (record: { readonly updatedAt: Date } | null): number =>
+      record === null ? 0 : Math.max(0, input.now.getTime() - record.updatedAt.getTime()) / 1_000;
+    return {
+      repairCases,
+      financialSagaLag: {
+        ASSET_IMPORT: lag(asset),
+        SETTLEMENT: lag(settlement),
+        RELEASE: lag(release),
+      },
+    };
+  }
+
   private async reclaim(input: ClaimMessageInput): Promise<ClaimMessageResult> {
     const existing = await this.prisma.inboxMessage.findUnique({
       where: {
@@ -343,6 +411,26 @@ export class PrismaProviderEventRepository implements ProviderEventRepository {
     if (task === null) return { kind: 'TASK_NOT_FOUND' };
     return claimed ? { kind: 'CLAIMED', task } : { kind: 'DUPLICATE_PENDING', task };
   }
+}
+
+function repairMetricCategory(
+  kind: string,
+): 'AMBIGUOUS_PROVIDER_RESULT' | 'FINANCIAL_EFFECT_PENDING' | 'STALE_STATUS' {
+  if (
+    kind === 'TASK_CREATION_FINANCIAL_UNCERTAIN' ||
+    kind === 'PENDING_FINANCIAL_DISPOSITION_INVALID' ||
+    kind === 'LOCAL_FINANCIAL_PROVIDER_STATE_CONTRADICTION'
+  ) {
+    return 'FINANCIAL_EFFECT_PENDING';
+  }
+  if (
+    kind.includes('PROVIDER') ||
+    kind.includes('FAILOVER') ||
+    kind === 'EXECUTION_IDENTITY_MISSING'
+  ) {
+    return 'AMBIGUOUS_PROVIDER_RESULT';
+  }
+  return 'STALE_STATUS';
 }
 
 function parseFinancialDisposition(value: string | null): SagaTask['financialDisposition'] {
