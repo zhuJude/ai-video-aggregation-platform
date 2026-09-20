@@ -17,6 +17,7 @@ COPY services/operations-service/scripts/prisma-generate.mjs services/operations
 COPY services/operations-service/src services/operations-service/src
 RUN corepack pnpm --filter @repo/contracts build
 RUN corepack pnpm --filter @repo/operations-service build
+RUN corepack pnpm config set --location=project --json allowBuilds '{"@prisma/client":true,"@prisma/engines":true,"argon2":true,"esbuild":true,"prisma":true,"@alicloud/openapi-core":true,"protobufjs":true}'
 RUN corepack pnpm --filter @repo/operations-service deploy --legacy --prod /opt/service
 
 FROM node:24.8.0-alpine AS runtime

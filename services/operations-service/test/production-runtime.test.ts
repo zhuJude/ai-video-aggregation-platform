@@ -80,6 +80,14 @@ describe('operations production runtime', () => {
     expect(dockerfile).not.toMatch(/--offline|--frozen-lockfile/);
     expect(dockerfile).not.toContain('COPY . .');
     expect(dockerfile).toContain('deploy --legacy --prod');
+    const configuredBuilds = 'pnpm config set --location=project --json allowBuilds';
+    expect(dockerfile).toContain(configuredBuilds);
+    expect(dockerfile).toContain('"@alicloud/openapi-core":true');
+    expect(dockerfile).toContain('"protobufjs":true');
+    expect(dockerfile).not.toContain('pnpm approve-builds');
+    expect(dockerfile.indexOf(configuredBuilds)).toBeLessThan(
+      dockerfile.indexOf('deploy --legacy --prod'),
+    );
     expect(dockerfile).not.toMatch(
       /^COPY services\/operations-service services\/operations-service$/m,
     );
