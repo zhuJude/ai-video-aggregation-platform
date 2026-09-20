@@ -112,7 +112,7 @@ function authSubject(identifier) { if (identifier === 'reviewer@example.com') re
 export function createFixtureHandler() {
   const state = { capabilityPublished: false, compensationApproved: false, compensationCreated: false, contentPublished: false, pricingPublished: false, ticketResolved: false, walletAdjustmentApproved: false, walletAdjustmentRequested: false };
   const calls = { compensationApprovals: 0, contentOperations: 0, iamCommands: 0, walletAdjustmentApprovals: 0 };
-  const reset = () => { Object.assign(state, { capabilityPublished: false, compensationApproved: false, compensationCreated: false, contentPublished: false, pricingPublished: false, ticketResolved: false, walletAdjustmentApproved: false, walletAdjustmentRequested: false }); Object.keys(calls).forEach((key) => { calls[key] = 0; }); };
+  const reset = () => { Object.assign(state, { capabilityPublished: false, compensationApproved: false, compensationCreated: false, contentPublished: false, pricingPublished: false, ticketResolved: false, walletAdjustmentApproved: false, walletAdjustmentRequested: false }); Object.keys(calls).forEach((key) => { calls[key] = 0; }); challengeById.clear(); };
   return async (request, response) => {
     try {
       const url = new URL(request.url, 'https://127.0.0.1:3211'); const path = url.pathname; const actor = actorFrom(request);

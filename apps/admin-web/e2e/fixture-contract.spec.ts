@@ -27,6 +27,11 @@ function mutationHeaders(
   return headers;
 }
 
+test.beforeEach(async ({ request }) => {
+  const response = await request.post(fixtureUrl('/__reset'));
+  expect(response.ok()).toBe(true);
+});
+
 test('fixture rejects unsupported methods for every known endpoint', async ({ request }) => {
   const knownPaths = [
     '/__health', '/__calls', '/__reset',
@@ -107,6 +112,26 @@ test('fixture rejects malformed bodies for every known mutation without changing
     calls: { compensationApprovals: 0, contentOperations: 0, iamCommands: 0, walletAdjustmentApprovals: 0 },
     state: { capabilityPublished: false, compensationApproved: false, compensationCreated: false, contentPublished: false, pricingPublished: false, ticketResolved: false, walletAdjustmentApproved: false, walletAdjustmentRequested: false },
   });
+});
+
+test('fixture reset invalidates outstanding MFA challenges', async ({ request }) => {
+  const password = await request.post(fixtureUrl('/v1/admin-auth/password/challenges'), {
+    data: {
+      identifier: 'admin@example.com',
+      password: 'correct horse battery staple',
+    },
+    headers: mutationHeaders('auth'),
+  });
+  expect(password.status()).toBe(200);
+  const challenge = (await password.json()) as { challengeId: string };
+
+  await request.post(fixtureUrl('/__reset'));
+
+  const staleTotp = await request.post(fixtureUrl('/v1/admin-auth/totp/verifications'), {
+    data: { challengeId: challenge.challengeId, code: '123456' },
+    headers: mutationHeaders('auth'),
+  });
+  expect(staleTotp.status()).toBe(400);
 });
 
 test('fixture binds wallet approval audit identity to its header and existing request state', async ({ request }) => {

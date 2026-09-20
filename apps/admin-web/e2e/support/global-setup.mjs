@@ -2,12 +2,17 @@ import { spawn } from 'node:child_process';
 import https from 'node:https';
 import path from 'node:path';
 import process from 'node:process';
+import { chromium } from '@playwright/test';
 import selfsigned from 'selfsigned';
 import { fileURLToPath } from 'node:url';
 
 import { createFixtureHandler } from './platform-fixture.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const appBaseUrl = 'http://127.0.0.1:3210';
+const fixtureBaseUrl = 'https://127.0.0.1:3211';
+const readinessTimeoutMs = 180_000;
+const protectedReadinessPath = '/tasks?cursor=next_1&query=failed-job&status=FAILED';
 
 function waitForHttp(url, timeoutMs) {
   const startedAt = Date.now();
@@ -22,6 +27,46 @@ function waitForHttp(url, timeoutMs) {
     };
     void poll();
   });
+}
+
+async function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  child.kill();
+  await exited;
+}
+
+async function closeServer(server) {
+  if (!server.listening) return;
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function warmApplication() {
+  const browser = await chromium.launch();
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    const page = await context.newPage();
+    page.setDefaultTimeout(readinessTimeoutMs);
+    page.setDefaultNavigationTimeout(readinessTimeoutMs);
+    await page.goto(`${appBaseUrl}${protectedReadinessPath}`);
+    await page.getByLabel('管理员账号').fill('admin@example.com');
+    await page.getByLabel('密码').fill('correct horse battery staple');
+    await page.getByRole('button', { name: '准备安全登录' }).click();
+    await page.getByRole('button', { name: '继续验证' }).click();
+    await page.getByText('双因素验证', { exact: true }).waitFor();
+    await page.getByLabel('六位验证码').fill('123456');
+    await page.getByRole('button', { name: '验证并登录' }).click();
+    await page.waitForURL(`${appBaseUrl}${protectedReadinessPath}`);
+    await page.getByRole('heading', { name: '任务运营' }).waitFor();
+
+    const reset = await context.request.post(`${fixtureBaseUrl}/__reset`);
+    if (!reset.ok()) throw new Error(`Fixture reset failed during readiness check (${reset.status()})`);
+  } finally {
+    await context.close();
+    await browser.close();
+  }
 }
 
 export default async function globalSetup() {
@@ -61,18 +106,46 @@ export default async function globalSetup() {
     windowsHide: true,
   });
   let output = '';
-  next.stdout.on('data', (chunk) => { output += String(chunk); });
-  next.stderr.on('data', (chunk) => { output += String(chunk); });
+  let stopping = false;
+  const captureOutput = (chunk) => {
+    output = `${output}${String(chunk)}`.slice(-100_000);
+  };
+  next.stdout.on('data', captureOutput);
+  next.stderr.on('data', captureOutput);
+  const exitedUnexpectedly = new Promise((_, reject) => {
+    next.once('exit', (code, signal) => {
+      if (!stopping) {
+        reject(new Error(
+          `Next dev exited unexpectedly (code=${String(code)}, signal=${String(signal)})\n${output}`,
+        ));
+      }
+    });
+  });
+  next.once('exit', (code, signal) => {
+    if (!stopping) {
+      console.error(
+        `[admin-web e2e] Next dev exited unexpectedly (code=${String(code)}, signal=${String(signal)})\n${output}`,
+      );
+    }
+  });
   try {
-    await waitForHttp('http://127.0.0.1:3210/login', 45_000);
+    await Promise.race([
+      (async () => {
+        await waitForHttp(`${appBaseUrl}/login`, readinessTimeoutMs);
+        await warmApplication();
+      })(),
+      exitedUnexpectedly,
+    ]);
   } catch (error) {
-    api.close();
-    next.kill();
+    stopping = true;
+    await stopChild(next);
+    await closeServer(api);
     throw new Error(`${String(error)}\n${output}`);
   }
 
   return async () => {
-    await new Promise((resolve) => api.close(resolve));
-    if (next.exitCode === null) next.kill();
+    stopping = true;
+    await stopChild(next);
+    await closeServer(api);
   };
 }

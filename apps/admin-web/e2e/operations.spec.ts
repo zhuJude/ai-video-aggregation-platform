@@ -30,6 +30,11 @@ async function expectFixtureMutation(context, stateKey) {
   await expect.poll(async () => Boolean((await fixtureState(context)).state[stateKey])).toBe(true);
 }
 
+test.beforeEach(async ({ request }) => {
+  const response = await request.post('https://127.0.0.1:3211/__reset');
+  expect(response.ok()).toBe(true);
+});
+
 test('MFA returns to the protected filtered list that initiated login', async ({ page }) => {
   await login(
     page,

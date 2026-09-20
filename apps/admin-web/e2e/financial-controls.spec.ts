@@ -67,7 +67,8 @@ async function login(page, identifier = 'admin@example.com') {
 }
 
 test.beforeEach(async ({ request }) => {
-  await request.post('https://127.0.0.1:3211/__reset');
+  const response = await request.post('https://127.0.0.1:3211/__reset');
+  expect(response.ok()).toBe(true);
 });
 
 test('financial and RBAC controls fail closed', async ({ browser }) => {
