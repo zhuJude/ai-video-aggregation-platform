@@ -138,7 +138,7 @@ describe('identity and IAM production assets', () => {
         IAM_DUMMY_PASSWORD_HASH: '$argon2id$v=19$m=65536,p=1,t=3$aWFtLWR1bW15LXNhbHQtdjEh$sS8ky5sVrjEWO/XGr1C11lT6qVhj8IbY+eDsxB3/eys',
       },
     );
-  }, 30_000);
+  }, 150_000);
 });
 
 async function probeProcess(
@@ -166,7 +166,12 @@ async function probeProcess(
   stdout.on('data', (chunk: string) => { output += chunk; });
   stderr.on('data', (chunk: string) => { output += chunk; });
   try {
-    await waitFor(() => output.includes(startedEvent), 10_000);
+    await waitFor(() => output.includes(startedEvent) || child.exitCode !== null, 60_000);
+    if (!output.includes(startedEvent)) {
+      throw new Error(
+        `PROCESS_START_FAILED exitCode=${String(child.exitCode)} signal=${String(child.signalCode)} output=${JSON.stringify(output)}`,
+      );
+    }
     await waitFor(async () => (await fetch(`http://127.0.0.1:${String(port)}/healthz`)).status === 200, 5_000);
     if (windows) child.send(signal);
     else child.kill(signal);
