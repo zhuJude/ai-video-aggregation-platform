@@ -4,9 +4,9 @@ WORKDIR /workspace
 COPY tsconfig.base.json ./
 WORKDIR /workspace/services/identity-service
 COPY services/identity-service/package.json services/identity-service/pnpm-lock.yaml services/identity-service/pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts --config.strict-dep-builds=false
+RUN pnpm install --frozen-lockfile --ignore-scripts --config.strict-dep-builds=false
 COPY services/identity-service ./
-RUN pnpm rebuild @prisma/engines esbuild prisma && pnpm build && pnpm prune --prod --ignore-workspace
+RUN pnpm rebuild @prisma/engines esbuild prisma && pnpm build && pnpm prune --prod
 
 FROM node:24-alpine AS runtime
 ENV NODE_ENV=production

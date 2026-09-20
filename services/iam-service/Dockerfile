@@ -4,9 +4,9 @@ WORKDIR /workspace
 COPY tsconfig.base.json ./
 WORKDIR /workspace/services/iam-service
 COPY services/iam-service/package.json services/iam-service/pnpm-lock.yaml services/iam-service/pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts --config.strict-dep-builds=false
+RUN pnpm install --frozen-lockfile --ignore-scripts --config.strict-dep-builds=false
 COPY services/iam-service ./
-RUN pnpm rebuild @prisma/engines argon2 esbuild prisma && pnpm build && pnpm prune --prod --ignore-workspace
+RUN pnpm rebuild @prisma/engines argon2 esbuild prisma && pnpm build && pnpm prune --prod
 
 FROM node:24-alpine AS runtime
 ENV NODE_ENV=production
