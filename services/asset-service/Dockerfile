@@ -17,6 +17,7 @@ COPY services/asset-service/scripts/prisma-generate.mjs services/asset-service/s
 COPY services/asset-service/src services/asset-service/src
 RUN corepack pnpm --filter @repo/contracts build
 RUN corepack pnpm --filter @repo/asset-service build
+RUN corepack pnpm config set --location=project --json allowBuilds '{"@prisma/client":true,"@prisma/engines":true,"argon2":true,"esbuild":true,"prisma":true,"@alicloud/openapi-core":true,"protobufjs":true}'
 RUN corepack pnpm --filter @repo/asset-service deploy --legacy --prod /opt/service
 
 FROM node:24.8.0-alpine AS runtime
