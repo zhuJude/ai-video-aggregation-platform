@@ -17,6 +17,7 @@ COPY services/notification-service/scripts/prisma-generate.mjs services/notifica
 COPY services/notification-service/src services/notification-service/src
 RUN corepack pnpm --filter @repo/contracts build
 RUN corepack pnpm --filter @repo/notification-service build
+RUN corepack pnpm config set --location=project --json allowBuilds '{"@prisma/client":true,"@prisma/engines":true,"argon2":true,"esbuild":true,"prisma":true,"@alicloud/openapi-core":true,"protobufjs":true}'
 RUN corepack pnpm --filter @repo/notification-service deploy --legacy --prod /opt/service
 
 FROM node:24.8.0-alpine AS runtime
