@@ -15,6 +15,7 @@ import type { AttachmentReservation } from '../src/application/ticket.service.js
 const executeFile = promisify(execFile);
 const databaseUrl = process.env.OPERATIONS_TEST_DATABASE_URL;
 const operationsRoot = dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
+const prismaCli = fileURLToPath(import.meta.resolve('prisma/build/index.js'));
 const task3MigrationPath = join(
   operationsRoot,
   'prisma',
@@ -206,8 +207,7 @@ async function resetDatabase(): Promise<void> {
 
 async function applyMigration(path: string): Promise<void> {
   if (databaseUrl === undefined) throw new Error('OPERATIONS_TEST_DATABASE_URL is required');
-  const executable = process.platform === 'win32' ? 'corepack.cmd' : 'corepack';
-  await executeFile(executable, ['pnpm', 'exec', 'prisma', 'db', 'execute', '--file', path], {
+  await executeFile(process.execPath, [prismaCli, 'db', 'execute', '--file', path], {
     cwd: operationsRoot,
     env: { ...process.env, DATABASE_URL: databaseUrl },
   });
