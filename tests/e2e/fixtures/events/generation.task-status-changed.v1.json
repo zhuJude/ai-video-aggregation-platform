@@ -1,0 +1,17 @@
+{
+  "id": "0198f4d4-21c2-7b7d-8a03-08a0da2a5121",
+  "type": "generation.task-status-changed.v1",
+  "version": 1,
+  "occurredAt": "2026-08-28T00:00:02.000Z",
+  "traceId": "5f6c12cc4fc74f7ca4a81e2f2c9d56af",
+  "correlationId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5122",
+  "causationId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5123",
+  "producer": "generation-service",
+  "data": {
+    "taskId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5124",
+    "userId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5125",
+    "status": "SUCCEEDED",
+    "settledPoints": "1200",
+    "updatedAt": "2026-08-28T00:00:02.000Z"
+  }
+}

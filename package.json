@@ -12,8 +12,8 @@
     "format:check": "prettier --check .",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "pnpm test:root && turbo run test --concurrency=2",
-    "test:root": "vitest run scripts/verify-workspace.test.ts scripts/validate-compose.test.ts scripts/verify-lock.test.ts",
+    "test": "pnpm test:root && turbo run test --concurrency=1",
+    "test:root": "vitest run scripts/verify-workspace.test.ts scripts/validate-compose.test.ts scripts/verify-lock.test.ts tests/e2e/contracts.spec.ts",
     "test:coverage": "turbo run test:coverage",
     "verify": "node scripts/verify.mjs",
     "preflight:wave1": "node scripts/wave1-preflight.mjs"

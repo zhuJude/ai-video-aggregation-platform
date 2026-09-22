@@ -1,0 +1,13 @@
+{
+  "id": "0198f4d4-21c2-7b7d-8a03-08a0da2a5101",
+  "type": "identity.user-closed.v1",
+  "version": 1,
+  "occurredAt": "2026-08-28T00:00:00.000Z",
+  "traceId": "3f6c12cc4fc74f7ca4a81e2f2c9d56ad",
+  "correlationId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5102",
+  "producer": "identity-service",
+  "data": {
+    "userId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5103",
+    "closedAt": "2026-08-28T00:00:00.000Z"
+  }
+}

@@ -20,9 +20,9 @@ describe('workspace', () => {
     };
 
     expect(packageJson.scripts?.['test:root']).toBe(
-      'vitest run scripts/verify-workspace.test.ts scripts/validate-compose.test.ts scripts/verify-lock.test.ts',
+      'vitest run scripts/verify-workspace.test.ts scripts/validate-compose.test.ts scripts/verify-lock.test.ts tests/e2e/contracts.spec.ts',
     );
-    expect(packageJson.scripts?.test).toBe('pnpm test:root && turbo run test --concurrency=2');
+    expect(packageJson.scripts?.test).toBe('pnpm test:root && turbo run test --concurrency=1');
     expect(packageJson.scripts?.verify).toBe('node scripts/verify.mjs');
 
     const verificationEntry = await readFile('scripts/verify.mjs', 'utf8');

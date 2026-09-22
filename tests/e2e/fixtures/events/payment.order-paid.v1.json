@@ -1,0 +1,16 @@
+{
+  "id": "0198f4d4-21c2-7b7d-8a03-08a0da2a5131",
+  "type": "payment.order-paid.v1",
+  "version": 1,
+  "occurredAt": "2026-08-28T00:00:03.000Z",
+  "traceId": "6f6c12cc4fc74f7ca4a81e2f2c9d56a0",
+  "correlationId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5132",
+  "producer": "payment-service",
+  "data": {
+    "orderId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5133",
+    "userId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5134",
+    "amountMinor": "9900",
+    "points": "10000",
+    "paidAt": "2026-08-28T00:00:03.000Z"
+  }
+}

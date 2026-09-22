@@ -1,0 +1,15 @@
+{
+  "id": "0198f4d4-21c2-7b7d-8a03-08a0da2a5111",
+  "type": "wallet.ledger-posted.v1",
+  "version": 1,
+  "occurredAt": "2026-08-28T00:00:01.000Z",
+  "traceId": "4f6c12cc4fc74f7ca4a81e2f2c9d56ae",
+  "correlationId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5112",
+  "producer": "wallet-service",
+  "data": {
+    "ledgerEntryId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5113",
+    "userId": "0198f4d4-21c2-7b7d-8a03-08a0da2a5114",
+    "points": "1200",
+    "postedAt": "2026-08-28T00:00:01.000Z"
+  }
+}
