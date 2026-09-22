@@ -1,0 +1,116 @@
+export type DataScope = 'ALL' | 'OWN' | 'ASSIGNED';
+
+export const ADMIN_PERMISSIONS = [
+  '*',
+  'audit:read',
+  'audit:export',
+  'content:read',
+  'content:publish',
+  'content:reorder',
+  'content:retire',
+  'content:rollback',
+  'content:validate',
+  'content:write',
+  'finance:read',
+  'finance:invoice-issue',
+  'finance:invoice-reject',
+  'finance:invoice-review',
+  'finance:order-close',
+  'finance:reconciliation-approve',
+  'finance:reconciliation-repair',
+  'finance:refund-create',
+  'finance:refund-retry',
+  'iam:read',
+  'iam:admin-write',
+  'iam:role-delete',
+  'iam:role-write',
+  'models:read',
+  'models:rollback',
+  'models:publish',
+  'models:write',
+  'overview:read',
+  'pricing:read',
+  'pricing:publish',
+  'pricing:rollback',
+  'pricing:write',
+  'credentials:disable',
+  'credentials:read',
+  'credentials:rotate',
+  'providers:circuit-reset',
+  'providers:disable',
+  'providers:enable',
+  'providers:probe',
+  'providers:read',
+  'providers:write',
+  'routing:read',
+  'routing:publish',
+  'routing:rollback',
+  'routing:simulate',
+  'routing:write',
+  'system:read',
+  'system:config-publish',
+  'system:config-rollback',
+  'system:config-write',
+  'system:dlq-redrive',
+  'tasks:read',
+  'tasks:cancel',
+  'tasks:raw-read',
+  'tasks:refund',
+  'tasks:repair',
+  'tasks:retry',
+  'tasks:switch',
+  'tasks:queue-pause',
+  'tasks:queue-resume',
+  'tasks:priority-write',
+  'tickets:read',
+  'tickets:internal-note',
+  'tickets:public-reply',
+  'tickets:status-write',
+  'users:export',
+  'users:phone-exact',
+  'users:read',
+  'users:refresh',
+  'users:status',
+  'wallet:adjust',
+] as const;
+
+export type AdminPermission = (typeof ADMIN_PERMISSIONS)[number];
+export const ADMIN_PERMISSION_MAX_COUNT = ADMIN_PERMISSIONS.length;
+export const ADMIN_PERMISSION_MAX_LENGTH = 32;
+const ADMIN_PERMISSION_SET = new Set<string>(ADMIN_PERMISSIONS);
+
+export function isValidAdminPermissions(value: unknown): value is readonly AdminPermission[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
+  if (value.length > ADMIN_PERMISSION_MAX_COUNT) return false;
+  const unique = new Set<string>();
+  for (const permission of value) {
+    if (
+      typeof permission !== 'string' ||
+      permission.length === 0 ||
+      permission.length > ADMIN_PERMISSION_MAX_LENGTH ||
+      !ADMIN_PERMISSION_SET.has(permission) ||
+      unique.has(permission)
+    )
+      return false;
+    unique.add(permission);
+  }
+  return true;
+}
+
+export type AdminSubject = Readonly<{
+  permissions: readonly string[];
+  dataScope: DataScope;
+}>;
+
+export function hasPermission(
+  subject: Pick<AdminSubject, 'permissions'>,
+  requiredPermission: string,
+): boolean {
+  return subject.permissions.includes('*') || subject.permissions.includes(requiredPermission);
+}
+
+export const dataScopeLabels: Readonly<Record<DataScope, string>> = {
+  ALL: '全部',
+  OWN: '本人负责',
+  ASSIGNED: '已分配',
+};
