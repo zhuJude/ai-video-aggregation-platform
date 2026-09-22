@@ -34,8 +34,10 @@ describe('production delivery boundary', () => {
     expect(dockerfile).toContain('FROM node:24.15.0-alpine');
     expect(dockerfile.match(/^FROM /gm)).toHaveLength(3);
     expect(dockerfile).toContain(
-      'pnpm install --frozen-lockfile --lockfile-dir apps/user-web --filter @repo/user-web...',
+      'corepack pnpm install --frozen-lockfile --filter @repo/user-web...',
     );
+    expect(dockerfile).toContain('COPY pnpm-lock.yaml ./');
+    expect(dockerfile).not.toContain('--lockfile-dir');
     expect(dockerfile).not.toMatch(/lockfile=false|no-lockfile/);
     expect(dockerfile).toContain('USER nextjs');
     expect(dockerfile).toContain('HEALTHCHECK');
@@ -48,10 +50,11 @@ describe('production delivery boundary', () => {
     expect(dockerIgnore).toContain('apps/user-web/output');
     expect(dockerIgnore).toContain('**/.env*');
 
-    const dockerLock = await readFile(resolve(appRoot, 'pnpm-lock.yaml'), 'utf8');
-    expect(dockerLock).toContain("lockfileVersion: '9.0'");
-    expect(dockerLock).toContain('next:');
-    expect(dockerLock).toContain('specifier: 16.3.3');
+    const rootLock = await readFile(resolve(appRoot, '../..', 'pnpm-lock.yaml'), 'utf8');
+    expect(rootLock).toContain("lockfileVersion: '9.0'");
+    expect(rootLock).toContain('apps/user-web:');
+    expect(rootLock).toContain('next:');
+    expect(rootLock).toContain('specifier: 16.3.3');
 
     const packageDocument = JSON.parse(
       await readFile(resolve(appRoot, 'package.json'), 'utf8'),
