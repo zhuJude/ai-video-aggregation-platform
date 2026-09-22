@@ -1,0 +1,7 @@
+.git
+**/.env*
+**/node_modules
+**/.next
+apps/user-web/playwright-report
+apps/user-web/test-results
+apps/user-web/output
