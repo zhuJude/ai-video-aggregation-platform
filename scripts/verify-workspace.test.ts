@@ -67,6 +67,31 @@ describe('workspace', () => {
     expect(nestedLocks).toEqual([]);
   });
 
+  it('uses the unique root lock for every workspace Docker dependency install', async () => {
+    const violations: string[] = [];
+    for (const group of ['apps', 'services', 'providers']) {
+      for (const entry of await readdir(group, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const dockerfilePath = join(group, entry.name, 'Dockerfile');
+        let dockerfile: string;
+        try {
+          dockerfile = await readFile(dockerfilePath, 'utf8');
+        } catch {
+          continue;
+        }
+        if (!dockerfile.includes('pnpm install')) continue;
+        if (
+          !dockerfile.includes('pnpm-lock.yaml') ||
+          !dockerfile.includes('--frozen-lockfile') ||
+          /--lockfile=false|--no-frozen-lockfile/u.test(dockerfile)
+        ) {
+          violations.push(dockerfilePath.replaceAll('\\', '/'));
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
   it('prepares generated Prisma types before lint in fresh worktrees', async () => {
     const serviceDirectories = await readdir('services', { withFileTypes: true });
 

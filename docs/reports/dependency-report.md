@@ -25,6 +25,8 @@ corepack pnpm install --frozen-lockfile
 
 `scripts/verify-workspace.test.ts` 新增唯一根锁回归守卫，并在删除前以这三个路径稳定红灯，删除和重建后通过。
 
+同一回归套件还扫描 `apps/`、`services/`、`providers/` 下所有执行 `pnpm install` 的 Dockerfile，要求复制唯一根锁并使用 `--frozen-lockfile`，且禁止 `--lockfile=false` / `--no-frozen-lockfile`。该测试先对遗留 Dockerfile 稳定红灯，统一修复后通过。
+
 ## 生产依赖审计
 
 最终命令：

@@ -4,7 +4,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json ./
 COPY packages ./packages
 COPY services/catalog-service ./services/catalog-service
-RUN corepack pnpm install --lockfile=false
+RUN corepack pnpm install --frozen-lockfile --ignore-scripts --filter @repo/catalog-service...
 RUN corepack pnpm --filter @repo/catalog-service build
 
 FROM node:24.15.0-bookworm-slim AS runtime

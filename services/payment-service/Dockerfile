@@ -1,8 +1,12 @@
 FROM node:24-alpine AS build
 RUN corepack enable
 WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/service-kit/package.json packages/service-kit/package.json
+COPY services/payment-service/package.json services/payment-service/package.json
+RUN corepack pnpm install --frozen-lockfile --ignore-scripts --filter @repo/payment-service...
 COPY . .
-RUN corepack pnpm install --lockfile=false
 RUN corepack pnpm --filter @repo/payment-service build
 
 FROM node:24-alpine

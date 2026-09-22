@@ -1,2 +1,3 @@
 docs/superpowers/**
 **/src/generated/**
+apps/admin-web/output/playwright/report/**

@@ -1,10 +1,10 @@
 FROM node:24.15.0-bookworm-slim AS build
 WORKDIR /workspace
 RUN corepack enable
-COPY package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY services/generation-service/package.json services/generation-service/package.json
-RUN pnpm install --lockfile=false --ignore-scripts --filter . --filter @repo/generation-service...
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter . --filter @repo/generation-service...
 COPY packages/contracts packages/contracts
 COPY services/generation-service services/generation-service
 RUN pnpm --filter @repo/contracts build \

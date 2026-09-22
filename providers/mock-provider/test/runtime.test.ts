@@ -134,8 +134,9 @@ describe('mock provider production runtime', () => {
     expect(dockerfile).toMatch(/^USER 10001:10001/m);
     expect(dockerfile).toContain('HEALTHCHECK');
     expect(dockerfile).toContain('/health/live');
-    expect(dockerfile).toContain('pnpm install --lockfile=false');
-    expect(dockerfile).not.toContain('--frozen-lockfile');
+    expect(dockerfile).toContain('pnpm-lock.yaml');
+    expect(dockerfile).toContain('pnpm install --frozen-lockfile');
+    expect(dockerfile).not.toMatch(/--lockfile=false|--no-frozen-lockfile/);
     expect(dockerfile).not.toMatch(/CALLBACK_SECRET=|TOKEN=/);
     expect(dockerignore).toContain('**/node_modules');
     expect(dockerignore).toContain('**/dist');

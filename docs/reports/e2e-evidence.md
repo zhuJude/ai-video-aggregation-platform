@@ -22,16 +22,24 @@ corepack pnpm exec playwright test tests/e2e/user-commercial-flow.spec.ts tests/
 
 这些是 Playwright 聚合入口驱动现有领域/集成测试，不等同于完整 Compose 栈的浏览器端到端证明。
 
-## 后台 E2E 阻断
-
-首次运行因 Playwright 1.63 浏览器二进制缺失失败；浏览器下载在 195.6 MiB 的 0% 处长时间无进展后终止。随后通过 `PLAYWRIGHT_EXECUTABLE_PATH` 使用本机 Chrome，已成功启动 Next.js 与 HTTPS fixture，但 global setup 的密码挑战返回 `CHALLENGE_INVALID`，等待“双因素验证”180 秒超时。
-
-最终命令与结果：
+后台浏览器链路最终命令与结果：
 
 ```text
-PLAYWRIGHT_EXECUTABLE_PATH=<system chrome>
-corepack pnpm exec playwright test tests/e2e/admin-operations.spec.ts --workers=1
-FAIL: MFA readiness login did not reach the TOTP screen
+corepack pnpm exec playwright test tests/e2e/admin-operations.spec.ts
+PASS: 1/1，耗时约 1.8 分钟
 ```
 
-因此 MFA、RBAC、运营与双人审批的浏览器级证明为 **NO-GO**；组件/页面既有测试通过不能替代此门禁。
+覆盖：MFA 登录、RBAC 权限边界、运营操作、财务控制与双人审批。为使 secure cookie 与浏览器行为一致，测试仅在执行期间生成临时自签名证书并以 HTTPS 启动 Next.js，结束时删除证书；浏览器优先使用 Playwright 配置，缺失时自动发现系统 Chrome。四张验收截图与 HTML 报告位于 `apps/admin-web/output/playwright/`。
+
+根 Playwright 配置把发现范围固定为 `tests/e2e/**/*.spec.ts`，排除由 Vitest 执行的 `contracts.spec.ts`；`--list` 共发现 6 个文件、25 个测试，避免意外扫描整个 monorepo。
+
+## 完整栈 E2E 阻断
+
+基础设施容器运行时执行：
+
+```text
+corepack pnpm exec playwright test tests/e2e/stack-health.spec.ts --reporter=line
+4 PASS / 16 FAIL
+```
+
+PostgreSQL、Redis、RocketMQ NameServer、MinIO 四项 TCP 检查通过；用户端、管理端与 14 个应用服务均因镜像未完成构建而返回 `ECONNREFUSED`。因此隔离式用户/后台闭环已通过，但完整 Compose 栈浏览器/API 端到端门禁仍为 **NO-GO**。

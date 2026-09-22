@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import https from 'node:https';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { chromium } from '@playwright/test';
@@ -7,9 +9,10 @@ import selfsigned from 'selfsigned';
 import { fileURLToPath } from 'node:url';
 
 import { createFixtureHandler } from './platform-fixture.mjs';
+import { resolveBrowserExecutable } from './browser-executable.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const appBaseUrl = 'http://127.0.0.1:3210';
+const appBaseUrl = 'https://localhost:3210';
 const fixtureBaseUrl = 'https://127.0.0.1:3211';
 const readinessTimeoutMs = 180_000;
 const protectedReadinessPath = '/tasks?cursor=next_1&query=failed-job&status=FAILED';
@@ -19,8 +22,15 @@ function waitForHttp(url, timeoutMs) {
   return new Promise((resolve, reject) => {
     const poll = async () => {
       try {
-        const response = await fetch(url, { redirect: 'manual' });
-        if (response.status < 500) return resolve();
+        const status = await new Promise((resolveStatus, rejectStatus) => {
+          const request = https.get(url, { rejectUnauthorized: false }, (response) => {
+            response.resume();
+            resolveStatus(response.statusCode ?? 500);
+          });
+          request.setTimeout(5_000, () => request.destroy(new Error('readiness timeout')));
+          request.once('error', rejectStatus);
+        });
+        if (status < 500) return resolve();
       } catch {}
       if (Date.now() - startedAt > timeoutMs)
         return reject(new Error(`Timed out waiting for ${url}`));
@@ -45,10 +55,9 @@ async function closeServer(server) {
 }
 
 async function warmApplication() {
+  const browserExecutable = resolveBrowserExecutable();
   const browser = await chromium.launch(
-    process.env.PLAYWRIGHT_EXECUTABLE_PATH
-      ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
-      : undefined,
+    browserExecutable ? { executablePath: browserExecutable } : undefined,
   );
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   try {
@@ -80,6 +89,13 @@ export default async function globalSetup() {
     days: 1,
     keySize: 2048,
   });
+  const certificateDirectory = await mkdtemp(path.join(os.tmpdir(), 'admin-e2e-tls-'));
+  const certificatePath = path.join(certificateDirectory, 'localhost-cert.pem');
+  const privateKeyPath = path.join(certificateDirectory, 'localhost-key.pem');
+  await Promise.all([
+    writeFile(certificatePath, certificate.cert, { mode: 0o600 }),
+    writeFile(privateKeyPath, certificate.private, { mode: 0o600 }),
+  ]);
   const api = https.createServer(
     { cert: certificate.cert, key: certificate.private },
     createFixtureHandler(),
@@ -90,28 +106,44 @@ export default async function globalSetup() {
   });
 
   const nextCli = path.join(appRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
-  const next = spawn(process.execPath, [nextCli, 'dev', '--hostname', '127.0.0.1', '-p', '3210'], {
-    cwd: appRoot,
-    env: {
-      ...process.env,
-      ADMIN_AUTH_API_URL: 'https://127.0.0.1:3211',
-      ADMIN_AUTH_KMS_IDENTITY_REF: 'kms://e2e/admin-auth',
-      ADMIN_CATALOG_API_URL: 'https://127.0.0.1:3211',
-      ADMIN_CATALOG_KMS_IDENTITY_REF: 'kms://e2e/catalog',
-      ADMIN_EXACT_PHONE_DESCRIPTOR_SIGNING_KEY:
-        'e2e-phone-descriptor-signing-key-at-least-32-bytes',
-      ADMIN_MFA_CHALLENGE_SIGNING_KEY: 'e2e-mfa-challenge-signing-key-at-least-32-bytes',
-      ADMIN_OBSERVABILITY_ALLOWED_ORIGINS: 'https://ops.example.com',
-      ADMIN_OPERATIONS_API_URL: 'https://127.0.0.1:3211',
-      ADMIN_OPERATIONS_KMS_IDENTITY_REF: 'kms://e2e/operations',
-      ADMIN_REPORTING_API_URL: 'https://127.0.0.1:3211',
-      ADMIN_REPORTING_KMS_IDENTITY_REF: 'kms://e2e/reporting',
-      ADMIN_SESSION_SIGNING_KEY: 'e2e-session-signing-key-at-least-32-bytes',
-      NODE_TLS_REJECT_UNAUTHORIZED: '0',
+  const next = spawn(
+    process.execPath,
+    [
+      nextCli,
+      'dev',
+      '--experimental-https',
+      '--experimental-https-cert',
+      certificatePath,
+      '--experimental-https-key',
+      privateKeyPath,
+      '--hostname',
+      'localhost',
+      '-p',
+      '3210',
+    ],
+    {
+      cwd: appRoot,
+      env: {
+        ...process.env,
+        ADMIN_AUTH_API_URL: 'https://127.0.0.1:3211',
+        ADMIN_AUTH_KMS_IDENTITY_REF: 'kms://e2e/admin-auth',
+        ADMIN_CATALOG_API_URL: 'https://127.0.0.1:3211',
+        ADMIN_CATALOG_KMS_IDENTITY_REF: 'kms://e2e/catalog',
+        ADMIN_EXACT_PHONE_DESCRIPTOR_SIGNING_KEY:
+          'e2e-phone-descriptor-signing-key-at-least-32-bytes',
+        ADMIN_MFA_CHALLENGE_SIGNING_KEY: 'e2e-mfa-challenge-signing-key-at-least-32-bytes',
+        ADMIN_OBSERVABILITY_ALLOWED_ORIGINS: 'https://ops.example.com',
+        ADMIN_OPERATIONS_API_URL: 'https://127.0.0.1:3211',
+        ADMIN_OPERATIONS_KMS_IDENTITY_REF: 'kms://e2e/operations',
+        ADMIN_REPORTING_API_URL: 'https://127.0.0.1:3211',
+        ADMIN_REPORTING_KMS_IDENTITY_REF: 'kms://e2e/reporting',
+        ADMIN_SESSION_SIGNING_KEY: 'e2e-session-signing-key-at-least-32-bytes',
+        NODE_TLS_REJECT_UNAUTHORIZED: '0',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  );
   let output = '';
   let stopping = false;
   const captureOutput = (chunk) => {
@@ -149,6 +181,7 @@ export default async function globalSetup() {
     stopping = true;
     await stopChild(next);
     await closeServer(api);
+    await rm(certificateDirectory, { force: true, recursive: true });
     throw new Error(`${String(error)}\n${output}`);
   }
 
@@ -156,5 +189,6 @@ export default async function globalSetup() {
     stopping = true;
     await stopChild(next);
     await closeServer(api);
+    await rm(certificateDirectory, { force: true, recursive: true });
   };
 }

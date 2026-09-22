@@ -3,15 +3,16 @@
 FROM node:24-alpine AS dependencies
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
-RUN corepack enable && corepack prepare pnpm@11.24.0 --activate
-WORKDIR /workspace/apps/admin-web
-COPY apps/admin-web/package.json ./
-RUN pnpm install --lockfile=false
+RUN corepack enable
+WORKDIR /workspace
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/admin-web/package.json apps/admin-web/package.json
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @repo/admin-web...
 
 FROM dependencies AS builder
 COPY tsconfig.base.json /workspace/tsconfig.base.json
-COPY apps/admin-web ./
-RUN pnpm build
+COPY apps/admin-web /workspace/apps/admin-web
+RUN pnpm --filter @repo/admin-web build
 
 FROM node:24-alpine AS runner
 ENV HOSTNAME=0.0.0.0

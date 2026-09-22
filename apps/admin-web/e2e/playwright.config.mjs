@@ -1,4 +1,7 @@
 import { defineConfig } from '@playwright/test';
+import { resolveBrowserExecutable } from './support/browser-executable.mjs';
+
+const browserExecutable = resolveBrowserExecutable();
 
 export default defineConfig({
   fullyParallel: false,
@@ -10,11 +13,9 @@ export default defineConfig({
   testIgnore: ['support/**'],
   timeout: 45_000,
   use: {
-    baseURL: 'http://127.0.0.1:3210',
+    baseURL: 'https://localhost:3210',
     ignoreHTTPSErrors: true,
-    launchOptions: process.env.PLAYWRIGHT_EXECUTABLE_PATH
-      ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
-      : undefined,
+    launchOptions: browserExecutable ? { executablePath: browserExecutable } : undefined,
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
     viewport: { height: 900, width: 1280 },

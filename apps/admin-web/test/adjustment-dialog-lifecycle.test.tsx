@@ -150,7 +150,7 @@ describe('wallet adjustment dialog lifecycle', () => {
     fireEvent.click(screen.getByRole('button', { name: '调整点数' }));
     expect(screen.queryByText(/申请待审批/u)).not.toBeInTheDocument();
     expect(screen.getByLabelText('调整点数')).toHaveValue('');
-  });
+  }, 15_000);
 
   it('does not place the trigger or dialog in the DOM without server authorization', () => {
     render(

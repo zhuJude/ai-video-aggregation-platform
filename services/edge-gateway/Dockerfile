@@ -5,7 +5,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/service-kit/package.json packages/service-kit/package.json
 COPY services/edge-gateway/package.json services/edge-gateway/package.json
-RUN pnpm install --lockfile=false --ignore-scripts --filter @repo/edge-gateway...
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @repo/edge-gateway...
 COPY packages/contracts packages/contracts
 COPY packages/service-kit packages/service-kit
 COPY services/edge-gateway services/edge-gateway

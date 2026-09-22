@@ -4,7 +4,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY services/operations-service/package.json services/operations-service/package.json
-RUN corepack pnpm install --lockfile=false --ignore-scripts
+RUN corepack pnpm install --frozen-lockfile --ignore-scripts --filter @repo/operations-service...
 
 FROM dependencies AS build
 COPY tsconfig.base.json ./

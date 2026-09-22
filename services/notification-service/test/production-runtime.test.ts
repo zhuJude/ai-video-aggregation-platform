@@ -475,8 +475,9 @@ describe('notification production runtime', () => {
       await readFile(resolve(import.meta.dirname, '../package.json'), 'utf8'),
     ) as { scripts: Record<string, string> };
     expect(dockerfile.match(/^FROM /gm)?.length).toBeGreaterThanOrEqual(3);
-    expect(dockerfile).toContain('pnpm install --lockfile=false --ignore-scripts');
-    expect(dockerfile).not.toMatch(/--offline|--frozen-lockfile/);
+    expect(dockerfile).toContain('pnpm-lock.yaml');
+    expect(dockerfile).toContain('pnpm install --frozen-lockfile --ignore-scripts');
+    expect(dockerfile).not.toMatch(/--offline|--lockfile=false|--no-frozen-lockfile/);
     expect(dockerfile).not.toContain('COPY . .');
     expect(dockerfile).toContain('deploy --legacy --prod');
     const configuredBuilds = 'pnpm config set --location=project --json allowBuilds';
