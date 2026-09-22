@@ -39,6 +39,7 @@ async function waitForPostgres(containerId: string): Promise<void> {
 describe('payment PostgreSQL persistence', { concurrent: false }, () => {
   let containerId: string;
   let prisma: PrismaClient;
+  let disconnectPrisma: (() => Promise<void>) | undefined;
   let service: OrderService;
   let repository: PrismaPaymentRepository;
   let gateway: FakePaymentGateway;
@@ -70,6 +71,7 @@ describe('payment PostgreSQL persistence', { concurrent: false }, () => {
       stdio: 'pipe',
     });
     prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) });
+    disconnectPrisma = () => prisma.$disconnect();
     repository = new PrismaPaymentRepository(prisma, {
       findPackage: () =>
         Promise.resolve({
@@ -86,7 +88,7 @@ describe('payment PostgreSQL persistence', { concurrent: false }, () => {
   }, 120_000);
 
   afterAll(async () => {
-    if (prisma) await prisma.$disconnect();
+    await disconnectPrisma?.();
     if (containerId) docker('stop', containerId);
   });
 

@@ -36,6 +36,7 @@ async function waitForPostgres(containerId: string): Promise<void> {
 describe('WalletService PostgreSQL concurrency', { concurrent: false }, () => {
   let containerId: string;
   let prisma: PrismaClient;
+  let disconnectPrisma: (() => Promise<void>) | undefined;
   let service: WalletService;
   let controls: PrismaFinancialControlRepository;
 
@@ -64,6 +65,7 @@ describe('WalletService PostgreSQL concurrency', { concurrent: false }, () => {
       stdio: 'pipe',
     });
     prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) });
+    disconnectPrisma = () => prisma.$disconnect();
     service = new WalletService(
       new PrismaLedgerRepository(prisma, { jitter: () => Promise.resolve() }),
     );
@@ -71,7 +73,7 @@ describe('WalletService PostgreSQL concurrency', { concurrent: false }, () => {
   }, 120_000);
 
   afterAll(async () => {
-    if (prisma) await prisma.$disconnect();
+    await disconnectPrisma?.();
     if (containerId) docker('stop', containerId);
   });
 
