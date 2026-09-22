@@ -49,9 +49,7 @@ export class HmacPrivacyIdentifierHasher implements VersionedPrivacyIdentifierHa
     rawIdentifier: string,
   ): Promise<readonly VersionedPrivacyIdentifierDigest[]> {
     return Promise.all(
-      this.references.map((reference) =>
-        this.hashWithReference(reference, domain, rawIdentifier),
-      ),
+      this.references.map((reference) => this.hashWithReference(reference, domain, rawIdentifier)),
     );
   }
 
@@ -60,7 +58,9 @@ export class HmacPrivacyIdentifierHasher implements VersionedPrivacyIdentifierHa
     domain: PrivacyIdentifierDomain,
     rawIdentifier: string,
   ): Promise<VersionedPrivacyIdentifierDigest> {
-    const secret = await this.secretProvider.getPrivacyIdentifierSecret(versionedReference.reference);
+    const secret = await this.secretProvider.getPrivacyIdentifierSecret(
+      versionedReference.reference,
+    );
     if (secret.byteLength < 32) throw new Error('PRIVACY_IDENTIFIER_SECRET_TOO_SHORT');
     const digest = createHmac('sha256', secret)
       .update('sms-privacy-v1\0')

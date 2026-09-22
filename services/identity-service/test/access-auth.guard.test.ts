@@ -135,10 +135,21 @@ describe('JWT access authentication', () => {
         .setSubject(userId);
     const unsafeTokens = await Promise.all([
       base().setIssuedAt(nowSeconds).sign(privateKey),
-      base().setExpirationTime(nowSeconds + 900).sign(privateKey),
-      base().setIssuedAt(nowSeconds).setExpirationTime(nowSeconds + 901).sign(privateKey),
-      base().setIssuedAt(nowSeconds + 61).setExpirationTime(nowSeconds + 900).sign(privateKey),
-      base().setIssuedAt(nowSeconds + 500).setExpirationTime(nowSeconds + 400).sign(privateKey),
+      base()
+        .setExpirationTime(nowSeconds + 900)
+        .sign(privateKey),
+      base()
+        .setIssuedAt(nowSeconds)
+        .setExpirationTime(nowSeconds + 901)
+        .sign(privateKey),
+      base()
+        .setIssuedAt(nowSeconds + 61)
+        .setExpirationTime(nowSeconds + 900)
+        .sign(privateKey),
+      base()
+        .setIssuedAt(nowSeconds + 500)
+        .setExpirationTime(nowSeconds + 400)
+        .sign(privateKey),
       new SignJWT({})
         .setProtectedHeader({ alg: 'EdDSA', kid: 'identity-signing-v1' })
         .setIssuer('identity-service')

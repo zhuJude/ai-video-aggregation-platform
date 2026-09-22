@@ -22,7 +22,8 @@ export type UserFilters = Readonly<{
   tag?: string;
 }>;
 
-type BrowserSearchParams = URLSearchParams | Readonly<Record<string, string | readonly string[] | undefined>>;
+type BrowserSearchParams =
+  URLSearchParams | Readonly<Record<string, string | readonly string[] | undefined>>;
 
 export type SanitizedUsersSearchParams = Readonly<{
   cursor?: string;
@@ -72,7 +73,10 @@ export function containsSensitivePhoneLikeValue(value: unknown): boolean {
     if (next.length > MAX_SENSITIVE_VALUE_LENGTH) return true;
     decoded = next;
   }
-  return UNSAFE_CONTROL.test(decoded.normalize('NFKC')) || PHONE_SEQUENCE.test(normalizePhoneGlyphs(decoded));
+  return (
+    UNSAFE_CONTROL.test(decoded.normalize('NFKC')) ||
+    PHONE_SEQUENCE.test(normalizePhoneGlyphs(decoded))
+  );
 }
 
 export function isSafeDirectoryCursor(value: unknown): value is string {
@@ -82,7 +86,11 @@ export function isSafeDirectoryCursor(value: unknown): value is string {
 function rawEntries(input: BrowserSearchParams): readonly (readonly [string, string])[] {
   if (input instanceof URLSearchParams) return [...input.entries()];
   return Object.entries(input).flatMap(([name, value]) =>
-    typeof value === 'string' ? [[name, value] as const] : Array.isArray(value) ? value.map((item) => [name, item] as const) : [],
+    typeof value === 'string'
+      ? [[name, value] as const]
+      : Array.isArray(value)
+        ? value.map((item) => [name, item] as const)
+        : [],
   );
 }
 
@@ -94,7 +102,9 @@ function containsAsciiControl(value: string): boolean {
   return false;
 }
 
-export function sanitizeUsersSearchParams(input: BrowserSearchParams): Readonly<{ params: SanitizedUsersSearchParams; rejected: boolean }> {
+export function sanitizeUsersSearchParams(
+  input: BrowserSearchParams,
+): Readonly<{ params: SanitizedUsersSearchParams; rejected: boolean }> {
   const entries = rawEntries(input);
   let rejected = entries.some(([, value]) => containsSensitivePhoneLikeValue(value));
   const byName = new Map<string, string[]>();
@@ -104,15 +114,29 @@ export function sanitizeUsersSearchParams(input: BrowserSearchParams): Readonly<
     byName.set(name, values);
   }
   const result: Record<string, string> = {};
-  const acceptOne = (name: keyof SanitizedUsersSearchParams, validate: (value: string) => boolean, normalize: (value: string) => string = (value) => value) => {
+  const acceptOne = (
+    name: keyof SanitizedUsersSearchParams,
+    validate: (value: string) => boolean,
+    normalize: (value: string) => string = (value) => value,
+  ) => {
     const values = byName.get(name);
     if (!values) return;
-    if (values.length !== 1 || containsSensitivePhoneLikeValue(values[0])) { rejected = true; return; }
+    if (values.length !== 1 || containsSensitivePhoneLikeValue(values[0])) {
+      rejected = true;
+      return;
+    }
     const value = normalize(values[0] ?? '');
-    if (!validate(value)) { rejected = true; return; }
+    if (!validate(value)) {
+      rejected = true;
+      return;
+    }
     if (value) result[name] = value;
   };
-  acceptOne('query', (value) => value.length <= 128 && !containsAsciiControl(value), (value) => value.trim());
+  acceptOne(
+    'query',
+    (value) => value.length <= 128 && !containsAsciiControl(value),
+    (value) => value.trim(),
+  );
   acceptOne('cursor', isSafeDirectoryCursor);
   acceptOne('status', (value) => userStatuses.has(value));
   acceptOne('registrationSource', (value) => registrationSources.has(value));
@@ -120,7 +144,19 @@ export function sanitizeUsersSearchParams(input: BrowserSearchParams): Readonly<
   acceptOne('tag', (value) => TAG.test(value));
   acceptOne('notice', (value) => value === SENSITIVE_QUERY_NOTICE);
   for (const name of byName.keys()) {
-    if (!['query', 'cursor', 'status', 'registrationSource', 'spendingTier', 'tag', 'notice'].includes(name) && byName.get(name)?.some(containsSensitivePhoneLikeValue)) rejected = true;
+    if (
+      ![
+        'query',
+        'cursor',
+        'status',
+        'registrationSource',
+        'spendingTier',
+        'tag',
+        'notice',
+      ].includes(name) &&
+      byName.get(name)?.some(containsSensitivePhoneLikeValue)
+    )
+      rejected = true;
   }
   return { params: result, rejected };
 }

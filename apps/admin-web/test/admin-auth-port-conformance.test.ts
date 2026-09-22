@@ -57,9 +57,7 @@ describe('AdminAuthPort contract', () => {
     });
     expect(challenge.challengeId).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(challenge.expiresAt).toBeGreaterThan(Date.now());
-    expect(challenge.expiresAt - Date.now()).toBeLessThanOrEqual(
-      ADMIN_MFA_CHALLENGE_TTL_MS,
-    );
+    expect(challenge.expiresAt - Date.now()).toBeLessThanOrEqual(ADMIN_MFA_CHALLENGE_TTL_MS);
 
     await expect(
       port.verifyTotp({ challengeId: challenge.challengeId, code: '042731' }),
@@ -101,7 +99,9 @@ describe('AdminAuthPort contract', () => {
     expect(Object.keys(event).sort()).toEqual(['correlationId', 'operation', 'reason', 'traceId']);
     expect(event.operation).toBe('login.config');
     expect(event.reason).toBe('INVALID_CONFIG');
-    expect(event.correlationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
+    expect(event.correlationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
+    );
     expect(event.traceId).toMatch(/^[0-9a-f]{32}$/u);
   });
 
@@ -110,7 +110,16 @@ describe('AdminAuthPort contract', () => {
     values.set(
       ADMIN_MFA_CHALLENGE_COOKIE,
       await signAdminMfaChallenge(
-        { audience: 'admin-mfa', challengeId: 'A'.repeat(43), correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', expiresAt: Date.now() + 600_000, identifierBinding: 'A'.repeat(43), seed: 'A'.repeat(43), stage: 'TOTP', version: 1 },
+        {
+          audience: 'admin-mfa',
+          challengeId: 'A'.repeat(43),
+          correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+          expiresAt: Date.now() + 600_000,
+          identifierBinding: 'A'.repeat(43),
+          seed: 'A'.repeat(43),
+          stage: 'TOTP',
+          version: 1,
+        },
         validKey,
       ),
     );

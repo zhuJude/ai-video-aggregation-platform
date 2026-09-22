@@ -21,11 +21,7 @@ function invalidPricingInput(): Error & { code: 'INVALID_PRICING_INPUT' } {
 }
 
 export function priceWithMargin(costPoints: bigint, marginBasisPoints: number): bigint {
-  if (
-    costPoints < 0n ||
-    !Number.isInteger(marginBasisPoints) ||
-    marginBasisPoints < 0
-  ) {
+  if (costPoints < 0n || !Number.isInteger(marginBasisPoints) || marginBasisPoints < 0) {
     throw invalidPricingInput();
   }
   const numerator = costPoints * BigInt(10_000 + marginBasisPoints);
@@ -72,8 +68,7 @@ export function selectEffectiveVersion<T extends EffectiveVersion>(
     .filter((version) => version.effectiveAt.getTime() <= at.getTime())
     .sort(
       (left, right) =>
-        right.effectiveAt.getTime() - left.effectiveAt.getTime() ||
-        right.version - left.version,
+        right.effectiveAt.getTime() - left.effectiveAt.getTime() || right.version - left.version,
     )[0];
   if (!selected) {
     throw Object.assign(new Error('PRICING_RULE_NOT_EFFECTIVE'), {

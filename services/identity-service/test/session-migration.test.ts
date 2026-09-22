@@ -17,9 +17,7 @@ describe('rotating session migration', () => {
 
   it('keeps old writers compatible with a database UUIDv7 family default', () => {
     expect(migration).toContain('CREATE OR REPLACE FUNCTION identity_uuid_v7()');
-    expect(migration).toMatch(
-      /ADD COLUMN "family_id" UUID DEFAULT identity_uuid_v7\(\)/,
-    );
+    expect(migration).toMatch(/ADD COLUMN "family_id" UUID DEFAULT identity_uuid_v7\(\)/);
     expect(migration).toContain('SET "family_id" = identity_uuid_v7()');
     expect(migration).toContain('ALTER COLUMN "family_id" SET DEFAULT identity_uuid_v7()');
   });

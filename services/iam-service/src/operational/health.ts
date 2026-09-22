@@ -3,14 +3,20 @@ export interface ReadinessCheck {
   readonly name: string;
   readonly check: (signal: AbortSignal) => Promise<boolean>;
 }
-export interface ReadinessObserver { adapterStuck(name: string): void; }
+export interface ReadinessObserver {
+  adapterStuck(name: string): void;
+}
 
 export class EventLoopWatchdog {
   private lastTick = Date.now();
   private delayMs = 0;
   private readonly timer: NodeJS.Timeout;
-  constructor(private readonly thresholdMs = 250, intervalMs = 50) {
-    if (!Number.isSafeInteger(thresholdMs) || thresholdMs < 10) throw stableError('INVALID_STALL_THRESHOLD');
+  constructor(
+    private readonly thresholdMs = 250,
+    intervalMs = 50,
+  ) {
+    if (!Number.isSafeInteger(thresholdMs) || thresholdMs < 10)
+      throw stableError('INVALID_STALL_THRESHOLD');
     this.timer = setInterval(() => {
       const current = Date.now();
       this.delayMs = Math.max(0, current - this.lastTick - intervalMs);
@@ -18,9 +24,15 @@ export class EventLoopWatchdog {
     }, intervalMs);
     this.timer.unref();
   }
-  healthy(): boolean { return this.delayMs <= this.thresholdMs; }
-  observedDelayMs(): number { return this.delayMs; }
-  close(): void { clearInterval(this.timer); }
+  healthy(): boolean {
+    return this.delayMs <= this.thresholdMs;
+  }
+  observedDelayMs(): number {
+    return this.delayMs;
+  }
+  close(): void {
+    clearInterval(this.timer);
+  }
 }
 
 export class ServiceHealth {
@@ -33,24 +45,41 @@ export class ServiceHealth {
     abortGraceMs = 500,
     observer?: ReadinessObserver,
   ) {
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 10_000) throw stableError('INVALID_READINESS_TIMEOUT');
-    if (!Number.isSafeInteger(cacheMs) || cacheMs < 0 || cacheMs > 60_000) throw stableError('INVALID_READINESS_CACHE');
-    if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 10 || abortGraceMs > 10_000) throw stableError('INVALID_READINESS_ABORT_GRACE');
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 10 || timeoutMs > 10_000)
+      throw stableError('INVALID_READINESS_TIMEOUT');
+    if (!Number.isSafeInteger(cacheMs) || cacheMs < 0 || cacheMs > 60_000)
+      throw stableError('INVALID_READINESS_CACHE');
+    if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 10 || abortGraceMs > 10_000)
+      throw stableError('INVALID_READINESS_ABORT_GRACE');
     const names = checks.map(({ name }) => name);
-    if (names.some((name) => !/^[a-z][a-z0-9_]{1,31}$/.test(name)) || new Set(names).size !== names.length) throw stableError('INVALID_READINESS_CHECK');
-    this.probes = checks.map(({ name, check }) => new BoundedProbe(name, check, timeoutMs, cacheMs, abortGraceMs, observer));
+    if (
+      names.some((name) => !/^[a-z][a-z0-9_]{1,31}$/.test(name)) ||
+      new Set(names).size !== names.length
+    )
+      throw stableError('INVALID_READINESS_CHECK');
+    this.probes = checks.map(
+      ({ name, check }) =>
+        new BoundedProbe(name, check, timeoutMs, cacheMs, abortGraceMs, observer),
+    );
   }
   liveness() {
     const healthy = this.watchdog.healthy();
     return { statusCode: healthy ? 200 : 503, body: { status: healthy ? 'live' : 'stalled' } };
   }
   async readiness() {
-    const entries = await Promise.all(this.probes.map(async (probe) => [probe.name, await probe.read()] as const));
+    const entries = await Promise.all(
+      this.probes.map(async (probe) => [probe.name, await probe.read()] as const),
+    );
     const checks = Object.fromEntries(entries) as Record<string, DependencyState>;
     const ready = entries.every(([, state]) => state === 'up');
-    return { statusCode: ready ? 200 : 503, body: { status: ready ? 'ready' : 'not_ready', checks } };
+    return {
+      statusCode: ready ? 200 : 503,
+      body: { status: ready ? 'ready' : 'not_ready', checks },
+    };
   }
-  close(): void { for (const probe of this.probes) probe.close(); }
+  close(): void {
+    for (const probe of this.probes) probe.close();
+  }
 }
 
 class BoundedProbe {
@@ -71,9 +100,11 @@ class BoundedProbe {
   ) {}
   read(): Promise<DependencyState> {
     if (this.closed) return Promise.resolve('down');
-    if (this.cached && this.cached.expiresAt > Date.now()) return Promise.resolve(this.cached.state);
+    if (this.cached && this.cached.expiresAt > Date.now())
+      return Promise.resolve(this.cached.state);
     if (this.inFlight) return this.inFlight;
-    if (this.activeOperation) return Promise.resolve(this.adapterStuck ? 'adapter_stuck' : 'timeout');
+    if (this.activeOperation)
+      return Promise.resolve(this.adapterStuck ? 'adapter_stuck' : 'timeout');
     this.adapterStuck = false;
     const controller = new AbortController();
     this.controller = controller;
@@ -122,11 +153,17 @@ async function settleCheck(
   const timeout = new Promise<DependencyState>((resolve) => {
     timer = setTimeout(() => {
       resolve('timeout');
-      queueMicrotask(() => { controller.abort(); onTimeout(); });
+      queueMicrotask(() => {
+        controller.abort();
+        onTimeout();
+      });
     }, timeoutMs);
   });
-  try { return await Promise.race([operation, timeout]); }
-  finally { if (timer) clearTimeout(timer); }
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function invokeCheck(
@@ -135,7 +172,7 @@ function invokeCheck(
 ): Promise<DependencyState> {
   return Promise.resolve()
     .then(() => check(signal))
-    .then((value) => value ? 'up' as const : 'down' as const)
+    .then((value) => (value ? ('up' as const) : ('down' as const)))
     .catch(() => 'down' as const);
 }
 

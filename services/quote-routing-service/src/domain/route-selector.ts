@@ -159,7 +159,8 @@ export function selectRoute(
         left.modelId.localeCompare(right.modelId),
     );
   excluded.sort(
-    (left, right) => left.modelId.localeCompare(right.modelId) || left.reason.localeCompare(right.reason),
+    (left, right) =>
+      left.modelId.localeCompare(right.modelId) || left.reason.localeCompare(right.reason),
   );
   const selected = scored[0];
   if (!selected) throw routeError('NO_ELIGIBLE_ROUTE');

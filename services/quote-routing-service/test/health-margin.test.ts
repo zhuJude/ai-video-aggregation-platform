@@ -31,9 +31,7 @@ describe('provider health snapshots', () => {
     expect(await consumer.consume({ ...base, messageId: 'message-2', sequence: 2 })).toBe(
       'DUPLICATE',
     );
-    expect(await consumer.consume({ ...base, messageId: 'message-1', sequence: 1 })).toBe(
-      'STALE',
-    );
+    expect(await consumer.consume({ ...base, messageId: 'message-1', sequence: 1 })).toBe('STALE');
     expect(store.get('provider-1')?.sequence).toBe(2);
   });
 
@@ -103,12 +101,8 @@ describe('margin guard', () => {
 
     await new MarginGuardJob(source, catalog, publisher).run();
 
-    expect(disabled).toEqual([
-      { modelId: 'model-1', reason: 'MARGIN_BELOW_MINIMUM' },
-    ]);
-    expect(events).toEqual([
-      { eventType: 'routing.margin-risk-detected.v1', modelId: 'model-1' },
-    ]);
+    expect(disabled).toEqual([{ modelId: 'model-1', reason: 'MARGIN_BELOW_MINIMUM' }]);
+    expect(events).toEqual([{ eventType: 'routing.margin-risk-detected.v1', modelId: 'model-1' }]);
   });
 
   it('keeps a model active when at least one published sale rule is profitable', async () => {
@@ -146,11 +140,7 @@ describe('margin guard', () => {
       (input, init) => {
         const headers = new Headers(init?.headers);
         const url =
-          typeof input === 'string'
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url;
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
         if (typeof init?.body !== 'string') throw new Error('expected string request body');
         requests.push({
           url,

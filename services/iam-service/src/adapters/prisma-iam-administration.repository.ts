@@ -10,7 +10,12 @@ import type {
 } from '../application/iam-administration.repository.js';
 import type { AuthorizationSubject, DataScope } from '../domain/authorization.js';
 import { isUuidV7 } from '../domain/uuid-v7.js';
-import { Prisma, type AuditEvent, type PrismaClient, type Role } from '../generated/prisma/client.js';
+import {
+  Prisma,
+  type AuditEvent,
+  type PrismaClient,
+  type Role,
+} from '../generated/prisma/client.js';
 
 const TRANSACTION_OPTIONS = Object.freeze({
   isolationLevel: 'ReadCommitted' as const,
@@ -78,12 +83,11 @@ export class PrismaIamAdministrationRepository implements IamAdministrationRepos
     if (input.cursor && !cursor) throw stableError('INVALID_ROLE_QUERY');
     const rows = await this.prisma.role.findMany({
       ...(cursor
-        ? { where: {
-            OR: [
-              { name: { gt: cursor.name } },
-              { name: cursor.name, id: { gt: cursor.id } },
-            ],
-          } }
+        ? {
+            where: {
+              OR: [{ name: { gt: cursor.name } }, { name: cursor.name, id: { gt: cursor.id } }],
+            },
+          }
         : {}),
       include: { permissions: { include: { permission: true } } },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
@@ -115,7 +119,12 @@ export class PrismaIamAdministrationRepository implements IamAdministrationRepos
       const admin = await lockAdmin(transaction, input.adminId);
       const existing = await transaction.role.findFirst({ where: { protected: true } });
       if (existing) {
-        await appendDecision(transaction, input.audit, 'DENIED', 'SUPER_ADMIN_ALREADY_BOOTSTRAPPED');
+        await appendDecision(
+          transaction,
+          input.audit,
+          'DENIED',
+          'SUPER_ADMIN_ALREADY_BOOTSTRAPPED',
+        );
         return { kind: 'already_bootstrapped' as const };
       }
       if (!admin || admin.status !== 'ACTIVE') {
@@ -619,11 +628,10 @@ function actorCan(
 ): boolean {
   return Boolean(
     actor &&
-      (actor.protected ||
-        actor.grants.some(
-          (grant) =>
-            grant.permission === permission && scopeCovers(grant.dataScope, desiredScope),
-        )),
+    (actor.protected ||
+      actor.grants.some(
+        (grant) => grant.permission === permission && scopeCovers(grant.dataScope, desiredScope),
+      )),
   );
 }
 
@@ -643,7 +651,10 @@ function isDataScope(value: string): value is DataScope {
   return value === 'ALL' || value === 'OWN' || value === 'ASSIGNED';
 }
 
-async function loadRole(transaction: TransactionClient, roleId: string): Promise<RoleRecord | null> {
+async function loadRole(
+  transaction: TransactionClient,
+  roleId: string,
+): Promise<RoleRecord | null> {
   const role = await transaction.role.findUnique({
     where: { id: roleId },
     include: { permissions: { include: { permission: true } } },
@@ -703,7 +714,10 @@ async function appendDecision(
   });
 }
 
-async function appendAudit(transaction: TransactionClient, input: AuditDecisionInput): Promise<void> {
+async function appendAudit(
+  transaction: TransactionClient,
+  input: AuditDecisionInput,
+): Promise<void> {
   await transaction.auditEvent.create({
     data: {
       id: input.id,
@@ -768,7 +782,10 @@ async function databaseClock(transaction: TransactionClient): Promise<Date> {
   return now;
 }
 
-async function acquireLocks(transaction: TransactionClient, keys: readonly string[]): Promise<void> {
+async function acquireLocks(
+  transaction: TransactionClient,
+  keys: readonly string[],
+): Promise<void> {
   for (const key of [...new Set(keys)].sort()) {
     await transaction.$queryRaw(
       Prisma.sql`
@@ -833,25 +850,29 @@ function decodeRoleCursor(value: string): { readonly name: string; readonly id: 
 }
 
 function roleResultCode(result: string): string {
-  return {
-    not_found: 'ROLE_NOT_FOUND',
-    protected: 'PROTECTED_ROLE',
-    version_conflict: 'ROLE_VERSION_CONFLICT',
-    assigned: 'ROLE_ASSIGNED',
-    actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
-  }[result] ?? 'ROLE_MUTATION_DENIED';
+  return (
+    {
+      not_found: 'ROLE_NOT_FOUND',
+      protected: 'PROTECTED_ROLE',
+      version_conflict: 'ROLE_VERSION_CONFLICT',
+      assigned: 'ROLE_ASSIGNED',
+      actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
+    }[result] ?? 'ROLE_MUTATION_DENIED'
+  );
 }
 
 function assignmentResultCode(result: string): string {
-  return {
-    admin_inactive: 'ADMIN_NOT_ACTIVE',
-    role_not_found: 'ROLE_NOT_FOUND',
-    not_assigned: 'ROLE_NOT_ASSIGNED',
-    last_super_admin: 'LAST_SUPER_ADMIN_PROTECTED',
-    actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
-    protected_role_denied: 'PROTECTED_ROLE_ASSIGNMENT_DENIED',
-    capability_exceeded: 'CAPABILITY_CEILING_EXCEEDED',
-  }[result] ?? 'ROLE_ASSIGNMENT_DENIED';
+  return (
+    {
+      admin_inactive: 'ADMIN_NOT_ACTIVE',
+      role_not_found: 'ROLE_NOT_FOUND',
+      not_assigned: 'ROLE_NOT_ASSIGNED',
+      last_super_admin: 'LAST_SUPER_ADMIN_PROTECTED',
+      actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
+      protected_role_denied: 'PROTECTED_ROLE_ASSIGNMENT_DENIED',
+      capability_exceeded: 'CAPABILITY_CEILING_EXCEEDED',
+    }[result] ?? 'ROLE_ASSIGNMENT_DENIED'
+  );
 }
 
 function stableError(code: string): Error & { code: string } {

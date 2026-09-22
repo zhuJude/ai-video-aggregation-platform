@@ -83,8 +83,12 @@ export function TaskActions({
   );
   const purchaseIsUnsafe = (operation: TaskOperation) => {
     if (operation !== 'RETRY_PROVIDER' && operation !== 'SWITCH_PROVIDER') return false;
-    const safety = task.operationPreviews.find((preview) => preview.operation === operation)?.purchaseSafety;
-    return task.duplicatePurchaseRisk || (safety !== 'NOT_ACCEPTED' && safety !== 'CONFIRMED_NO_CHARGE');
+    const safety = task.operationPreviews.find(
+      (preview) => preview.operation === operation,
+    )?.purchaseSafety;
+    return (
+      task.duplicatePurchaseRisk || (safety !== 'NOT_ACCEPTED' && safety !== 'CONFIRMED_NO_CHARGE')
+    );
   };
   const selectedPreview = task.operationPreviews.find((preview) => preview.operation === selected);
   async function submit() {

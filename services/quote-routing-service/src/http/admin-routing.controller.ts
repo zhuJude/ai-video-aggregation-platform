@@ -29,7 +29,11 @@ export class AdminRoutingController {
   }
 
   private publish(kind: RuleKind, version: string, body: unknown) {
-    return this.rules.publish(kind, z.coerce.number().int().positive().parse(version), PublishSchema.parse(body).publishedBy);
+    return this.rules.publish(
+      kind,
+      z.coerce.number().int().positive().parse(version),
+      PublishSchema.parse(body).publishedBy,
+    );
   }
 
   private rollback(kind: RuleKind, version: string, body: unknown) {

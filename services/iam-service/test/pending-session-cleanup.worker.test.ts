@@ -3,7 +3,9 @@ import { PendingSessionCleanupWorker } from '../src/operational/pending-session-
 
 function deferred<T>() {
   let resolveValue!: (value: T) => void;
-  const promise = new Promise<T>((resolve) => { resolveValue = resolve; });
+  const promise = new Promise<T>((resolve) => {
+    resolveValue = resolve;
+  });
   return { promise, resolve: resolveValue };
 }
 
@@ -29,7 +31,9 @@ describe('PendingSessionCleanupWorker', () => {
     expect(worker.healthy()).toBe(false);
     expect(cleanup).toHaveBeenCalledWith(new Date('2026-09-02T00:00:00.000Z'), 25);
     let closed = false;
-    const closing = worker.close().then(() => { closed = true; });
+    const closing = worker.close().then(() => {
+      closed = true;
+    });
     await Promise.resolve();
     expect(closed).toBe(false);
     pending.resolve(7);
@@ -44,7 +48,10 @@ describe('PendingSessionCleanupWorker', () => {
     const recordFailure = vi.fn(() => Promise.resolve());
     let fail = true;
     const worker = new PendingSessionCleanupWorker(
-      { cleanupExpiredPendingSessions: () => fail ? Promise.reject(new Error('database url must not leak')) : Promise.resolve(2) },
+      {
+        cleanupExpiredPendingSessions: () =>
+          fail ? Promise.reject(new Error('database url must not leak')) : Promise.resolve(2),
+      },
       { increment, add },
       { recordFailure },
       60_000,

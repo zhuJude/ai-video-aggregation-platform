@@ -78,9 +78,9 @@ describe('workspace', () => {
         continue;
       }
 
-      const packageJson = JSON.parse(
-        await readFile(`${serviceRoot}/package.json`, 'utf8'),
-      ) as { scripts?: Record<string, string> };
+      const packageJson = JSON.parse(await readFile(`${serviceRoot}/package.json`, 'utf8')) as {
+        scripts?: Record<string, string>;
+      };
       const scripts = packageJson.scripts ?? {};
       if (!Object.values(scripts).some((script) => script.includes('prisma generate'))) {
         continue;

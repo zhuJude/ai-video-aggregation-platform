@@ -62,18 +62,10 @@ describe('quote service', () => {
     const quote = await service.create(request, now);
 
     await expect(
-      service.assertUsable(
-        quote.id,
-        { ...request.parameters, duration: 10 },
-        now,
-      ),
+      service.assertUsable(quote.id, { ...request.parameters, duration: 10 }, now),
     ).rejects.toMatchObject({ code: 'QUOTE_PARAMETERS_CHANGED' });
     await expect(
-      service.assertUsable(
-        quote.id,
-        request.parameters,
-        new Date(now.getTime() + 600_001),
-      ),
+      service.assertUsable(quote.id, request.parameters, new Date(now.getTime() + 600_001)),
     ).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
   });
 

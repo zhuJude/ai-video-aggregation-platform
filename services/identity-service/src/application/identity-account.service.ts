@@ -51,9 +51,7 @@ export interface AccountMutationTransaction {
   updateNickname(userId: string, nickname: string): Promise<void>;
   closeUser(userId: string): Promise<boolean>;
   revokeAllSessions(userId: string, now: Date): Promise<void>;
-  getOperationResult(
-    expectation: OperationResultExpectation,
-  ): Promise<'missing' | 'completed'>;
+  getOperationResult(expectation: OperationResultExpectation): Promise<'missing' | 'completed'>;
   appendOutbox(event: OutboxWrite): Promise<void>;
 }
 
@@ -311,8 +309,7 @@ export class IdentityAccountService {
     }
     if (
       !candidates.some(
-        ({ digest, keyVersion }) =>
-          digest === current.digest && keyVersion === current.keyVersion,
+        ({ digest, keyVersion }) => digest === current.digest && keyVersion === current.keyVersion,
       )
     ) {
       throw stableError('INVALID_OPERATION_FINGERPRINT');

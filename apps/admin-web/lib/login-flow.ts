@@ -22,8 +22,7 @@ export function passwordPreflightRequired(): PasswordStepResult {
 }
 
 export type TotpValidationResult =
-  | Readonly<{ ok: true; code: string }>
-  | Readonly<{ ok: false; message: string }>;
+  Readonly<{ ok: true; code: string }> | Readonly<{ ok: false; message: string }>;
 
 export function validateTotpInput(value: string): TotpValidationResult {
   if (!/^[0-9]{6}$/.test(value)) {

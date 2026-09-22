@@ -9,8 +9,19 @@ const subjectId = '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f';
 
 describe('production secure layout', () => {
   it('mounts the permission-aware shell from verified server claims for every secure child route', async () => {
-    const sessionToken = await signAdminSession({ dataScope: 'OWN', expiresAt: Date.now() + 60_000, permissions: ['users:read'], sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f', subjectId }, signingKey);
-    const { container } = render(await renderSecureLayout(<h1>用户生产页面</h1>, { sessionToken, signingKey }));
+    const sessionToken = await signAdminSession(
+      {
+        dataScope: 'OWN',
+        expiresAt: Date.now() + 60_000,
+        permissions: ['users:read'],
+        sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
+        subjectId,
+      },
+      signingKey,
+    );
+    const { container } = render(
+      await renderSecureLayout(<h1>用户生产页面</h1>, { sessionToken, signingKey }),
+    );
 
     expect(screen.getByTestId('admin-shell')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '用户' })).toHaveAttribute('href', '/users');
@@ -26,6 +37,8 @@ describe('production secure layout', () => {
   });
 
   it('fails closed before rendering secure children when the trusted session is absent', async () => {
-    await expect(renderSecureLayout(<div>不得泄漏</div>, { sessionToken: undefined, signingKey })).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    await expect(
+      renderSecureLayout(<div>不得泄漏</div>, { sessionToken: undefined, signingKey }),
+    ).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
   });
 });

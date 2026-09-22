@@ -23,7 +23,7 @@ export function createUuidV7(now = Date.now()): string {
     lastSequence = (lastSequence + 1) & 0x0fff;
     if (lastSequence === 0) timestamp += 1;
   } else {
-    lastSequence = ((random[0] ?? 0) << 4 | (random[1] ?? 0) >>> 4) & 0x0fff;
+    lastSequence = (((random[0] ?? 0) << 4) | ((random[1] ?? 0) >>> 4)) & 0x0fff;
   }
   lastTimestamp = timestamp;
   const bytes = new Uint8Array(16);

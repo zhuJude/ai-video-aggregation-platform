@@ -93,18 +93,24 @@ describe('capability validation', () => {
       },
     };
     expect(validateCapabilityDefinition(invalidRange).join('；')).toMatch(/默认值|范围/);
-    expect(validateCapabilityDefinition({
-      ...definition,
-      schema: {
-        ...definition.schema,
-        properties: { ...definition.schema.properties, prompt: { pattern: '[', type: 'string' } },
-      },
-    })).toContain('JSON Schema 无法安全编译');
-    expect(validateCapabilityDefinition({ ...definition, costDimensions: ['prompt'] }).join('；')).toMatch(/可计价语义|缺少单位/);
-    expect(validateCapabilityDefinition({
-      ...definition,
-      uiSchema: { fields: definition.uiSchema.fields.map((field) => ({ ...field, order: 1 })) },
-    })).toContain('UI 字段顺序必须唯一且不超过 10000');
+    expect(
+      validateCapabilityDefinition({
+        ...definition,
+        schema: {
+          ...definition.schema,
+          properties: { ...definition.schema.properties, prompt: { pattern: '[', type: 'string' } },
+        },
+      }),
+    ).toContain('JSON Schema 无法安全编译');
+    expect(
+      validateCapabilityDefinition({ ...definition, costDimensions: ['prompt'] }).join('；'),
+    ).toMatch(/可计价语义|缺少单位/);
+    expect(
+      validateCapabilityDefinition({
+        ...definition,
+        uiSchema: { fields: definition.uiSchema.fields.map((field) => ({ ...field, order: 1 })) },
+      }),
+    ).toContain('UI 字段顺序必须唯一且不超过 10000');
   });
 
   it('validates defaults against the complete property schema', () => {
@@ -118,9 +124,7 @@ describe('capability validation', () => {
         },
       },
     };
-    expect(validateCapabilityDefinition(invalid)).toContain(
-      '字段 prompt 默认值不符合完整 Schema',
-    );
+    expect(validateCapabilityDefinition(invalid)).toContain('字段 prompt 默认值不符合完整 Schema');
   });
 
   it('resolves local refs and composition rules from the root schema', () => {
@@ -283,12 +287,14 @@ describe('SchemaEditor', () => {
         required: ['asset'],
         type: 'object',
       },
-      uiSchema: { fields: [
-        { label: '启用', name: 'enabled', order: 1 },
-        { label: '配置', name: 'config', order: 2 },
-        { label: '标签', name: 'tags', order: 3 },
-        { label: '素材', name: 'asset', order: 4 },
-      ] },
+      uiSchema: {
+        fields: [
+          { label: '启用', name: 'enabled', order: 1 },
+          { label: '配置', name: 'config', order: 2 },
+          { label: '标签', name: 'tags', order: 3 },
+          { label: '素材', name: 'asset', order: 4 },
+        ],
+      },
     } as const;
     render(<SchemaEditor initial={{ ...view, definition: previewDefinition }} permissions={[]} />);
     expect(screen.getByLabelText('启用')).toHaveAttribute('type', 'checkbox');
@@ -436,11 +442,7 @@ describe('SchemaEditor', () => {
       }),
     );
     render(
-      <SchemaEditor
-        initial={view}
-        onValidate={onValidate}
-        permissions={['models:publish']}
-      />,
+      <SchemaEditor initial={view} onValidate={onValidate} permissions={['models:publish']} />,
     );
     fireEvent.click(screen.getByRole('button', { name: '校验' }));
     await waitFor(() => {
@@ -523,7 +525,9 @@ describe('SchemaEditor', () => {
       <SchemaEditor
         initial={{
           ...view,
-          history: [{ createdAt: view.sourceUpdatedAt, id: versionId, status: 'PUBLISHED', version: 7 }],
+          history: [
+            { createdAt: view.sourceUpdatedAt, id: versionId, status: 'PUBLISHED', version: 7 },
+          ],
         }}
         permissions={['models:rollback']}
       />,

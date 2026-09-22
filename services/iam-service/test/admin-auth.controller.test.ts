@@ -24,10 +24,21 @@ describe('AdminAuthController', () => {
     const header = vi.fn();
     const reply = { header } as unknown as FastifyReply;
 
-    await expect(controller.password({ email: 'admin@example.test', password: 'password-value' })).resolves.toEqual({ challengeId: 'challenge' });
-    await expect(controller.totp({ challengeId: 'challenge', token: '123456', deviceName: 'browser' }, reply)).resolves.toEqual({ accessToken: 'signed.jwt', sessionId: session.id });
-    await expect(controller.recovery({ challengeId: 'challenge', recoveryCode: 'code', deviceName: 'browser' }, reply)).resolves.toEqual({ accessToken: 'signed.jwt', sessionId: session.id });
-    await expect(controller.refresh({ headers: { cookie: `admin_refresh=${'r'.repeat(43)}` } }, reply)).resolves.toEqual({ accessToken: 'signed.jwt', sessionId: session.id });
+    await expect(
+      controller.password({ email: 'admin@example.test', password: 'password-value' }),
+    ).resolves.toEqual({ challengeId: 'challenge' });
+    await expect(
+      controller.totp({ challengeId: 'challenge', token: '123456', deviceName: 'browser' }, reply),
+    ).resolves.toEqual({ accessToken: 'signed.jwt', sessionId: session.id });
+    await expect(
+      controller.recovery(
+        { challengeId: 'challenge', recoveryCode: 'code', deviceName: 'browser' },
+        reply,
+      ),
+    ).resolves.toEqual({ accessToken: 'signed.jwt', sessionId: session.id });
+    await expect(
+      controller.refresh({ headers: { cookie: `admin_refresh=${'r'.repeat(43)}` } }, reply),
+    ).resolves.toEqual({ accessToken: 'signed.jwt', sessionId: session.id });
     expect(header).toHaveBeenCalledWith('Set-Cookie', expect.stringContaining('SameSite=Strict'));
     expect(await metrics.render()).toContain('iam_login_success_total 2');
   });
@@ -41,9 +52,15 @@ describe('AdminAuthController', () => {
     const metrics = new IamMetrics(() => Promise.resolve(0));
     const controller = new AdminAuthController(auth as unknown as AdminAuthService, metrics);
     const reply = { header: vi.fn() } as unknown as FastifyReply;
-    await expect(controller.password({ email: 'admin@example.test', password: 'wrong' })).rejects.toThrow('INVALID_MFA');
-    await expect(controller.totp({ challengeId: 'challenge', token: '000000', deviceName: 'browser' }, reply)).rejects.toThrow('INVALID_MFA');
-    await expect(controller.password({ email: 'a', password: 'b', extra: true })).rejects.toThrow('INVALID_REQUEST');
+    await expect(
+      controller.password({ email: 'admin@example.test', password: 'wrong' }),
+    ).rejects.toThrow('INVALID_MFA');
+    await expect(
+      controller.totp({ challengeId: 'challenge', token: '000000', deviceName: 'browser' }, reply),
+    ).rejects.toThrow('INVALID_MFA');
+    await expect(controller.password({ email: 'a', password: 'b', extra: true })).rejects.toThrow(
+      'INVALID_REQUEST',
+    );
     await expect(controller.password(null)).rejects.toThrow('INVALID_REQUEST');
     const output = await metrics.render();
     expect(output).toContain('iam_login_failure_total 2');
@@ -54,20 +71,31 @@ describe('AdminAuthController', () => {
     const auth = { rotateRefresh: vi.fn() };
     const controller = new AdminAuthController(auth as unknown as AdminAuthService);
     const reply = { header: vi.fn() } as unknown as FastifyReply;
-    await expect(controller.refresh({ headers: {} }, reply)).rejects.toThrow('INVALID_REFRESH_TOKEN');
-    await expect(controller.refresh({ headers: { cookie: 'admin_refresh=; x=1' } }, reply)).rejects.toThrow('INVALID_REFRESH_TOKEN');
-    await expect(controller.refresh({ headers: { cookie: 'admin_refresh=a; admin_refresh=b' } }, reply)).rejects.toThrow('INVALID_REFRESH_TOKEN');
+    await expect(controller.refresh({ headers: {} }, reply)).rejects.toThrow(
+      'INVALID_REFRESH_TOKEN',
+    );
+    await expect(
+      controller.refresh({ headers: { cookie: 'admin_refresh=; x=1' } }, reply),
+    ).rejects.toThrow('INVALID_REFRESH_TOKEN');
+    await expect(
+      controller.refresh({ headers: { cookie: 'admin_refresh=a; admin_refresh=b' } }, reply),
+    ).rejects.toThrow('INVALID_REFRESH_TOKEN');
   });
 
   it('does not count signer, database, or finalization failures as MFA rejection', async () => {
-    for (const code of ['ADMIN_TOKEN_ISSUANCE_FAILED', 'ADMIN_SESSION_FINALIZATION_FAILED', 'DATABASE_UNAVAILABLE']) {
+    for (const code of [
+      'ADMIN_TOKEN_ISSUANCE_FAILED',
+      'ADMIN_SESSION_FINALIZATION_FAILED',
+      'DATABASE_UNAVAILABLE',
+    ]) {
       const auth = { verifyTotp: () => Promise.reject(Object.assign(new Error(code), { code })) };
       const metrics = new IamMetrics(() => Promise.resolve(0));
       const controller = new AdminAuthController(auth as unknown as AdminAuthService, metrics);
-      await expect(controller.totp(
-        { challengeId: 'challenge', token: '123456', deviceName: 'browser' },
-        { header: vi.fn() } as unknown as FastifyReply,
-      )).rejects.toThrow(code);
+      await expect(
+        controller.totp({ challengeId: 'challenge', token: '123456', deviceName: 'browser' }, {
+          header: vi.fn(),
+        } as unknown as FastifyReply),
+      ).rejects.toThrow(code);
       expect(await metrics.render()).toContain('iam_mfa_failures_total 0');
     }
   });

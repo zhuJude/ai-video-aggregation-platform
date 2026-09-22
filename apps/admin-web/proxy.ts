@@ -2,7 +2,12 @@ import { type NextRequest, NextResponse } from 'next/server';
 
 import { hasPermission } from './lib/permissions';
 import { ADMIN_SESSION_COOKIE, verifyAdminSession } from './lib/session-auth';
-import { containsSensitivePhoneLikeValue, sanitizeUsersSearchParams, SENSITIVE_QUERY_NOTICE, usersSearchParamsToString } from './lib/sensitive-query';
+import {
+  containsSensitivePhoneLikeValue,
+  sanitizeUsersSearchParams,
+  SENSITIVE_QUERY_NOTICE,
+  usersSearchParamsToString,
+} from './lib/sensitive-query';
 import { isUtcIso8601Z } from './lib/frozen-scalars';
 import { isUuidV7 } from './lib/uuid-v7';
 
@@ -29,12 +34,17 @@ function requiredPermission(pathname: string): string | undefined {
 
 type SearchRule = (value: string) => boolean;
 
-const safeSearchText = (maximum: number): SearchRule =>
-  (value) => value.length > 0 && value.length <= maximum && !/[\p{C}]/u.test(value);
+const safeSearchText =
+  (maximum: number): SearchRule =>
+  (value) =>
+    value.length > 0 && value.length <= maximum && !/[\p{C}]/u.test(value);
 const cursorRule: SearchRule = (value) =>
   value.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9._~:-]{0,255}$/u.test(value);
 const traceRule: SearchRule = (value) => /^[0-9a-f]{32}$/iu.test(value);
-const enumRule = (values: readonly string[]): SearchRule => (value) => values.includes(value);
+const enumRule =
+  (values: readonly string[]): SearchRule =>
+  (value) =>
+    values.includes(value);
 
 const declaredSearchRules: Readonly<Record<string, Readonly<Record<string, SearchRule>>>> = {
   '/audit': {
@@ -89,10 +99,15 @@ function declaredSearch(pathname: string, params: URLSearchParams): string {
   return sanitized.toString();
 }
 
-type CanonicalPath = Readonly<{ kind: 'OTHER' | 'USER_DETAIL' | 'USERS'; pathname: string; rejected: boolean }>;
+type CanonicalPath = Readonly<{
+  kind: 'OTHER' | 'USER_DETAIL' | 'USERS';
+  pathname: string;
+  rejected: boolean;
+}>;
 
 function canonicalPathname(pathname: string): CanonicalPath {
-  if (pathname === '/users' || pathname === '/users/') return { kind: 'USERS', pathname: '/users', rejected: false };
+  if (pathname === '/users' || pathname === '/users/')
+    return { kind: 'USERS', pathname: '/users', rejected: false };
   if (pathname.startsWith('/users/') || pathname.startsWith('/users%')) {
     const match = /^\/users\/([^/]+)\/?$/u.exec(pathname);
     const userId = match?.[1];
@@ -101,16 +116,24 @@ function canonicalPathname(pathname: string): CanonicalPath {
     }
     return { kind: 'USERS', pathname: '/users', rejected: true };
   }
-  if (containsSensitivePhoneLikeValue(pathname)) return { kind: 'OTHER', pathname: '/login', rejected: true };
+  if (containsSensitivePhoneLikeValue(pathname))
+    return { kind: 'OTHER', pathname: '/login', rejected: true };
   return { kind: 'OTHER', pathname, rejected: false };
 }
 
 function safeReturnLocation(request: NextRequest): string | undefined {
   const canonical = canonicalPathname(request.nextUrl.pathname);
-  if (canonical.rejected || canonical.pathname !== request.nextUrl.pathname || !requiredPermission(canonical.pathname)) return undefined;
+  if (
+    canonical.rejected ||
+    canonical.pathname !== request.nextUrl.pathname ||
+    !requiredPermission(canonical.pathname)
+  )
+    return undefined;
   if (containsSensitivePhoneLikeValue(request.nextUrl.search)) return undefined;
   if (canonical.kind === 'USERS') {
-    const search = usersSearchParamsToString(sanitizeUsersSearchParams(request.nextUrl.searchParams).params);
+    const search = usersSearchParamsToString(
+      sanitizeUsersSearchParams(request.nextUrl.searchParams).params,
+    );
     return `${canonical.pathname}${search ? `?${search}` : ''}`;
   }
   const search = declaredSearch(canonical.pathname, request.nextUrl.searchParams);
@@ -150,10 +173,16 @@ function canonicalSearchRedirect(request: NextRequest): NextResponse | undefined
   let search: string;
   if (canonical.kind === 'USERS') {
     const sanitized = sanitizeUsersSearchParams(request.nextUrl.searchParams);
-    search = usersSearchParamsToString({ ...sanitized.params, ...((canonical.rejected || sanitized.rejected) ? { notice: SENSITIVE_QUERY_NOTICE } : {}) });
+    search = usersSearchParamsToString({
+      ...sanitized.params,
+      ...(canonical.rejected || sanitized.rejected ? { notice: SENSITIVE_QUERY_NOTICE } : {}),
+    });
   } else if (canonical.pathname === '/login') {
     const values = request.nextUrl.searchParams.getAll('next');
-    const next = !canonical.rejected && values.length === 1 ? safeLoginNext(values[0] ?? null, request) : undefined;
+    const next =
+      !canonical.rejected && values.length === 1
+        ? safeLoginNext(values[0] ?? null, request)
+        : undefined;
     search = next ? new URLSearchParams({ next }).toString() : '';
   } else {
     search = declaredSearch(canonical.pathname, request.nextUrl.searchParams);

@@ -13,10 +13,7 @@ export type OutboundRequestContext = Readonly<{
 
 const issuedOutboundRequestContexts = new WeakSet<object>();
 
-function readExactDataProperty(
-  value: object,
-  key: 'correlationId' | 'traceId',
-): unknown {
+function readExactDataProperty(value: object, key: 'correlationId' | 'traceId'): unknown {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   return descriptor && 'value' in descriptor && descriptor.enumerable
     ? descriptor.value
@@ -25,12 +22,7 @@ function readExactDataProperty(
 
 export function parseOutboundRequestContext(value: unknown): OutboundRequestContext {
   try {
-    if (
-      !value ||
-      typeof value !== 'object' ||
-      Array.isArray(value) ||
-      utilTypes.isProxy(value)
-    ) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || utilTypes.isProxy(value)) {
       throw new Error('invalid shape');
     }
     const prototype = Object.getPrototypeOf(value) as unknown;
@@ -38,11 +30,7 @@ export function parseOutboundRequestContext(value: unknown): OutboundRequestCont
       throw new Error('invalid prototype');
     }
     const keys = Reflect.ownKeys(value);
-    if (
-      keys.length !== 2 ||
-      !keys.includes('correlationId') ||
-      !keys.includes('traceId')
-    ) {
+    if (keys.length !== 2 || !keys.includes('correlationId') || !keys.includes('traceId')) {
       throw new Error('invalid keys');
     }
     const correlationId = readExactDataProperty(value, 'correlationId');
@@ -59,11 +47,7 @@ export function parseOutboundRequestContext(value: unknown): OutboundRequestCont
 }
 
 export function isOutboundRequestContext(value: unknown): value is OutboundRequestContext {
-  return Boolean(
-    value &&
-    typeof value === 'object' &&
-    issuedOutboundRequestContexts.has(value),
-  );
+  return Boolean(value && typeof value === 'object' && issuedOutboundRequestContexts.has(value));
 }
 
 export function createOutboundRequestContext(

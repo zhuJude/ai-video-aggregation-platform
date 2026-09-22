@@ -5,7 +5,14 @@ import { requireAdminSession, type ServerGuardContext } from '../../lib/server-g
 
 export async function renderSecureLayout(children: ReactNode, context?: ServerGuardContext) {
   const { claims } = await requireAdminSession(context);
-  return <AdminShell identity={claims.subjectId} subject={{ dataScope: claims.dataScope, permissions: claims.permissions }}>{children}</AdminShell>;
+  return (
+    <AdminShell
+      identity={claims.subjectId}
+      subject={{ dataScope: claims.dataScope, permissions: claims.permissions }}
+    >
+      {children}
+    </AdminShell>
+  );
 }
 
 export default async function SecureLayout({ children }: Readonly<{ children: ReactNode }>) {

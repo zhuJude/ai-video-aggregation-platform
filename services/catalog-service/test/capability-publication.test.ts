@@ -44,9 +44,7 @@ describe('capability publication', () => {
 
     expect(result.capability.status).toBe('PUBLISHED');
     expect(result.capability.contentSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(() => editPublished(result.capability, {})).toThrow(
-      'CAPABILITY_VERSION_IMMUTABLE',
-    );
+    expect(() => editPublished(result.capability, {})).toThrow('CAPABILITY_VERSION_IMMUTABLE');
   });
 
   it('rejects a document that is not a canonical capability document', () => {

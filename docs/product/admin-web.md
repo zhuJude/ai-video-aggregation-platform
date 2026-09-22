@@ -4,31 +4,31 @@
 
 ## 路由目录
 
-| 路由 | 用途 | 读取权限 |
-| --- | --- | --- |
-| `/login` | 密码挑战、TOTP、多因素失败与锁定提示 | 公共入口 |
-| `/overview` | 运营、任务、财务、供应商风险总览 | `overview:read` |
-| `/users` | 用户检索、精确手机号查询和导出 | `users:read` |
-| `/users/[id]` | 账号、任务、钱包、订单、工单、审计详情 | `users:read` |
-| `/providers` | 供应商目录与元数据创建 | `providers:read` |
-| `/providers/[id]` | 健康、接口、凭证掩码、维护窗口与操作 | `providers:read` |
-| `/models` | 模型及能力版本目录 | `models:read` |
-| `/models/[id]/capabilities` | JSON Schema/UI Schema 编辑、校验、发布、回滚 | `models:read` |
-| `/pricing` | 定价规则草稿、影响预览、发布与回滚 | `pricing:read` |
-| `/routing` | 路由策略、候选模拟、发布与回滚 | `routing:read` |
-| `/tasks` | 任务、队列状态、暂停/恢复与优先级 | `tasks:read` |
-| `/tasks/[id]` | 任务时间线、脱敏原始报文、重试/切换/取消/修复 | `tasks:read` |
-| `/finance` | 跳转到财务订单 | `finance:read` |
-| `/finance/orders` | 支付订单、回调、退款和异常处理 | `finance:read` |
-| `/finance/reconciliation` | 渠道对账、补偿申请和双人审批 | `finance:read` |
-| `/finance/ledger` | 不可变复式账本只读查询 | `finance:read` |
-| `/finance/invoices` | 发票审核、签发和拒绝 | `finance:read` |
-| `/runbooks/wallet-payment` | 钱包/支付/对账处置手册 | 已登录管理员 |
-| `/content` | 公告草稿、校验、发布、排序、下架、回滚 | `content:read` |
-| `/tickets` | 工单公开回复、内部备注和状态流转 | `tickets:read` |
-| `/iam` | 管理员、角色、权限和数据范围 | `iam:read` |
-| `/audit` | 审计检索和签名导出 | `audit:read` |
-| `/system` | 功能开关、运行配置和死信重放 | `system:read` |
+| 路由                        | 用途                                          | 读取权限         |
+| --------------------------- | --------------------------------------------- | ---------------- |
+| `/login`                    | 密码挑战、TOTP、多因素失败与锁定提示          | 公共入口         |
+| `/overview`                 | 运营、任务、财务、供应商风险总览              | `overview:read`  |
+| `/users`                    | 用户检索、精确手机号查询和导出                | `users:read`     |
+| `/users/[id]`               | 账号、任务、钱包、订单、工单、审计详情        | `users:read`     |
+| `/providers`                | 供应商目录与元数据创建                        | `providers:read` |
+| `/providers/[id]`           | 健康、接口、凭证掩码、维护窗口与操作          | `providers:read` |
+| `/models`                   | 模型及能力版本目录                            | `models:read`    |
+| `/models/[id]/capabilities` | JSON Schema/UI Schema 编辑、校验、发布、回滚  | `models:read`    |
+| `/pricing`                  | 定价规则草稿、影响预览、发布与回滚            | `pricing:read`   |
+| `/routing`                  | 路由策略、候选模拟、发布与回滚                | `routing:read`   |
+| `/tasks`                    | 任务、队列状态、暂停/恢复与优先级             | `tasks:read`     |
+| `/tasks/[id]`               | 任务时间线、脱敏原始报文、重试/切换/取消/修复 | `tasks:read`     |
+| `/finance`                  | 跳转到财务订单                                | `finance:read`   |
+| `/finance/orders`           | 支付订单、回调、退款和异常处理                | `finance:read`   |
+| `/finance/reconciliation`   | 渠道对账、补偿申请和双人审批                  | `finance:read`   |
+| `/finance/ledger`           | 不可变复式账本只读查询                        | `finance:read`   |
+| `/finance/invoices`         | 发票审核、签发和拒绝                          | `finance:read`   |
+| `/runbooks/wallet-payment`  | 钱包/支付/对账处置手册                        | 已登录管理员     |
+| `/content`                  | 公告草稿、校验、发布、排序、下架、回滚        | `content:read`   |
+| `/tickets`                  | 工单公开回复、内部备注和状态流转              | `tickets:read`   |
+| `/iam`                      | 管理员、角色、权限和数据范围                  | `iam:read`       |
+| `/audit`                    | 审计检索和签名导出                            | `audit:read`     |
+| `/system`                   | 功能开关、运行配置和死信重放                  | `system:read`    |
 
 ## 权限键
 

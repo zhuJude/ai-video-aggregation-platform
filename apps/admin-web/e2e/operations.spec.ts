@@ -53,7 +53,9 @@ test('operator completes MFA and the audited operations flow', async ({ browser 
   const page = await context.newPage();
   await login(page);
   await expect(page.getByRole('region', { name: '运营总览' })).toBeVisible();
-  await page.locator('nextjs-portal').evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+  await page
+    .locator('nextjs-portal')
+    .evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
   await page.screenshot({ fullPage: true, path: 'output/playwright/acceptance-overview.png' });
 
   await page.goto('/providers');
@@ -107,7 +109,9 @@ test('operator completes MFA and the audited operations flow', async ({ browser 
   await adjustment.getByLabel('复核人').selectOption(IDS.reviewer);
   await adjustment.getByRole('button', { name: '获取权威预览' }).click();
   await expect(page.getByText(/调整后：110/u)).toBeVisible();
-  await adjustment.getByRole('checkbox', { name: '我已核对影响范围，并确认提交双人审批申请' }).check();
+  await adjustment
+    .getByRole('checkbox', { name: '我已核对影响范围，并确认提交双人审批申请' })
+    .check();
   await adjustment.getByRole('button', { name: '提交申请' }).click();
   await expect(page.getByText(/申请待审批/u)).toBeVisible();
 
@@ -153,7 +157,9 @@ test('operator completes MFA and the audited operations flow', async ({ browser 
   await reviewer.close();
 
   await page.goto('/finance/orders');
-  await expect(page.getByText(new RegExp(`对账案件 ${IDS.reconciliation} 已修复`, 'u'))).toBeVisible();
+  await expect(
+    page.getByText(new RegExp(`对账案件 ${IDS.reconciliation} 已修复`, 'u')),
+  ).toBeVisible();
 
   await page.goto('/content');
   const publish = page.getByRole('button', { name: '发布内容' });
@@ -174,7 +180,9 @@ test('operator completes MFA and the audited operations flow', async ({ browser 
   await expectFixtureMutation(context, 'ticketResolved');
   await page.reload();
   await expect(page.getByText('RESOLVED')).toBeVisible();
-  await page.locator('nextjs-portal').evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+  await page
+    .locator('nextjs-portal')
+    .evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
   await page.screenshot({ fullPage: true, path: 'output/playwright/acceptance-core-flow.png' });
   await context.close();
 });

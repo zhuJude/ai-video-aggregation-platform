@@ -50,10 +50,18 @@ describe('IAM role administration and audit', () => {
       service.bootstrapSuperAdmin({ adminId: rootId, proof: 'wrong', context: systemContext() }),
     ).rejects.toMatchObject({ code: 'INVALID_BOOTSTRAP_PROOF' });
     await expect(
-      service.bootstrapSuperAdmin({ adminId: rootId, proof: 'bootstrap-proof-2026', context: systemContext() }),
+      service.bootstrapSuperAdmin({
+        adminId: rootId,
+        proof: 'bootstrap-proof-2026',
+        context: systemContext(),
+      }),
     ).resolves.toMatchObject({ protected: true, dataScope: 'ALL' });
     await expect(
-      service.bootstrapSuperAdmin({ adminId: secondId, proof: 'bootstrap-proof-2026', context: systemContext() }),
+      service.bootstrapSuperAdmin({
+        adminId: secondId,
+        proof: 'bootstrap-proof-2026',
+        context: systemContext(),
+      }),
     ).rejects.toMatchObject({ code: 'SUPER_ADMIN_ALREADY_BOOTSTRAPPED' });
   });
 
@@ -183,13 +191,15 @@ describe('IAM role administration and audit', () => {
         },
       }),
     ).resolves.toMatchObject({ kind: 'revoked' });
-    await expect(auth.finalizeMfaSession({
-      adminId: rootId,
-      sessionId: pending.sessionId,
-      familyId: pending.familyId,
-      challengeDigest: pending.challengeDigest,
-      now,
-    })).resolves.toBeNull();
+    await expect(
+      auth.finalizeMfaSession({
+        adminId: rootId,
+        sessionId: pending.sessionId,
+        familyId: pending.familyId,
+        challengeDigest: pending.challengeDigest,
+        now,
+      }),
+    ).resolves.toBeNull();
     await expect(
       service.revokeRole({
         adminId: rootId,
@@ -204,12 +214,15 @@ describe('IAM role administration and audit', () => {
   it('fails closed when the memory auth participant is not attached', async () => {
     const rootId = generateUuidV7();
     const coordinator = new MemoryAdminAccessCoordinator();
-    const repository = new MemoryIamAdministrationRepository({
-      admins: [{ id: rootId, email: 'detached-root@example.test', status: 'ACTIVE' }],
-      permissions: [
-        { id: generateUuidV7(), key: 'iam:admins:write', description: 'Manage admins' },
-      ],
-    }, coordinator);
+    const repository = new MemoryIamAdministrationRepository(
+      {
+        admins: [{ id: rootId, email: 'detached-root@example.test', status: 'ACTIVE' }],
+        permissions: [
+          { id: generateUuidV7(), key: 'iam:admins:write', description: 'Manage admins' },
+        ],
+      },
+      coordinator,
+    );
     const service = new IamAdministrationService({
       repository,
       bootstrapAuthorizer: { authorize: () => Promise.resolve(true) },
@@ -258,7 +271,9 @@ describe('IAM role administration and audit', () => {
     const rolePage = await service.listRoles({ context: actorContext(rootId), limit: 1 });
     expect(rolePage.items[0]?.name).toBe('auditor');
     expect(typeof rolePage.nextCursor).toBe('string');
-    await expect(service.listRoles({ context: actorContext(rootId), limit: 101 })).rejects.toMatchObject({
+    await expect(
+      service.listRoles({ context: actorContext(rootId), limit: 101 }),
+    ).rejects.toMatchObject({
       code: 'INVALID_ROLE_QUERY',
     });
   });
@@ -307,12 +322,14 @@ describe('IAM role administration and audit', () => {
       roleId: ownReader.id,
       context: actorContext(rootId),
     });
-    await expect(repository.assignRole({
-      adminId: targetId,
-      roleId: ownReader.id,
-      assignedBy: targetId,
-      audit: repositoryDecision(managerId, targetId),
-    })).resolves.toBe('actor_denied');
+    await expect(
+      repository.assignRole({
+        adminId: targetId,
+        roleId: ownReader.id,
+        assignedBy: targetId,
+        audit: repositoryDecision(managerId, targetId),
+      }),
+    ).resolves.toBe('actor_denied');
     await expect(
       service.assignRole({
         adminId: managerId,
@@ -422,26 +439,26 @@ describe('IAM role administration and audit', () => {
 
 function fixture(adminIds: readonly string[]) {
   const coordinator = new MemoryAdminAccessCoordinator();
-  const repository = new MemoryIamAdministrationRepository({
-    admins: adminIds.map((id, index) => ({
-      id,
-      email: `admin-${String(index)}@example.test`,
-      status: 'ACTIVE' as const,
-    })),
-    permissions: [
-      { id: generateUuidV7(), key: 'iam:roles:write', description: 'Manage roles' },
-      { id: generateUuidV7(), key: 'iam:roles:read', description: 'Read roles' },
-      { id: generateUuidV7(), key: 'iam:admins:write', description: 'Manage admins' },
-      { id: generateUuidV7(), key: 'iam:permissions:read', description: 'Read permissions' },
-      { id: generateUuidV7(), key: 'audit:read', description: 'Read audit' },
-      { id: generateUuidV7(), key: 'users:read', description: 'Read users' },
-      { id: generateUuidV7(), key: 'wallet:adjust', description: 'Adjust wallets' },
-    ],
-  }, coordinator);
-  const auth = new MemoryAdminAuthRepository(
-    adminIds.map(adminAuthRecord),
+  const repository = new MemoryIamAdministrationRepository(
+    {
+      admins: adminIds.map((id, index) => ({
+        id,
+        email: `admin-${String(index)}@example.test`,
+        status: 'ACTIVE' as const,
+      })),
+      permissions: [
+        { id: generateUuidV7(), key: 'iam:roles:write', description: 'Manage roles' },
+        { id: generateUuidV7(), key: 'iam:roles:read', description: 'Read roles' },
+        { id: generateUuidV7(), key: 'iam:admins:write', description: 'Manage admins' },
+        { id: generateUuidV7(), key: 'iam:permissions:read', description: 'Read permissions' },
+        { id: generateUuidV7(), key: 'audit:read', description: 'Read audit' },
+        { id: generateUuidV7(), key: 'users:read', description: 'Read users' },
+        { id: generateUuidV7(), key: 'wallet:adjust', description: 'Adjust wallets' },
+      ],
+    },
     coordinator,
   );
+  const auth = new MemoryAdminAuthRepository(adminIds.map(adminAuthRecord), coordinator);
   const service = new IamAdministrationService({
     repository,
     bootstrapAuthorizer: {
@@ -515,29 +532,33 @@ async function pendingSession(
   const sessionId = generateUuidV7();
   const familyId = generateUuidV7();
   const refreshTokenDigest = `${label}-refresh-${generateUuidV7()}`;
-  await expect(auth.createMfaChallenge({
-    id: challengeId,
-    adminId,
-    challengeDigest,
-    expiresAt: new Date(now.getTime() + 5 * 60_000),
-    createdAt: now,
-  })).resolves.toBe('created');
-  await expect(auth.completeTotpChallenge({
-    challengeDigest,
-    now,
-    maxAttempts: 5,
-    failureWindowMs: 5 * 60_000,
-    lockDurationMs: 10 * 60_000,
-    timeStep,
-    session: {
-      id: sessionId,
+  await expect(
+    auth.createMfaChallenge({
+      id: challengeId,
       adminId,
-      familyId,
-      refreshTokenDigest,
-      deviceName: label,
-      expiresAt: new Date(now.getTime() + 60_000),
+      challengeDigest,
+      expiresAt: new Date(now.getTime() + 5 * 60_000),
       createdAt: now,
-    },
-  })).resolves.toMatchObject({ kind: 'authenticated' });
+    }),
+  ).resolves.toBe('created');
+  await expect(
+    auth.completeTotpChallenge({
+      challengeDigest,
+      now,
+      maxAttempts: 5,
+      failureWindowMs: 5 * 60_000,
+      lockDurationMs: 10 * 60_000,
+      timeStep,
+      session: {
+        id: sessionId,
+        adminId,
+        familyId,
+        refreshTokenDigest,
+        deviceName: label,
+        expiresAt: new Date(now.getTime() + 60_000),
+        createdAt: now,
+      },
+    }),
+  ).resolves.toMatchObject({ kind: 'authenticated' });
   return { challengeDigest, sessionId, familyId, refreshTokenDigest };
 }

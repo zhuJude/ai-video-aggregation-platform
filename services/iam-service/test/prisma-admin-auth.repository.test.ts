@@ -356,7 +356,11 @@ describe('PrismaAdminAuthRepository transactional contract', () => {
         pendingExpiresAt: new Date('2026-09-01T08:04:00Z'),
       };
     refresh.transaction.adminSession.findUnique
-      .mockResolvedValueOnce({ id: current.id, adminId: current.adminId, familyId: current.familyId })
+      .mockResolvedValueOnce({
+        id: current.id,
+        adminId: current.adminId,
+        familyId: current.familyId,
+      })
       .mockResolvedValueOnce({
         id: successor.id,
         adminId: successor.adminId,
@@ -376,7 +380,11 @@ describe('PrismaAdminAuthRepository transactional contract', () => {
     ).resolves.toMatchObject({ id: successor.id });
     const release = fakePrisma();
     release.transaction.adminSession.findUnique
-      .mockResolvedValueOnce({ id: current.id, adminId: current.adminId, familyId: current.familyId })
+      .mockResolvedValueOnce({
+        id: current.id,
+        adminId: current.adminId,
+        familyId: current.familyId,
+      })
       .mockResolvedValueOnce({ id: successor.id })
       .mockResolvedValueOnce(current)
       .mockResolvedValueOnce(successor);

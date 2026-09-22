@@ -57,13 +57,7 @@ export class IamAdministrationService {
     const result = await this.dependencies.repository.bootstrapSuperAdmin({
       adminId: input.adminId,
       roleId: this.nextUuid('INVALID_ROLE_ID'),
-      audit: this.decision(
-        'super-admin.bootstrap',
-        'admin',
-        input.adminId,
-        context,
-        'SUCCESS',
-      ),
+      audit: this.decision('super-admin.bootstrap', 'admin', input.adminId, context, 'SUCCESS'),
     });
     if (result.kind === 'already_bootstrapped') {
       throw stableError('SUPER_ADMIN_ALREADY_BOOTSTRAPPED');
@@ -116,7 +110,8 @@ export class IamAdministrationService {
     if (result.kind === 'name_conflict') throw stableError('ROLE_NAME_CONFLICT');
     if (result.kind === 'permission_missing') throw stableError('PERMISSION_NOT_FOUND');
     if (result.kind === 'actor_denied') this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
-    if (result.kind === 'capability_exceeded') this.authorizationDenied('CAPABILITY_CEILING_EXCEEDED');
+    if (result.kind === 'capability_exceeded')
+      this.authorizationDenied('CAPABILITY_CEILING_EXCEEDED');
     return result.role;
   }
 
@@ -295,7 +290,10 @@ export class IamAdministrationService {
     if (!['ALL', 'OWN', 'ASSIGNED'].includes(input.dataScope)) {
       throw stableError('INVALID_DATA_SCOPE');
     }
-    if (!isStringArray(input.permissionKeys) || input.permissionKeys.length > MAX_ROLE_PERMISSIONS) {
+    if (
+      !isStringArray(input.permissionKeys) ||
+      input.permissionKeys.length > MAX_ROLE_PERMISSIONS
+    ) {
       throw stableError('INVALID_PERMISSION_KEYS');
     }
     const permissionKeys = [...new Set(input.permissionKeys)].sort();
@@ -314,7 +312,8 @@ export class IamAdministrationService {
   ): ManagementRequestContext {
     const context = { ...input, occurredAt: input.occurredAt ?? this.now() };
     validateManagementContext(context);
-    if (!systemAllowed && context.actorId === null) this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
+    if (!systemAllowed && context.actorId === null)
+      this.authorizationDenied('ADMIN_AUTHORIZATION_DENIED');
     return context;
   }
 
@@ -404,20 +403,25 @@ function validFilter(value: string, max: number): boolean {
 }
 
 function isStringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && (value as readonly unknown[]).every((entry) => typeof entry === 'string');
+  return (
+    Array.isArray(value) &&
+    (value as readonly unknown[]).every((entry) => typeof entry === 'string')
+  );
 }
 
 function roleMutationError(kind: string): string {
-  return {
-    not_found: 'ROLE_NOT_FOUND',
-    protected: 'PROTECTED_ROLE',
-    version_conflict: 'ROLE_VERSION_CONFLICT',
-    name_conflict: 'ROLE_NAME_CONFLICT',
-    permission_missing: 'PERMISSION_NOT_FOUND',
-    actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
-    capability_exceeded: 'CAPABILITY_CEILING_EXCEEDED',
-    assigned: 'ROLE_ASSIGNED',
-  }[kind] ?? 'ROLE_MUTATION_DENIED';
+  return (
+    {
+      not_found: 'ROLE_NOT_FOUND',
+      protected: 'PROTECTED_ROLE',
+      version_conflict: 'ROLE_VERSION_CONFLICT',
+      name_conflict: 'ROLE_NAME_CONFLICT',
+      permission_missing: 'PERMISSION_NOT_FOUND',
+      actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
+      capability_exceeded: 'CAPABILITY_CEILING_EXCEEDED',
+      assigned: 'ROLE_ASSIGNED',
+    }[kind] ?? 'ROLE_MUTATION_DENIED'
+  );
 }
 
 function stableError(code: string): Error & { code: string } {

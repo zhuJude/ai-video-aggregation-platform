@@ -619,8 +619,12 @@ export class PrismaAdminAuthRepository implements AdminAuthRepository {
         `iam:session-family:${locatedCurrent.familyId}`,
       ]);
       const databaseTime = await loadDatabaseClock(transaction);
-      const current = await transaction.adminSession.findUnique({ where: { id: locatedCurrent.id } }),
-        successor = await transaction.adminSession.findUnique({ where: { id: locatedSuccessor.id } });
+      const current = await transaction.adminSession.findUnique({
+          where: { id: locatedCurrent.id },
+        }),
+        successor = await transaction.adminSession.findUnique({
+          where: { id: locatedSuccessor.id },
+        });
       if (!current || !successor) return;
       if (successor.status === 'PENDING' && successor.pendingPredecessorId === current.id)
         await cancelPendingRefreshSession(transaction, successor, databaseTime);
@@ -1044,4 +1048,6 @@ function mapSession(session: AdminSession): AdminSessionRecord {
   };
 }
 
-function stableError(code:string):Error&{code:string}{return Object.assign(new Error(code),{code});}
+function stableError(code: string): Error & { code: string } {
+  return Object.assign(new Error(code), { code });
+}

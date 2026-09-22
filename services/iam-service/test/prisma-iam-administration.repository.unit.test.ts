@@ -49,51 +49,74 @@ describe('PrismaIamAdministrationRepository without an external database', () =>
     const roleQuery = record(fixture.prisma.role.findMany.mock.calls.at(-1)?.[0]);
     expect(Array.isArray(record(roleQuery['where'])['OR'])).toBe(true);
     expect(roleQuery['take']).toBe(2);
-    await expect(fixture.repository.listRoles({ cursor: 'not-a-cursor', limit: 1 }))
-      .rejects.toMatchObject({ code: 'INVALID_ROLE_QUERY' });
+    await expect(
+      fixture.repository.listRoles({ cursor: 'not-a-cursor', limit: 1 }),
+    ).rejects.toMatchObject({ code: 'INVALID_ROLE_QUERY' });
   });
 
   it('appends redacted audit data through the configured transaction', async () => {
     const fixture = createFixture();
-    await fixture.repository.appendAudit(audit({
-      before: { password: 'never-log', nested: { token: 'also-secret' } },
-      after: { allowed: true },
-    }));
+    await fixture.repository.appendAudit(
+      audit({
+        before: { password: 'never-log', nested: { token: 'also-secret' } },
+        after: { allowed: true },
+      }),
+    );
     expect(fixture.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
-      isolationLevel: 'ReadCommitted', maxWait: 5_000, timeout: 10_000,
+      isolationLevel: 'ReadCommitted',
+      maxWait: 5_000,
+      timeout: 10_000,
     });
     const persisted = record(record(fixture.prisma.auditEvent.create.mock.calls[0]?.[0])['data']);
     expect(persisted['before']).toEqual({
-      password: '[REDACTED]', nested: { token: '[REDACTED]' },
+      password: '[REDACTED]',
+      nested: { token: '[REDACTED]' },
     });
     expect(persisted['after']).toEqual({ allowed: true });
   });
 
   it('bootstraps a protected super administrator and records denied alternatives', async () => {
     const fixture = createFixture();
-    await expect(fixture.repository.bootstrapSuperAdmin({
-      adminId: ADMIN_ID, roleId: ROLE_ID, audit: audit(),
-    })).resolves.toMatchObject({ kind: 'created', role: { protected: true, name: 'SUPER_ADMIN' } });
-    expect(fixture.prisma.adminRole.create).toHaveBeenCalledWith({ data: {
-      adminId: ADMIN_ID, roleId: ROLE_ID, assignedBy: ADMIN_ID,
-    } });
+    await expect(
+      fixture.repository.bootstrapSuperAdmin({
+        adminId: ADMIN_ID,
+        roleId: ROLE_ID,
+        audit: audit(),
+      }),
+    ).resolves.toMatchObject({ kind: 'created', role: { protected: true, name: 'SUPER_ADMIN' } });
+    expect(fixture.prisma.adminRole.create).toHaveBeenCalledWith({
+      data: {
+        adminId: ADMIN_ID,
+        roleId: ROLE_ID,
+        assignedBy: ADMIN_ID,
+      },
+    });
     expect(advisorySql(fixture)).toContain('SELECT 1::integer AS "acquired"');
 
     fixture.prisma.role.findFirst.mockResolvedValueOnce(roleRow({ protected: true }));
-    await expect(fixture.repository.bootstrapSuperAdmin({
-      adminId: ADMIN_ID, roleId: ROLE_ID, audit: audit(),
-    })).resolves.toEqual({ kind: 'already_bootstrapped' });
+    await expect(
+      fixture.repository.bootstrapSuperAdmin({
+        adminId: ADMIN_ID,
+        roleId: ROLE_ID,
+        audit: audit(),
+      }),
+    ).resolves.toEqual({ kind: 'already_bootstrapped' });
 
     fixture.prisma.adminUser.findUnique.mockResolvedValueOnce({ ...admin(), status: 'DISABLED' });
-    await expect(fixture.repository.bootstrapSuperAdmin({
-      adminId: ADMIN_ID, roleId: ROLE_ID, audit: audit(),
-    })).resolves.toEqual({ kind: 'admin_inactive' });
+    await expect(
+      fixture.repository.bootstrapSuperAdmin({
+        adminId: ADMIN_ID,
+        roleId: ROLE_ID,
+        audit: audit(),
+      }),
+    ).resolves.toEqual({ kind: 'admin_inactive' });
   });
 
   it('creates, updates, and deletes roles atomically', async () => {
     const fixture = createFixture();
     const created = await fixture.repository.createRole({
-      role: roleInput(), audit: audit(),
+      role: roleInput(),
+      audit: audit(),
     });
     expect(created).toMatchObject({ kind: 'created', role: { permissionKeys: ['wallet:adjust'] } });
     expect(fixture.prisma.rolePermission.createMany).toHaveBeenCalled();
@@ -108,65 +131,101 @@ describe('PrismaIamAdministrationRepository without an external database', () =>
       audit: audit(),
     });
     expect(updated.kind).toBe('updated');
-    expect(fixture.prisma.role.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: ROLE_ID, version: 1, protected: false },
-    }));
+    expect(fixture.prisma.role.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: ROLE_ID, version: 1, protected: false },
+      }),
+    );
 
-    await expect(fixture.repository.deleteRole({
-      roleId: ROLE_ID, expectedVersion: 1, audit: audit(),
-    })).resolves.toBe('deleted');
+    await expect(
+      fixture.repository.deleteRole({
+        roleId: ROLE_ID,
+        expectedVersion: 1,
+        audit: audit(),
+      }),
+    ).resolves.toBe('deleted');
     expect(fixture.prisma.role.deleteMany).toHaveBeenCalled();
   });
 
   it('returns stable role mutation outcomes for lock-time conflicts', async () => {
     const fixture = createFixture();
     fixture.prisma.adminUser.findFirst.mockResolvedValueOnce(null);
-    await expect(fixture.repository.createRole({ role: roleInput(), audit: audit() }))
-      .resolves.toEqual({ kind: 'actor_denied' });
+    await expect(
+      fixture.repository.createRole({ role: roleInput(), audit: audit() }),
+    ).resolves.toEqual({ kind: 'actor_denied' });
 
     fixture.prisma.role.findUnique.mockResolvedValueOnce(null);
-    await expect(fixture.repository.updateRole({
-      roleId: ROLE_ID, expectedVersion: 1, name: 'missing-role', description: 'Missing',
-      dataScope: 'OWN', permissionKeys: [], audit: audit(),
-    })).resolves.toEqual({ kind: 'not_found' });
+    await expect(
+      fixture.repository.updateRole({
+        roleId: ROLE_ID,
+        expectedVersion: 1,
+        name: 'missing-role',
+        description: 'Missing',
+        dataScope: 'OWN',
+        permissionKeys: [],
+        audit: audit(),
+      }),
+    ).resolves.toEqual({ kind: 'not_found' });
 
     fixture.prisma.role.findUnique.mockResolvedValueOnce(roleRow({ protected: true }));
-    await expect(fixture.repository.deleteRole({ roleId: ROLE_ID, expectedVersion: 1, audit: audit() }))
-      .resolves.toBe('protected');
+    await expect(
+      fixture.repository.deleteRole({ roleId: ROLE_ID, expectedVersion: 1, audit: audit() }),
+    ).resolves.toBe('protected');
   });
 
   it('assigns and revokes roles with lock-time authorization checks', async () => {
     const fixture = createFixture();
-    await expect(fixture.repository.assignRole({
-      adminId: ADMIN_ID, roleId: ROLE_ID, assignedBy: ACTOR_ID, audit: audit(),
-    })).resolves.toBe('assigned');
+    await expect(
+      fixture.repository.assignRole({
+        adminId: ADMIN_ID,
+        roleId: ROLE_ID,
+        assignedBy: ACTOR_ID,
+        audit: audit(),
+      }),
+    ).resolves.toBe('assigned');
 
     fixture.prisma.adminRole.findUnique.mockResolvedValueOnce({
-      adminId: ADMIN_ID, roleId: ROLE_ID, assignedBy: ACTOR_ID, assignedAt: NOW,
+      adminId: ADMIN_ID,
+      roleId: ROLE_ID,
+      assignedBy: ACTOR_ID,
+      assignedAt: NOW,
     });
-    await expect(fixture.repository.revokeRole({
-      adminId: ADMIN_ID, roleId: ROLE_ID, expectedAssignment: true, audit: audit(),
-    })).resolves.toBe('revoked');
+    await expect(
+      fixture.repository.revokeRole({
+        adminId: ADMIN_ID,
+        roleId: ROLE_ID,
+        expectedAssignment: true,
+        audit: audit(),
+      }),
+    ).resolves.toBe('revoked');
 
-    await expect(fixture.repository.assignRole({
-      adminId: ADMIN_ID, roleId: ROLE_ID, assignedBy: ADMIN_ID, audit: audit(),
-    })).resolves.toBe('actor_denied');
+    await expect(
+      fixture.repository.assignRole({
+        adminId: ADMIN_ID,
+        roleId: ROLE_ID,
+        assignedBy: ADMIN_ID,
+        audit: audit(),
+      }),
+    ).resolves.toBe('actor_denied');
   });
 
   it('disables an administrator and atomically clears pending and active sessions', async () => {
     const fixture = createFixture();
-    await expect(fixture.repository.disableAdmin({ adminId: ADMIN_ID, audit: audit() }))
-      .resolves.toBe('disabled');
+    await expect(
+      fixture.repository.disableAdmin({ adminId: ADMIN_ID, audit: audit() }),
+    ).resolves.toBe('disabled');
     expect(fixture.prisma.adminUser.updateMany).toHaveBeenCalledWith({
-      where: { id: ADMIN_ID, status: 'ACTIVE' }, data: { status: 'DISABLED' },
+      where: { id: ADMIN_ID, status: 'ACTIVE' },
+      data: { status: 'DISABLED' },
     });
     expect(fixture.prisma.mfaChallenge.updateMany).toHaveBeenCalled();
     expect(fixture.prisma.mfaRecoveryCode.updateMany).toHaveBeenCalled();
     expect(fixture.prisma.adminSession.updateMany).toHaveBeenCalledTimes(2);
 
     fixture.prisma.adminUser.findUnique.mockResolvedValueOnce(null);
-    await expect(fixture.repository.disableAdmin({ adminId: ADMIN_ID, audit: audit() }))
-      .resolves.toBe('not_found');
+    await expect(
+      fixture.repository.disableAdmin({ adminId: ADMIN_ID, audit: audit() }),
+    ).resolves.toBe('not_found');
   });
 
   it('queries a bounded audit page with filters and rejects malformed cursors', async () => {
@@ -187,10 +246,14 @@ describe('PrismaIamAdministrationRepository without an external database', () =>
     });
     expect(first.items).toHaveLength(1);
     expect(first.nextCursor).toEqual(expect.any(String));
-    const second = await fixture.repository.queryAudit({ cursor: first.nextCursor ?? '', limit: 1 });
+    const second = await fixture.repository.queryAudit({
+      cursor: first.nextCursor ?? '',
+      limit: 1,
+    });
     expect(Array.isArray(second.items)).toBe(true);
-    await expect(fixture.repository.queryAudit({ cursor: 'bad', limit: 1 }))
-      .rejects.toMatchObject({ code: 'INVALID_AUDIT_QUERY' });
+    await expect(fixture.repository.queryAudit({ cursor: 'bad', limit: 1 })).rejects.toMatchObject({
+      code: 'INVALID_AUDIT_QUERY',
+    });
   });
 
   it('supports an already-open transaction client without nesting a transaction', async () => {
@@ -198,7 +261,9 @@ describe('PrismaIamAdministrationRepository without an external database', () =>
     const transactionClient = { ...fixture.prisma };
     Reflect.deleteProperty(transactionClient, '$transaction');
     const repository = new PrismaIamAdministrationRepository(
-      transactionClient as unknown as ConstructorParameters<typeof PrismaIamAdministrationRepository>[0],
+      transactionClient as unknown as ConstructorParameters<
+        typeof PrismaIamAdministrationRepository
+      >[0],
     );
     await repository.appendAudit(audit());
     expect(fixture.prisma.auditEvent.create).toHaveBeenCalled();
@@ -232,7 +297,8 @@ function createFixture() {
         return typeof where['name'] === 'string' ? null : roleRow();
       }),
       create: vi.fn<(input?: unknown) => Promise<unknown>>(async (input: unknown) =>
-        roleRow(record(record(input)['data']))),
+        roleRow(record(record(input)['data'])),
+      ),
       updateMany: promiseMock({ count: 1 }),
       deleteMany: promiseMock({ count: 1 }),
     },
@@ -259,7 +325,8 @@ function createFixture() {
     },
   };
   transaction.mockImplementation(async (work: unknown) =>
-    (work as (client: typeof prisma) => Promise<unknown>)(prisma));
+    (work as (client: typeof prisma) => Promise<unknown>)(prisma),
+  );
   return {
     prisma,
     repository: new PrismaIamAdministrationRepository(
@@ -271,10 +338,14 @@ function createFixture() {
 function actor(protectedRole: boolean, dataScope: 'ALL' | 'OWN' | 'ASSIGNED') {
   return {
     ...admin(ACTOR_ID),
-    roles: [{ role: {
-      ...roleRow({ id: generateUuidV7(), protected: protectedRole, dataScope }),
-      permissions: [{ permission: { id: PERMISSION_ID, key: 'wallet:adjust' } }],
-    } }],
+    roles: [
+      {
+        role: {
+          ...roleRow({ id: generateUuidV7(), protected: protectedRole, dataScope }),
+          permissions: [{ permission: { id: PERMISSION_ID, key: 'wallet:adjust' } }],
+        },
+      },
+    ],
   };
 }
 
@@ -349,7 +420,7 @@ function auditRow(overrides: Readonly<Record<string, unknown>> = {}) {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 }
 
 function promiseMock(value: unknown) {

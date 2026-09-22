@@ -12,7 +12,8 @@ export class IdentityMetrics {
       'identity_login_failure_total',
       'identity_sms_rate_limit_rejections_total',
       'identity_readiness_adapter_stuck_total',
-    ] as const) this.counters.set(name, 0);
+    ] as const)
+      this.counters.set(name, 0);
   }
 
   increment(name: IdentityMetricName): void {

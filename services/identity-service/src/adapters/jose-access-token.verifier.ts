@@ -107,9 +107,7 @@ class AccessVerificationKeyDependencyError extends Error {
 function isAccessAuthenticationFailure(error: unknown): boolean {
   return (
     error instanceof joseErrors.JOSEError ||
-    (error instanceof Error &&
-      'code' in error &&
-      error.code === 'INVALID_ACCESS_TOKEN') ||
+    (error instanceof Error && 'code' in error && error.code === 'INVALID_ACCESS_TOKEN') ||
     (error instanceof Error &&
       (error.message === 'UNSUPPORTED_ACCESS_KEY' || error.message === 'UNKNOWN_ACCESS_KEY'))
   );

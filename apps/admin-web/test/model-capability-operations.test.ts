@@ -324,23 +324,31 @@ describe('model capability server boundary', () => {
     const action = createCapabilityAction({
       context: await context(['models:rollback']),
       createRequestContext: () => requestContext,
-      detailPort: { async getCapability() { return capability; } },
+      detailPort: {
+        async getCapability() {
+          return capability;
+        },
+      },
       port: { execute, previewRollback } as never,
     });
 
     await action(commandForm('ROLLBACK'));
 
-    expect(previewRollback).toHaveBeenCalledWith(expect.objectContaining({
-      expectedVersion: 7,
-      modelId,
-      sourceVersionId: versionId,
-      targetVersionId: publishedVersionId,
-    }));
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'ROLLBACK',
-      preflightToken: 'pf_rollbackpreviewtoken1234567890',
-      targetVersionId: publishedVersionId,
-    }));
+    expect(previewRollback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedVersion: 7,
+        modelId,
+        sourceVersionId: versionId,
+        targetVersionId: publishedVersionId,
+      }),
+    );
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'ROLLBACK',
+        preflightToken: 'pf_rollbackpreviewtoken1234567890',
+        targetVersionId: publishedVersionId,
+      }),
+    );
   });
 
   it('creates a new draft only from the current immutable published version', async () => {

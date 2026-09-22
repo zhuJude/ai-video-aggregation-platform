@@ -118,7 +118,9 @@ export function createHttpOperationsPorts(
         tiers: input.tiers,
         versionId: input.versionId,
       }),
-    previewRollback: (input: Parameters<NonNullable<PricingOperationsPort['previewRollback']>>[0]) =>
+    previewRollback: (
+      input: Parameters<NonNullable<PricingOperationsPort['previewRollback']>>[0],
+    ) =>
       request(input, '/admin/pricing/rollback-preview', {
         expectedVersion: input.expectedVersion,
         sourceVersionId: input.sourceVersionId,
@@ -162,7 +164,9 @@ export function createHttpOperationsPorts(
         expectedVersion: input.expectedVersion,
         versionId: input.versionId,
       }),
-    previewRollback: (input: Parameters<NonNullable<RoutingOperationsPort['previewRollback']>>[0]) =>
+    previewRollback: (
+      input: Parameters<NonNullable<RoutingOperationsPort['previewRollback']>>[0],
+    ) =>
       request(input, '/admin/routing/rollback-preview', {
         expectedVersion: input.expectedVersion,
         sourceVersionId: input.sourceVersionId,

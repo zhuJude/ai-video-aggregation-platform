@@ -475,10 +475,12 @@ describe('PrismaAdminAuthRepository integration', () => {
           now: base,
         }),
       ).resolves.toBeNull();
-      await expect(client.adminSession.findUniqueOrThrow({ where: { id: sessionId } })).resolves
-        .toMatchObject({ status: 'CANCELLED' });
-      await expect(client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: recoveryId } })).resolves
-        .toMatchObject({ consumedAt: null, reservedSessionId: null, reservedUntil: null });
+      await expect(
+        client.adminSession.findUniqueOrThrow({ where: { id: sessionId } }),
+      ).resolves.toMatchObject({ status: 'CANCELLED' });
+      await expect(
+        client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: recoveryId } }),
+      ).resolves.toMatchObject({ consumedAt: null, reservedSessionId: null, reservedUntil: null });
     },
   );
 
@@ -540,10 +542,12 @@ describe('PrismaAdminAuthRepository integration', () => {
           now: at(base, 1_000),
         }),
       ).resolves.toBeNull();
-      await expect(client.adminSession.findUniqueOrThrow({ where: { id: firstId } })).resolves
-        .toMatchObject({ status: 'CANCELLED' });
-      await expect(client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: recoveryId } })).resolves
-        .toMatchObject({ consumedAt: null, reservedSessionId: null });
+      await expect(
+        client.adminSession.findUniqueOrThrow({ where: { id: firstId } }),
+      ).resolves.toMatchObject({ status: 'CANCELLED' });
+      await expect(
+        client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: recoveryId } }),
+      ).resolves.toMatchObject({ consumedAt: null, reservedSessionId: null });
 
       await client.adminUser.update({ where: { id: adminId }, data: { status: 'ACTIVE' } });
       const retryId = register(fixtureSessionIds, generateUuidV7());
@@ -654,8 +658,9 @@ describe('PrismaAdminAuthRepository integration', () => {
       await revoker;
 
       await expect(finalizing).resolves.toBeNull();
-      await expect(client.adminSession.findUniqueOrThrow({ where: { id: successorId } })).resolves
-        .toMatchObject({ status: 'CANCELLED' });
+      await expect(
+        client.adminSession.findUniqueOrThrow({ where: { id: successorId } }),
+      ).resolves.toMatchObject({ status: 'CANCELLED' });
     },
   );
 
@@ -689,59 +694,58 @@ describe('PrismaAdminAuthRepository integration', () => {
         await finalizerClient.$disconnect();
         await disablerClient.$disconnect();
       }
-      await expect(client.adminSession.findUniqueOrThrow({ where: { id: fixture.sessionId } }))
-        .resolves.toMatchObject({ status: 'CANCELLED' });
-      await expect(client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: fixture.recoveryId } }))
-        .resolves.toMatchObject({ consumedAt: null, reservedSessionId: null });
+      await expect(
+        client.adminSession.findUniqueOrThrow({ where: { id: fixture.sessionId } }),
+      ).resolves.toMatchObject({ status: 'CANCELLED' });
+      await expect(
+        client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: fixture.recoveryId } }),
+      ).resolves.toMatchObject({ consumedAt: null, reservedSessionId: null });
     },
   );
 
-  integration(
-    'revokes a recovery session when finalization commits before disable',
-    async () => {
-      const client = requirePrisma();
-      const fixture = await createPendingRecoveryFixture(client, 'finalize-first-recovery');
-      const finalizerClient = createIntegrationClient();
-      const disablerClient = createIntegrationClient();
-      const finalizer = new PrismaAdminAuthRepository(finalizerClient);
-      const disabler = new PrismaAdminAuthRepository(disablerClient);
-      const barrier = await holdAdminAdvisoryLock(client, fixture.adminId);
-      try {
-        const finalizing = finalizer.finalizeMfaSession({
-          adminId: fixture.adminId,
-          sessionId: fixture.sessionId,
-          familyId: fixture.familyId,
-          challengeDigest: fixture.challengeDigest,
-          now: fixture.base,
-        });
-        await waitForAdvisoryWaiters(client, 1);
-        const disabling = disabler.disableAdminAccess(fixture.adminId, fixture.base);
-        await waitForAdvisoryWaiters(client, 2);
-        barrier.release();
-        await expect(finalizing).resolves.toMatchObject({ status: 'ACTIVE' });
-        await expect(disabling).resolves.toBe('disabled');
-      } finally {
-        barrier.release();
-        await barrier.done;
-        await finalizerClient.$disconnect();
-        await disablerClient.$disconnect();
-      }
-      const persisted = await client.adminSession.findUniqueOrThrow({
-        where: { id: fixture.sessionId },
+  integration('revokes a recovery session when finalization commits before disable', async () => {
+    const client = requirePrisma();
+    const fixture = await createPendingRecoveryFixture(client, 'finalize-first-recovery');
+    const finalizerClient = createIntegrationClient();
+    const disablerClient = createIntegrationClient();
+    const finalizer = new PrismaAdminAuthRepository(finalizerClient);
+    const disabler = new PrismaAdminAuthRepository(disablerClient);
+    const barrier = await holdAdminAdvisoryLock(client, fixture.adminId);
+    try {
+      const finalizing = finalizer.finalizeMfaSession({
+        adminId: fixture.adminId,
+        sessionId: fixture.sessionId,
+        familyId: fixture.familyId,
+        challengeDigest: fixture.challengeDigest,
+        now: fixture.base,
       });
-      expect(persisted.status).toBe('ACTIVE');
-      expect(persisted.revokedAt).toBeInstanceOf(Date);
-      await expect(
-        client.adminSession.count({
-          where: {
-            adminId: fixture.adminId,
-            status: { in: ['ACTIVE', 'PENDING'] },
-            revokedAt: null,
-          },
-        }),
-      ).resolves.toBe(0);
-    },
-  );
+      await waitForAdvisoryWaiters(client, 1);
+      const disabling = disabler.disableAdminAccess(fixture.adminId, fixture.base);
+      await waitForAdvisoryWaiters(client, 2);
+      barrier.release();
+      await expect(finalizing).resolves.toMatchObject({ status: 'ACTIVE' });
+      await expect(disabling).resolves.toBe('disabled');
+    } finally {
+      barrier.release();
+      await barrier.done;
+      await finalizerClient.$disconnect();
+      await disablerClient.$disconnect();
+    }
+    const persisted = await client.adminSession.findUniqueOrThrow({
+      where: { id: fixture.sessionId },
+    });
+    expect(persisted.status).toBe('ACTIVE');
+    expect(persisted.revokedAt).toBeInstanceOf(Date);
+    await expect(
+      client.adminSession.count({
+        where: {
+          adminId: fixture.adminId,
+          status: { in: ['ACTIVE', 'PENDING'] },
+          revokedAt: null,
+        },
+      }),
+    ).resolves.toBe(0);
+  });
 
   integration(
     'serializes disable before refresh finalization and keeps both tokens unusable',
@@ -771,7 +775,9 @@ describe('PrismaAdminAuthRepository integration', () => {
         await finalizerClient.$disconnect();
         await disablerClient.$disconnect();
       }
-      const current = await client.adminSession.findUniqueOrThrow({ where: { id: fixture.currentId } });
+      const current = await client.adminSession.findUniqueOrThrow({
+        where: { id: fixture.currentId },
+      });
       const successor = await client.adminSession.findUniqueOrThrow({
         where: { id: fixture.successorId },
       });
@@ -842,16 +848,21 @@ describe('PrismaAdminAuthRepository integration', () => {
       data: { pendingExpiresAt: at(databaseTime, 60_000) },
     });
 
-    await expect(repository.cleanupExpiredPendingSessions(at(databaseTime, 86_400_000), 1))
-      .resolves.toBe(1);
-    await expect(client.adminSession.findUniqueOrThrow({ where: { id: expired.sessionId } }))
-      .resolves.toMatchObject({ status: 'CANCELLED' });
-    await expect(client.adminSession.findUniqueOrThrow({ where: { id: future.sessionId } }))
-      .resolves.toMatchObject({ status: 'PENDING' });
-    await expect(client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: expired.recoveryId } }))
-      .resolves.toMatchObject({ consumedAt: null, reservedSessionId: null });
-    await expect(client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: future.recoveryId } }))
-      .resolves.toMatchObject({ consumedAt: null, reservedSessionId: future.sessionId });
+    await expect(
+      repository.cleanupExpiredPendingSessions(at(databaseTime, 86_400_000), 1),
+    ).resolves.toBe(1);
+    await expect(
+      client.adminSession.findUniqueOrThrow({ where: { id: expired.sessionId } }),
+    ).resolves.toMatchObject({ status: 'CANCELLED' });
+    await expect(
+      client.adminSession.findUniqueOrThrow({ where: { id: future.sessionId } }),
+    ).resolves.toMatchObject({ status: 'PENDING' });
+    await expect(
+      client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: expired.recoveryId } }),
+    ).resolves.toMatchObject({ consumedAt: null, reservedSessionId: null });
+    await expect(
+      client.mfaRecoveryCode.findUniqueOrThrow({ where: { id: future.recoveryId } }),
+    ).resolves.toMatchObject({ consumedAt: null, reservedSessionId: future.sessionId });
   });
 });
 

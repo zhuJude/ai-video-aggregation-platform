@@ -80,8 +80,7 @@ export function assertAdminDataScope(
 
   const allowed =
     claims.dataScope === 'ALL' ||
-    (claims.dataScope === 'OWN' &&
-      isSameUuidV7(resource.ownerAdminId, claims.subjectId)) ||
+    (claims.dataScope === 'OWN' && isSameUuidV7(resource.ownerAdminId, claims.subjectId)) ||
     (claims.dataScope === 'ASSIGNED' &&
       resource.assignedAdminIds.some((id) => isSameUuidV7(id, claims.subjectId)));
   if (!allowed) {

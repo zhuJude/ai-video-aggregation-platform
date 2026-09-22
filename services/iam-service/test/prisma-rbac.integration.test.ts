@@ -34,9 +34,8 @@ describe('Prisma IAM RBAC integration in an isolated test database', () => {
   beforeAll(async () => {
     if (!baseDatabaseUrl) return;
     try {
-      ({ PrismaIamAdministrationRepository: AdministrationRepository } = await import(
-        '../src/adapters/prisma-iam-administration.repository.js'
-      ));
+      ({ PrismaIamAdministrationRepository: AdministrationRepository } =
+        await import('../src/adapters/prisma-iam-administration.repository.js'));
       administrativeClient = new PgClient({ connectionString: baseDatabaseUrl });
       await administrativeClient.connect();
       await administrativeClient.query(
@@ -161,7 +160,11 @@ describe('Prisma IAM RBAC integration in an isolated test database', () => {
     const rolePage = await repository.listRoles({ limit: 1 });
     expect(rolePage.items).toHaveLength(1);
     expect(typeof rolePage.nextCursor).toBe('string');
-    const audits = await repository.queryAudit({ resourceType: 'role', resourceId: roleId, limit: 20 });
+    const audits = await repository.queryAudit({
+      resourceType: 'role',
+      resourceId: roleId,
+      limit: 20,
+    });
     expect(audits.items.some((event) => event.outcome === 'DENIED')).toBe(true);
     await expect(
       repository.deleteRole({
@@ -213,10 +216,14 @@ describe('Prisma IAM RBAC integration in an isolated test database', () => {
       nested: { recoveryCode: '[REDACTED]' },
     });
     await expect(
-      client.$executeRaw(Prisma.sql`UPDATE "audit_events" SET "action" = 'tampered' WHERE "id" = CAST(${audit.id} AS uuid)`),
+      client.$executeRaw(
+        Prisma.sql`UPDATE "audit_events" SET "action" = 'tampered' WHERE "id" = CAST(${audit.id} AS uuid)`,
+      ),
     ).rejects.toThrow();
     await expect(
-      client.$executeRaw(Prisma.sql`DELETE FROM "audit_events" WHERE "id" = CAST(${audit.id} AS uuid)`),
+      client.$executeRaw(
+        Prisma.sql`DELETE FROM "audit_events" WHERE "id" = CAST(${audit.id} AS uuid)`,
+      ),
     ).rejects.toThrow();
     await expect(client.$executeRawUnsafe('TRUNCATE TABLE "audit_events"')).rejects.toThrow();
     await expect(
@@ -226,158 +233,191 @@ describe('Prisma IAM RBAC integration in an isolated test database', () => {
     await expect(client.adminUser.count({ where: { id: sentinelId } })).resolves.toBe(1);
   });
 
-  integration('enforces protected-role authority and live capability ceilings after locks', async () => {
-    const client = requirePrisma();
-    const repository = new (requireAdministrationRepository())(client);
-    const managerId = await createAdmin('manager');
-    const targetId = await createAdmin('manager-target');
-    const concurrentTargetId = await createAdmin('manager-concurrent-target');
-    const managementRoleId = generateUuidV7();
-    const ownReaderRoleId = generateUuidV7();
-    const walletRoleId = generateUuidV7();
-    const assignedReaderRoleId = generateUuidV7();
-    expect((await repository.createRole({
-      role: {
-        id: managementRoleId,
-        name: `manager-${randomBytes(4).toString('hex')}`,
-        description: 'Non-protected management role',
-        dataScope: 'ALL',
-        permissionKeys: ['iam:roles:write', 'iam:admins:write'],
-      },
-      audit: decision('role.create', 'role', managementRoleId),
-    })).kind).toBe('created');
-    expect((await repository.createRole({
-      role: {
-        id: walletRoleId,
-        name: `existing-wallet-${randomBytes(4).toString('hex')}`,
-        description: 'Existing elevated wallet role',
-        dataScope: 'OWN',
-        permissionKeys: ['wallet:adjust'],
-      },
-      audit: decision('role.create', 'role', walletRoleId),
-    })).kind).toBe('created');
-    expect((await repository.createRole({
-      role: {
-        id: assignedReaderRoleId,
-        name: `existing-assigned-reader-${randomBytes(4).toString('hex')}`,
-        description: 'Existing wider-scope reader role',
-        dataScope: 'ASSIGNED',
-        permissionKeys: ['users:read'],
-      },
-      audit: decision('role.create', 'role', assignedReaderRoleId),
-    })).kind).toBe('created');
-    expect((await repository.createRole({
-      role: {
-        id: ownReaderRoleId,
-        name: `own-reader-${randomBytes(4).toString('hex')}`,
-        description: 'Own user reader',
-        dataScope: 'OWN',
-        permissionKeys: ['users:read'],
-      },
-      audit: decision('role.create', 'role', ownReaderRoleId),
-    })).kind).toBe('created');
-    for (const roleId of [managementRoleId, ownReaderRoleId]) {
-      await expect(repository.assignRole({
-        adminId: managerId,
-        roleId,
-        assignedBy: rootId,
-        audit: decision('admin-role.assign', 'admin', managerId),
-      })).resolves.toBe('assigned');
-    }
-    await expect(repository.assignRole({
-      adminId: managerId,
-      roleId: protectedRoleId,
-      assignedBy: managerId,
-      audit: decision('admin-role.assign', 'admin', managerId, undefined, managerId),
-    })).resolves.toBe('protected_role_denied');
-    for (const adminId of [managerId, targetId]) {
-      await expect(repository.assignRole({
-        adminId,
-        roleId: walletRoleId,
-        assignedBy: managerId,
-        audit: decision('admin-role.assign', 'admin', adminId, undefined, managerId),
-      })).resolves.toBe('capability_exceeded');
-    }
-    await expect(repository.assignRole({
-      adminId: targetId,
-      roleId: assignedReaderRoleId,
-      assignedBy: managerId,
-      audit: decision('admin-role.assign', 'admin', targetId, undefined, managerId),
-    })).resolves.toBe('capability_exceeded');
-    await expect(repository.assignRole({
-      adminId: targetId,
-      roleId: ownReaderRoleId,
-      assignedBy: managerId,
-      audit: decision('admin-role.assign', 'admin', targetId, undefined, managerId),
-    })).resolves.toBe('assigned');
-    await expect(repository.assignRole({
-      adminId: targetId,
-      roleId: protectedRoleId,
-      assignedBy: managerId,
-      audit: decision('admin-role.assign', 'admin', targetId, undefined, managerId),
-    })).resolves.toBe('protected_role_denied');
+  integration(
+    'enforces protected-role authority and live capability ceilings after locks',
+    async () => {
+      const client = requirePrisma();
+      const repository = new (requireAdministrationRepository())(client);
+      const managerId = await createAdmin('manager');
+      const targetId = await createAdmin('manager-target');
+      const concurrentTargetId = await createAdmin('manager-concurrent-target');
+      const managementRoleId = generateUuidV7();
+      const ownReaderRoleId = generateUuidV7();
+      const walletRoleId = generateUuidV7();
+      const assignedReaderRoleId = generateUuidV7();
+      expect(
+        (
+          await repository.createRole({
+            role: {
+              id: managementRoleId,
+              name: `manager-${randomBytes(4).toString('hex')}`,
+              description: 'Non-protected management role',
+              dataScope: 'ALL',
+              permissionKeys: ['iam:roles:write', 'iam:admins:write'],
+            },
+            audit: decision('role.create', 'role', managementRoleId),
+          })
+        ).kind,
+      ).toBe('created');
+      expect(
+        (
+          await repository.createRole({
+            role: {
+              id: walletRoleId,
+              name: `existing-wallet-${randomBytes(4).toString('hex')}`,
+              description: 'Existing elevated wallet role',
+              dataScope: 'OWN',
+              permissionKeys: ['wallet:adjust'],
+            },
+            audit: decision('role.create', 'role', walletRoleId),
+          })
+        ).kind,
+      ).toBe('created');
+      expect(
+        (
+          await repository.createRole({
+            role: {
+              id: assignedReaderRoleId,
+              name: `existing-assigned-reader-${randomBytes(4).toString('hex')}`,
+              description: 'Existing wider-scope reader role',
+              dataScope: 'ASSIGNED',
+              permissionKeys: ['users:read'],
+            },
+            audit: decision('role.create', 'role', assignedReaderRoleId),
+          })
+        ).kind,
+      ).toBe('created');
+      expect(
+        (
+          await repository.createRole({
+            role: {
+              id: ownReaderRoleId,
+              name: `own-reader-${randomBytes(4).toString('hex')}`,
+              description: 'Own user reader',
+              dataScope: 'OWN',
+              permissionKeys: ['users:read'],
+            },
+            audit: decision('role.create', 'role', ownReaderRoleId),
+          })
+        ).kind,
+      ).toBe('created');
+      for (const roleId of [managementRoleId, ownReaderRoleId]) {
+        await expect(
+          repository.assignRole({
+            adminId: managerId,
+            roleId,
+            assignedBy: rootId,
+            audit: decision('admin-role.assign', 'admin', managerId),
+          }),
+        ).resolves.toBe('assigned');
+      }
+      await expect(
+        repository.assignRole({
+          adminId: managerId,
+          roleId: protectedRoleId,
+          assignedBy: managerId,
+          audit: decision('admin-role.assign', 'admin', managerId, undefined, managerId),
+        }),
+      ).resolves.toBe('protected_role_denied');
+      for (const adminId of [managerId, targetId]) {
+        await expect(
+          repository.assignRole({
+            adminId,
+            roleId: walletRoleId,
+            assignedBy: managerId,
+            audit: decision('admin-role.assign', 'admin', adminId, undefined, managerId),
+          }),
+        ).resolves.toBe('capability_exceeded');
+      }
+      await expect(
+        repository.assignRole({
+          adminId: targetId,
+          roleId: assignedReaderRoleId,
+          assignedBy: managerId,
+          audit: decision('admin-role.assign', 'admin', targetId, undefined, managerId),
+        }),
+      ).resolves.toBe('capability_exceeded');
+      await expect(
+        repository.assignRole({
+          adminId: targetId,
+          roleId: ownReaderRoleId,
+          assignedBy: managerId,
+          audit: decision('admin-role.assign', 'admin', targetId, undefined, managerId),
+        }),
+      ).resolves.toBe('assigned');
+      await expect(
+        repository.assignRole({
+          adminId: targetId,
+          roleId: protectedRoleId,
+          assignedBy: managerId,
+          audit: decision('admin-role.assign', 'admin', targetId, undefined, managerId),
+        }),
+      ).resolves.toBe('protected_role_denied');
 
-    const missingCapabilityId = generateUuidV7();
-    await expect(repository.createRole({
-      role: {
-        id: missingCapabilityId,
-        name: `wallet-${randomBytes(4).toString('hex')}`,
-        description: 'Escalating role',
-        dataScope: 'OWN',
-        permissionKeys: ['wallet:adjust'],
-      },
-      audit: decision('role.create', 'role', missingCapabilityId, undefined, managerId),
-    })).resolves.toEqual({ kind: 'capability_exceeded' });
-    const wrongScopeId = generateUuidV7();
-    await expect(repository.createRole({
-      role: {
-        id: wrongScopeId,
-        name: `assigned-reader-${randomBytes(4).toString('hex')}`,
-        description: 'Wrong-scope role',
-        dataScope: 'ASSIGNED',
-        permissionKeys: ['users:read'],
-      },
-      audit: decision('role.create', 'role', wrongScopeId, undefined, managerId),
-    })).resolves.toEqual({ kind: 'capability_exceeded' });
-    const legalSubsetId = generateUuidV7();
-    await expect(repository.createRole({
-      role: {
-        id: legalSubsetId,
-        name: `child-own-reader-${randomBytes(4).toString('hex')}`,
-        description: 'Legal delegated subset',
-        dataScope: 'OWN',
-        permissionKeys: ['users:read'],
-      },
-      audit: decision('role.create', 'role', legalSubsetId, undefined, managerId),
-    })).resolves.toMatchObject({ kind: 'created' });
+      const missingCapabilityId = generateUuidV7();
+      await expect(
+        repository.createRole({
+          role: {
+            id: missingCapabilityId,
+            name: `wallet-${randomBytes(4).toString('hex')}`,
+            description: 'Escalating role',
+            dataScope: 'OWN',
+            permissionKeys: ['wallet:adjust'],
+          },
+          audit: decision('role.create', 'role', missingCapabilityId, undefined, managerId),
+        }),
+      ).resolves.toEqual({ kind: 'capability_exceeded' });
+      const wrongScopeId = generateUuidV7();
+      await expect(
+        repository.createRole({
+          role: {
+            id: wrongScopeId,
+            name: `assigned-reader-${randomBytes(4).toString('hex')}`,
+            description: 'Wrong-scope role',
+            dataScope: 'ASSIGNED',
+            permissionKeys: ['users:read'],
+          },
+          audit: decision('role.create', 'role', wrongScopeId, undefined, managerId),
+        }),
+      ).resolves.toEqual({ kind: 'capability_exceeded' });
+      const legalSubsetId = generateUuidV7();
+      await expect(
+        repository.createRole({
+          role: {
+            id: legalSubsetId,
+            name: `child-own-reader-${randomBytes(4).toString('hex')}`,
+            description: 'Legal delegated subset',
+            dataScope: 'OWN',
+            permissionKeys: ['users:read'],
+          },
+          audit: decision('role.create', 'role', legalSubsetId, undefined, managerId),
+        }),
+      ).resolves.toMatchObject({ kind: 'created' });
 
-    const barrier = new PgClient({ connectionString: databaseUrl(requireBaseUrl(), isolatedDatabaseName) });
-    try {
-      await barrier.connect();
-      await barrier.query('BEGIN');
-      await barrier.query(
-        "SELECT pg_advisory_xact_lock(hashtextextended('iam:authorization-graph', 0))",
-      );
-      const blockedMutation = repository.assignRole({
-        adminId: concurrentTargetId,
-        roleId: ownReaderRoleId,
-        assignedBy: managerId,
-        audit: decision(
-          'admin-role.assign',
-          'admin',
-          concurrentTargetId,
-          undefined,
-          managerId,
-        ),
+      const barrier = new PgClient({
+        connectionString: databaseUrl(requireBaseUrl(), isolatedDatabaseName),
       });
-      await barrier.query('DELETE FROM "admin_roles" WHERE "admin_id" = $1::uuid', [managerId]);
-      await barrier.query('COMMIT');
-      await expect(blockedMutation).resolves.toBe('actor_denied');
-    } finally {
-      await barrier.query('ROLLBACK').catch(() => undefined);
-      await barrier.end();
-    }
-  });
+      try {
+        await barrier.connect();
+        await barrier.query('BEGIN');
+        await barrier.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('iam:authorization-graph', 0))",
+        );
+        const blockedMutation = repository.assignRole({
+          adminId: concurrentTargetId,
+          roleId: ownReaderRoleId,
+          assignedBy: managerId,
+          audit: decision('admin-role.assign', 'admin', concurrentTargetId, undefined, managerId),
+        });
+        await barrier.query('DELETE FROM "admin_roles" WHERE "admin_id" = $1::uuid', [managerId]);
+        await barrier.query('COMMIT');
+        await expect(blockedMutation).resolves.toBe('actor_denied');
+      } finally {
+        await barrier.query('ROLLBACK').catch(() => undefined);
+        await barrier.end();
+      }
+    },
+  );
 
   integration('serializes concurrent last-super-admin revoke and Task4 disable paths', async () => {
     const client = requirePrisma();
@@ -455,9 +495,9 @@ describe('Prisma IAM RBAC integration in an isolated test database', () => {
         reservedUntil: new Date('2026-09-01T12:02:00.000Z'),
       },
     });
-    await expect(
-      task4Repository.disableAdminAccess(disabledAdminId, new Date(0)),
-    ).resolves.toBe('disabled');
+    await expect(task4Repository.disableAdminAccess(disabledAdminId, new Date(0))).resolves.toBe(
+      'disabled',
+    );
     const replayActive = await client.adminSession.findUniqueOrThrow({
       where: { id: replayActiveSessionId },
     });

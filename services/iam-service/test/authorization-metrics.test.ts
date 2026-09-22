@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { IamAdministrationService } from '../src/application/iam-administration.service.js';
-import type { IamAdministrationRepository, RoleRecord } from '../src/application/iam-administration.repository.js';
+import type {
+  IamAdministrationRepository,
+  RoleRecord,
+} from '../src/application/iam-administration.repository.js';
 import { generateUuidV7 } from '../src/domain/uuid-v7.js';
 
 const actorId = generateUuidV7();
@@ -19,29 +22,37 @@ const role: RoleRecord = {
 describe('IAM authorization denial metrics', () => {
   const deniedCases = [
     {
-      name: 'locked actor revalidation', code: 'ADMIN_AUTHORIZATION_DENIED',
+      name: 'locked actor revalidation',
+      code: 'ADMIN_AUTHORIZATION_DENIED',
       override: { createRole: () => Promise.resolve({ kind: 'actor_denied' as const }) },
       run: (service: IamAdministrationService) => service.createRole(roleInput()),
     },
     {
-      name: 'capability ceiling revalidation', code: 'CAPABILITY_CEILING_EXCEEDED',
+      name: 'capability ceiling revalidation',
+      code: 'CAPABILITY_CEILING_EXCEEDED',
       override: { createRole: () => Promise.resolve({ kind: 'capability_exceeded' as const }) },
       run: (service: IamAdministrationService) => service.createRole(roleInput()),
     },
     {
-      name: 'protected role mutation', code: 'PROTECTED_ROLE',
+      name: 'protected role mutation',
+      code: 'PROTECTED_ROLE',
       override: { updateRole: () => Promise.resolve({ kind: 'protected' as const }) },
-      run: (service: IamAdministrationService) => service.updateRole({ roleId, expectedVersion: 1, ...roleInput() }),
+      run: (service: IamAdministrationService) =>
+        service.updateRole({ roleId, expectedVersion: 1, ...roleInput() }),
     },
     {
-      name: 'protected role assignment', code: 'PROTECTED_ROLE_ASSIGNMENT_DENIED',
+      name: 'protected role assignment',
+      code: 'PROTECTED_ROLE_ASSIGNMENT_DENIED',
       override: { assignRole: () => Promise.resolve('protected_role_denied' as const) },
-      run: (service: IamAdministrationService) => service.assignRole({ adminId, roleId, context: context(actorId) }),
+      run: (service: IamAdministrationService) =>
+        service.assignRole({ adminId, roleId, context: context(actorId) }),
     },
     {
-      name: 'last super administrator protection', code: 'LAST_SUPER_ADMIN_PROTECTED',
+      name: 'last super administrator protection',
+      code: 'LAST_SUPER_ADMIN_PROTECTED',
       override: { disableAdmin: () => Promise.resolve('last_super_admin' as const) },
-      run: (service: IamAdministrationService) => service.disableAdmin({ adminId, context: context(actorId) }),
+      run: (service: IamAdministrationService) =>
+        service.disableAdmin({ adminId, context: context(actorId) }),
     },
   ] as const;
 
@@ -54,11 +65,15 @@ describe('IAM authorization denial metrics', () => {
 
   it('counts pre-service can denial and a null principal once each', async () => {
     const missingSubject = createFixture({ loadAuthorizationSubject: () => Promise.resolve(null) });
-    await expect(missingSubject.service.listPermissions(context(actorId))).rejects.toMatchObject({ code: 'ADMIN_AUTHORIZATION_DENIED' });
+    await expect(missingSubject.service.listPermissions(context(actorId))).rejects.toMatchObject({
+      code: 'ADMIN_AUTHORIZATION_DENIED',
+    });
     expect(missingSubject.increment).toHaveBeenCalledTimes(1);
 
     const nullPrincipal = createFixture();
-    await expect(nullPrincipal.service.listPermissions(context(null))).rejects.toMatchObject({ code: 'ADMIN_AUTHORIZATION_DENIED' });
+    await expect(nullPrincipal.service.listPermissions(context(null))).rejects.toMatchObject({
+      code: 'ADMIN_AUTHORIZATION_DENIED',
+    });
     expect(nullPrincipal.increment).toHaveBeenCalledTimes(1);
   });
 
@@ -67,7 +82,9 @@ describe('IAM authorization denial metrics', () => {
       loadAuthorizationSubject: () => Promise.resolve(null),
       appendAudit: () => Promise.reject(new Error('AUDIT_UNAVAILABLE')),
     });
-    await expect(fixture.service.listPermissions(context(actorId))).rejects.toThrow('AUDIT_UNAVAILABLE');
+    await expect(fixture.service.listPermissions(context(actorId))).rejects.toThrow(
+      'AUDIT_UNAVAILABLE',
+    );
     expect(fixture.increment).toHaveBeenCalledTimes(1);
     expect(fixture.increment).toHaveBeenCalledWith('iam_authorization_denials_total');
   });
@@ -77,8 +94,12 @@ describe('IAM authorization denial metrics', () => {
     await expect(success.service.createRole(roleInput())).resolves.toMatchObject({ id: roleId });
     expect(success.increment).not.toHaveBeenCalled();
 
-    const infrastructure = createFixture({ createRole: () => Promise.reject(new Error('DATABASE_UNAVAILABLE')) });
-    await expect(infrastructure.service.createRole(roleInput())).rejects.toThrow('DATABASE_UNAVAILABLE');
+    const infrastructure = createFixture({
+      createRole: () => Promise.reject(new Error('DATABASE_UNAVAILABLE')),
+    });
+    await expect(infrastructure.service.createRole(roleInput())).rejects.toThrow(
+      'DATABASE_UNAVAILABLE',
+    );
     expect(infrastructure.increment).not.toHaveBeenCalled();
   });
 });
@@ -87,14 +108,15 @@ function createFixture(overrides: Partial<IamAdministrationRepository> = {}) {
   const increment = vi.fn();
   const repository = {
     appendAudit: () => Promise.resolve(),
-    loadAuthorizationSubject: () => Promise.resolve({
-      adminId: actorId,
-      grants: [
-        { permission: 'iam:roles:write', dataScope: 'ALL' as const },
-        { permission: 'iam:admins:write', dataScope: 'ALL' as const },
-        { permission: 'iam:permissions:read', dataScope: 'ALL' as const },
-      ],
-    }),
+    loadAuthorizationSubject: () =>
+      Promise.resolve({
+        adminId: actorId,
+        grants: [
+          { permission: 'iam:roles:write', dataScope: 'ALL' as const },
+          { permission: 'iam:admins:write', dataScope: 'ALL' as const },
+          { permission: 'iam:permissions:read', dataScope: 'ALL' as const },
+        ],
+      }),
     createRole: () => Promise.resolve({ kind: 'created' as const, role }),
     updateRole: () => Promise.resolve({ kind: 'updated' as const, role }),
     assignRole: () => Promise.resolve('assigned' as const),

@@ -79,10 +79,7 @@ describe('PrismaSessionRepository', () => {
       },
     };
     const prisma = {
-      $transaction: (
-        work: (client: object) => Promise<unknown>,
-        options: unknown,
-      ) => {
+      $transaction: (work: (client: object) => Promise<unknown>, options: unknown) => {
         transactionOptions = options;
         return work(transaction);
       },

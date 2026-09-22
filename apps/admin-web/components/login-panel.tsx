@@ -122,20 +122,10 @@ const useStyles = makeStyles({
   },
 });
 
-export function LoginPanel({
-  passwordAction,
-  preflightAction,
-  totpAction,
-}: LoginPanelProps) {
+export function LoginPanel({ passwordAction, preflightAction, totpAction }: LoginPanelProps) {
   const styles = useStyles();
-  const [passwordState, passwordFormAction, passwordPending] = useActionState(
-    passwordAction,
-    null,
-  );
-  const [totpState, totpFormAction, totpPending] = useActionState(
-    totpAction,
-    null,
-  );
+  const [passwordState, passwordFormAction, passwordPending] = useActionState(passwordAction, null);
+  const [totpState, totpFormAction, totpPending] = useActionState(totpAction, null);
   const [remainingCooldown, setRemainingCooldown] = useState(0);
   const [identifier, setIdentifier] = useState('');
   const [readyIdentifier, setReadyIdentifier] = useState<string | null>(null);
@@ -148,7 +138,8 @@ export function LoginPanel({
   const queuedGenerationRef = useRef<number | null>(null);
   const step = passwordState?.step ?? 'password';
   const normalizedIdentifier = identifier.trim();
-  const preflightReady = readyIdentifier === normalizedIdentifier && normalizedIdentifier.length > 0;
+  const preflightReady =
+    readyIdentifier === normalizedIdentifier && normalizedIdentifier.length > 0;
 
   function startPreflight(generation: number, snapshot: string): void {
     if (!snapshot) {
@@ -162,31 +153,32 @@ export function LoginPanel({
     pendingRef.current = true;
     setPreflightPending(true);
     setPreflightError(false);
-    void preflightAction(snapshot).then((result) => {
-      if (generation !== generationRef.current || snapshot !== identifierRef.current) return;
-      setReadyIdentifier(result.status === 'READY' ? snapshot : null);
-      setPreflightError(result.status !== 'READY');
-      if (result.status === 'READY') setRecoveryRequired(false);
-    }).catch(() => {
-      if (generation !== generationRef.current || snapshot !== identifierRef.current) return;
-      setReadyIdentifier(null);
-      setPreflightError(true);
-    }).finally(() => {
-      pendingRef.current = false;
-      const queuedGeneration = queuedGenerationRef.current;
-      queuedGenerationRef.current = null;
-      if (queuedGeneration !== null && queuedGeneration === generationRef.current) {
-        startPreflight(queuedGeneration, identifierRef.current);
-        return;
-      }
-      if (generation === generationRef.current) setPreflightPending(false);
-    });
+    void preflightAction(snapshot)
+      .then((result) => {
+        if (generation !== generationRef.current || snapshot !== identifierRef.current) return;
+        setReadyIdentifier(result.status === 'READY' ? snapshot : null);
+        setPreflightError(result.status !== 'READY');
+        if (result.status === 'READY') setRecoveryRequired(false);
+      })
+      .catch(() => {
+        if (generation !== generationRef.current || snapshot !== identifierRef.current) return;
+        setReadyIdentifier(null);
+        setPreflightError(true);
+      })
+      .finally(() => {
+        pendingRef.current = false;
+        const queuedGeneration = queuedGenerationRef.current;
+        queuedGenerationRef.current = null;
+        if (queuedGeneration !== null && queuedGeneration === generationRef.current) {
+          startPreflight(queuedGeneration, identifierRef.current);
+          return;
+        }
+        if (generation === generationRef.current) setPreflightPending(false);
+      });
   }
 
   useEffect(() => {
-    setRemainingCooldown(
-      totpState?.status === 'LOCKED' ? totpState.cooldownSeconds : 0,
-    );
+    setRemainingCooldown(totpState?.status === 'LOCKED' ? totpState.cooldownSeconds : 0);
   }, [totpState]);
 
   useEffect(() => {
@@ -243,7 +235,12 @@ export function LoginPanel({
                 action={passwordFormAction}
                 className={styles.form}
                 onSubmit={(event) => {
-                  if (!preflightReady || pendingRef.current || readyIdentifier !== identifierRef.current) event.preventDefault();
+                  if (
+                    !preflightReady ||
+                    pendingRef.current ||
+                    readyIdentifier !== identifierRef.current
+                  )
+                    event.preventDefault();
                 }}
               >
                 <LockClosed24Regular aria-hidden />
@@ -279,16 +276,28 @@ export function LoginPanel({
                     type="password"
                   />
                 </Field>
-                {preflightError ? <Text className={mergeClasses(styles.status, styles.errorStatus)} role="alert">无法建立安全登录，请重试</Text> : null}
-                {passwordState?.step === 'password' ? <Text className={mergeClasses(styles.status, styles.errorStatus)} role="alert">{passwordState.message}</Text> : null}
+                {preflightError ? (
+                  <Text className={mergeClasses(styles.status, styles.errorStatus)} role="alert">
+                    无法建立安全登录，请重试
+                  </Text>
+                ) : null}
+                {passwordState?.step === 'password' ? (
+                  <Text className={mergeClasses(styles.status, styles.errorStatus)} role="alert">
+                    {passwordState.message}
+                  </Text>
+                ) : null}
                 <Button
                   appearance="primary"
                   className={styles.submit}
                   disabled={passwordPending || preflightPending}
-                  onClick={preflightReady ? undefined : () => {
-                    if (!normalizedIdentifier || pendingRef.current) return;
-                    startPreflight(generationRef.current, normalizedIdentifier);
-                  }}
+                  onClick={
+                    preflightReady
+                      ? undefined
+                      : () => {
+                          if (!normalizedIdentifier || pendingRef.current) return;
+                          startPreflight(generationRef.current, normalizedIdentifier);
+                        }
+                  }
                   type={preflightReady ? 'submit' : 'button'}
                 >
                   {preflightPending
@@ -304,27 +313,19 @@ export function LoginPanel({
               <form action={totpFormAction} className={styles.form}>
                 <ShieldKeyhole24Regular aria-hidden />
                 <Title1 className={styles.heading}>双因素验证</Title1>
-                <Text className={styles.supportingCopy}>
-                  请输入身份验证器中的 6 位动态验证码。
-                </Text>
+                <Text className={styles.supportingCopy}>请输入身份验证器中的 6 位动态验证码。</Text>
                 {passwordState?.message ? (
                   <Text className={styles.status} role="status">
                     {passwordState.message}
                   </Text>
                 ) : null}
                 {isLocked ? (
-                  <Text
-                    className={`${styles.status} ${styles.errorStatus}`}
-                    role="alert"
-                  >
+                  <Text className={`${styles.status} ${styles.errorStatus}`} role="alert">
                     请在 {remainingCooldown} 秒后重试
                   </Text>
                 ) : null}
                 {totpState?.status === 'INVALID_TOTP' ? (
-                  <Text
-                    className={mergeClasses(styles.status, styles.errorStatus)}
-                    role="alert"
-                  >
+                  <Text className={mergeClasses(styles.status, styles.errorStatus)} role="alert">
                     {totpState.message}
                   </Text>
                 ) : null}

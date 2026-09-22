@@ -3,10 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { Module, type INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
-import {
-  InMemoryQuoteRepository,
-  QuoteService,
-} from './application/quote.service.js';
+import { InMemoryQuoteRepository, QuoteService } from './application/quote.service.js';
 import { RuleVersionStore } from './application/rule-version.store.js';
 import { AdminRoutingController } from './http/admin-routing.controller.js';
 import { OperationalController } from './http/operational.controller.js';

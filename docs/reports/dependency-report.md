@@ -3,7 +3,7 @@
 - 生成日期：2026-09-22
 - 包管理器：pnpm 11.24.0（Corepack）
 - 根锁文件：`pnpm-lock.yaml`
-- SHA-256：`eab7fe9e0c57dd3bb4a228030e25c7ae12d7419b09e6ef47ae05a871219106b9`
+- SHA-256：`e688a6480be6551f3d13daa25e2adfb709cc07a0c49834376f8e96d71f9011ab`
 - 锁文件 importers：根项目 1 + workspace 23
 - 仓库内锁文件数量：1
 

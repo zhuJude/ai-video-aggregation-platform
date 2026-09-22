@@ -33,10 +33,7 @@ import {
 } from './outbound-request-context';
 import { isValidAdminPermissions } from './permissions';
 
-export {
-  ADMIN_MFA_CHALLENGE_TTL_MS,
-  ADMIN_MFA_CHALLENGE_TTL_SECONDS,
-} from './session-auth';
+export { ADMIN_MFA_CHALLENGE_TTL_MS, ADMIN_MFA_CHALLENGE_TTL_SECONDS } from './session-auth';
 
 type AuthEnvironment = Readonly<{
   apiUrl?: string | undefined;
@@ -57,10 +54,7 @@ const DEFAULT_MAX_LOCKOUT_TTL_MS = 15 * 60_000;
 const DEFAULT_MAX_SESSION_TTL_MS = 12 * 60 * 60_000;
 
 export type ClassifiedAdminAuthFailureReason =
-  | 'MALFORMED_RESPONSE'
-  | 'NETWORK_FAILURE'
-  | 'TIMEOUT'
-  | 'UPSTREAM_FAILURE';
+  'MALFORMED_RESPONSE' | 'NETWORK_FAILURE' | 'TIMEOUT' | 'UPSTREAM_FAILURE';
 
 class ClassifiedAdminAuthFailure extends Error {
   readonly reason: ClassifiedAdminAuthFailureReason;
@@ -84,9 +78,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-function isAdminAuthenticatedSubject(
-  value: unknown,
-): value is AdminAuthenticatedSubject {
+function isAdminAuthenticatedSubject(value: unknown): value is AdminAuthenticatedSubject {
   if (!isPlainObject(value) || !hasExactKeys(value, ['dataScope', 'permissions', 'subjectId'])) {
     return false;
   }
@@ -102,9 +94,7 @@ function isAdminAuthenticatedSubject(
 }
 
 function isValidTtl(value: number, now: number, maximumTtlMs: number): boolean {
-  return (
-    Number.isFinite(value) && value > now && value <= now + maximumTtlMs
-  );
+  return Number.isFinite(value) && value > now && value <= now + maximumTtlMs;
 }
 
 function localDecoyChallenge(now: () => number): PasswordChallengeResult {
@@ -129,10 +119,8 @@ function configuration(
 } {
   const telemetry = options.telemetry ?? defaultSafeTelemetry;
   const deadlineMs = options.deadlineMs ?? DEFAULT_UPSTREAM_DEADLINE_MS;
-  const maxLockoutTtlMs =
-    options.maxLockoutTtlMs ?? DEFAULT_MAX_LOCKOUT_TTL_MS;
-  const maxSessionTtlMs =
-    options.maxSessionTtlMs ?? DEFAULT_MAX_SESSION_TTL_MS;
+  const maxLockoutTtlMs = options.maxLockoutTtlMs ?? DEFAULT_MAX_LOCKOUT_TTL_MS;
+  const maxSessionTtlMs = options.maxSessionTtlMs ?? DEFAULT_MAX_SESSION_TTL_MS;
 
   try {
     if (!environment.apiUrl || !environment.kmsIdentityReference?.trim()) {
@@ -154,8 +142,9 @@ function configuration(
 
     return {
       baseUrl,
-      createRequestContext: options.createRequestContext ?? ((correlationId) =>
-        createOutboundRequestContext(undefined, () => correlationId)),
+      createRequestContext:
+        options.createRequestContext ??
+        ((correlationId) => createOutboundRequestContext(undefined, () => correlationId)),
       deadlineMs,
       fetchImpl: options.fetchImpl ?? fetch,
       maxLockoutTtlMs,
@@ -184,7 +173,8 @@ export function createHttpAdminAuthPort(
   function commandContext(input: { correlationId?: string; idempotencyKey?: string }) {
     const correlationId = input.correlationId ?? createUuidV7();
     const idempotencyKey = input.idempotencyKey ?? createUuidV7();
-    if (!isUuidV7(correlationId) || !isUuidV7(idempotencyKey)) throw new Error('Invalid MFA request context');
+    if (!isUuidV7(correlationId) || !isUuidV7(idempotencyKey))
+      throw new Error('Invalid MFA request context');
     return { correlationId, idempotencyKey };
   }
 
@@ -222,8 +212,7 @@ export function createHttpAdminAuthPort(
             'Content-Type': 'application/json',
             'Idempotency-Key': command.idempotencyKey,
             'X-Correlation-Id': requestContext.correlationId,
-            'X-Service-Identity-Ref':
-              environment.kmsIdentityReference as string,
+            'X-Service-Identity-Ref': environment.kmsIdentityReference as string,
             'X-Trace-Id': requestContext.traceId,
           },
           method: 'POST',
@@ -235,9 +224,7 @@ export function createHttpAdminAuthPort(
       if (error instanceof ClassifiedAdminAuthFailure) {
         throw error;
       }
-      const reason = error instanceof SafeHttpRequestError
-        ? error.reason
-        : 'UPSTREAM_FAILURE';
+      const reason = error instanceof SafeHttpRequestError ? error.reason : 'UPSTREAM_FAILURE';
       throw recordTechnicalFailure(
         config.telemetry,
         createSafeTelemetryEvent(operation, reason, requestContext),
@@ -277,7 +264,12 @@ export function createHttpAdminAuthPort(
                   if (signal.aborted) throw error;
                   return malformed(operation, requestContext);
                 }
-                if (isPlainObject(rejection) && hasExactKeys(rejection, ['kind', 'reason']) && rejection.kind === 'REJECTED' && rejection.reason === 'INVALID_CREDENTIALS') {
+                if (
+                  isPlainObject(rejection) &&
+                  hasExactKeys(rejection, ['kind', 'reason']) &&
+                  rejection.kind === 'REJECTED' &&
+                  rejection.reason === 'INVALID_CREDENTIALS'
+                ) {
                   return { ...localDecoyChallenge(config.now), rotateIntent: true };
                 }
                 return malformed(operation, requestContext);
@@ -298,7 +290,10 @@ export function createHttpAdminAuthPort(
               }
               return malformed(operation, requestContext);
             }
-            if (!isPlainObject(payload) || !hasExactKeys(payload, ['challengeId', 'expiresInSeconds'])) {
+            if (
+              !isPlainObject(payload) ||
+              !hasExactKeys(payload, ['challengeId', 'expiresInSeconds'])
+            ) {
               return malformed(operation, requestContext);
             }
             const candidate = payload as Partial<{
@@ -324,7 +319,10 @@ export function createHttpAdminAuthPort(
             undefined,
             () => command.correlationId,
           );
-          recordSafeTelemetry(config.telemetry, createSafeTelemetryEvent(operation, 'UPSTREAM_FAILURE', fallbackContext));
+          recordSafeTelemetry(
+            config.telemetry,
+            createSafeTelemetryEvent(operation, 'UPSTREAM_FAILURE', fallbackContext),
+          );
         }
         return { ...localDecoyChallenge(config.now), indeterminate: true };
       }
@@ -332,51 +330,61 @@ export function createHttpAdminAuthPort(
 
     async verifyTotp(input): Promise<TotpVerificationResult> {
       const operation = 'iam.totp.verify';
-      if (!isValidAdminMfaChallengeId(input.challengeId)) throw new Error('Invalid MFA challenge ID');
+      if (!isValidAdminMfaChallengeId(input.challengeId))
+        throw new Error('Invalid MFA challenge ID');
       const command = commandContext(input);
       return postJson(
         '/v1/admin-auth/totp/verifications',
         { challengeId: input.challengeId, code: input.code },
         operation,
         command,
-          async (response, signal, requestContext) => {
-            if (!response.ok) {
-              if (response.status === 401 || response.status === 423) {
-                let rejection: unknown;
-                try {
-                  rejection = await response.json();
-                } catch (error) {
-                  if (signal.aborted) throw error;
-                  return malformed(operation, requestContext);
-                }
-                const currentTime = config.now();
-                if (
-                  isPlainObject(rejection) &&
-                  hasExactKeys(rejection, ['attemptsRemaining', 'kind', 'reason']) &&
-                  response.status === 401 &&
-                  rejection.kind === 'REJECTED' &&
-                  rejection.reason === 'INVALID_CODE' &&
-                  Number.isInteger(rejection.attemptsRemaining) &&
-                  (rejection.attemptsRemaining as number) >= 0
-                ) return { kind: 'REJECTED', attemptsRemaining: rejection.attemptsRemaining as number };
-                if (
-                  isPlainObject(rejection) &&
-                  hasExactKeys(rejection, ['attemptsRemaining', 'kind', 'lockedUntil', 'reason']) &&
-                  response.status === 423 &&
-                  rejection.kind === 'REJECTED' &&
-                  rejection.reason === 'LOCKED' &&
-                  rejection.attemptsRemaining === 0 &&
-                  typeof rejection.lockedUntil === 'number' &&
-                  isValidTtl(rejection.lockedUntil, currentTime, config.maxLockoutTtlMs)
-                ) return { kind: 'REJECTED', attemptsRemaining: 0, lockedUntil: rejection.lockedUntil };
+        async (response, signal, requestContext) => {
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 423) {
+              let rejection: unknown;
+              try {
+                rejection = await response.json();
+              } catch (error) {
+                if (signal.aborted) throw error;
                 return malformed(operation, requestContext);
               }
-              throw recordTechnicalFailure(
-                config.telemetry,
-                createSafeTelemetryEvent(operation, 'UPSTREAM_FAILURE', requestContext),
-                new ClassifiedAdminAuthFailure('UPSTREAM_FAILURE'),
-              );
+              const currentTime = config.now();
+              if (
+                isPlainObject(rejection) &&
+                hasExactKeys(rejection, ['attemptsRemaining', 'kind', 'reason']) &&
+                response.status === 401 &&
+                rejection.kind === 'REJECTED' &&
+                rejection.reason === 'INVALID_CODE' &&
+                Number.isInteger(rejection.attemptsRemaining) &&
+                (rejection.attemptsRemaining as number) >= 0
+              )
+                return {
+                  kind: 'REJECTED',
+                  attemptsRemaining: rejection.attemptsRemaining as number,
+                };
+              if (
+                isPlainObject(rejection) &&
+                hasExactKeys(rejection, ['attemptsRemaining', 'kind', 'lockedUntil', 'reason']) &&
+                response.status === 423 &&
+                rejection.kind === 'REJECTED' &&
+                rejection.reason === 'LOCKED' &&
+                rejection.attemptsRemaining === 0 &&
+                typeof rejection.lockedUntil === 'number' &&
+                isValidTtl(rejection.lockedUntil, currentTime, config.maxLockoutTtlMs)
+              )
+                return {
+                  kind: 'REJECTED',
+                  attemptsRemaining: 0,
+                  lockedUntil: rejection.lockedUntil,
+                };
+              return malformed(operation, requestContext);
             }
+            throw recordTechnicalFailure(
+              config.telemetry,
+              createSafeTelemetryEvent(operation, 'UPSTREAM_FAILURE', requestContext),
+              new ClassifiedAdminAuthFailure('UPSTREAM_FAILURE'),
+            );
+          }
 
           let payload: unknown;
           try {
@@ -404,20 +412,17 @@ export function createHttpAdminAuthPort(
 
           const currentTime = config.now();
           if (candidate.kind === 'REJECTED') {
-            const rejectionKeys = candidate.lockedUntil === undefined
-              ? ['attemptsRemaining', 'kind']
-              : ['attemptsRemaining', 'kind', 'lockedUntil'];
+            const rejectionKeys =
+              candidate.lockedUntil === undefined
+                ? ['attemptsRemaining', 'kind']
+                : ['attemptsRemaining', 'kind', 'lockedUntil'];
             if (
               !hasExactKeys(payload, rejectionKeys) ||
               typeof candidate.attemptsRemaining !== 'number' ||
               !Number.isInteger(candidate.attemptsRemaining) ||
               candidate.attemptsRemaining < 0 ||
               (candidate.lockedUntil !== undefined &&
-                !isValidTtl(
-                  candidate.lockedUntil,
-                  currentTime,
-                  config.maxLockoutTtlMs,
-                ))
+                !isValidTtl(candidate.lockedUntil, currentTime, config.maxLockoutTtlMs))
             ) {
               return malformed(operation, requestContext);
             }
@@ -436,11 +441,7 @@ export function createHttpAdminAuthPort(
             !hasExactKeys(payload, ['expiresAt', 'kind', 'subject']) ||
             !isAdminAuthenticatedSubject(candidate.subject) ||
             typeof candidate.expiresAt !== 'number' ||
-            !isValidTtl(
-              candidate.expiresAt,
-              currentTime,
-              config.maxSessionTtlMs,
-            )
+            !isValidTtl(candidate.expiresAt, currentTime, config.maxSessionTtlMs)
           ) {
             return malformed(operation, requestContext);
           }

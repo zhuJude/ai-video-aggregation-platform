@@ -1,11 +1,6 @@
 'use client';
 
-import {
-  Button,
-  MessageBar,
-  MessageBarBody,
-  Title2,
-} from '@fluentui/react-components';
+import { Button, MessageBar, MessageBarBody, Title2 } from '@fluentui/react-components';
 
 export default function OverviewError({
   reset,

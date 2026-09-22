@@ -6,20 +6,29 @@ import { IDS } from './support/platform-fixture.mjs';
 
 async function actionEntries(form) {
   await expect(form).toBeVisible();
-  return form.evaluate((element) => [...new FormData(element).entries()].map(([key, value]) => [key, String(value)]));
+  return form.evaluate((element) =>
+    [...new FormData(element).entries()].map(([key, value]) => [key, String(value)]),
+  );
 }
 
 async function invokeServerAction(page, pathname, entries, overrides = {}) {
-  return page.evaluate(async ({ target, formEntries, replacements }) => {
-    const form = new FormData();
-    for (const [key, value] of formEntries) form.append(key, value);
-    for (const [key, value] of Object.entries(replacements)) {
-      form.delete(key);
-      for (const item of Array.isArray(value) ? value : [value]) form.append(key, String(item));
-    }
-    const response = await fetch(target, { body: form, credentials: 'same-origin', method: 'POST' });
-    return { body: await response.text(), status: response.status };
-  }, { target: pathname, formEntries: entries, replacements: overrides });
+  return page.evaluate(
+    async ({ target, formEntries, replacements }) => {
+      const form = new FormData();
+      for (const [key, value] of formEntries) form.append(key, value);
+      for (const [key, value] of Object.entries(replacements)) {
+        form.delete(key);
+        for (const item of Array.isArray(value) ? value : [value]) form.append(key, String(item));
+      }
+      const response = await fetch(target, {
+        body: form,
+        credentials: 'same-origin',
+        method: 'POST',
+      });
+      return { body: await response.text(), status: response.status };
+    },
+    { target: pathname, formEntries: entries, replacements: overrides },
+  );
 }
 
 async function fixtureState(context) {
@@ -42,7 +51,11 @@ async function tabTo(page, target, maximum = 160) {
       const bounds = active.getBoundingClientRect();
       return {
         key: `${active.tagName}:${active.id}:${active.getAttribute('aria-label') ?? ''}:${active.textContent?.trim().slice(0, 80) ?? ''}`,
-        visible: active.matches(':focus-visible') && bounds.width > 0 && bounds.height > 0 && getComputedStyle(active).visibility !== 'hidden',
+        visible:
+          active.matches(':focus-visible') &&
+          bounds.width > 0 &&
+          bounds.height > 0 &&
+          getComputedStyle(active).visibility !== 'hidden',
       };
     });
     if (focus) visited.add(focus.key);
@@ -52,7 +65,9 @@ async function tabTo(page, target, maximum = 160) {
       return;
     }
   }
-  throw new Error(`Keyboard focus did not reach ${await target.getAttribute('aria-label') ?? await target.textContent()}`);
+  throw new Error(
+    `Keyboard focus did not reach ${(await target.getAttribute('aria-label')) ?? (await target.textContent())}`,
+  );
 }
 
 async function login(page, identifier = 'admin@example.com') {
@@ -84,13 +99,17 @@ test('financial and RBAC controls fail closed', async ({ browser }) => {
   await requestForm.getByRole('button', { name: '创建补偿分录' }).click();
   await expectFixtureMutation(context, 'compensationCreated');
   await page.reload();
-  await expect(page.getByRole('form', { name: `审批补偿申请 ${IDS.reconciliation}` })).toHaveCount(0);
+  await expect(page.getByRole('form', { name: `审批补偿申请 ${IDS.reconciliation}` })).toHaveCount(
+    0,
+  );
 
   const reviewer = await browser.newContext({ viewport: { height: 900, width: 1280 } });
   const reviewerPage = await reviewer.newPage();
   await login(reviewerPage, 'reviewer@example.com');
   await reviewerPage.goto('/finance/reconciliation');
-  const approvalForm = reviewerPage.getByRole('form', { name: `审批补偿申请 ${IDS.reconciliation}` });
+  const approvalForm = reviewerPage.getByRole('form', {
+    name: `审批补偿申请 ${IDS.reconciliation}`,
+  });
   await approvalForm.getByLabel('复核意见').fill('验证服务端自审保护');
   await approvalForm.getByRole('checkbox').check();
   const approvalEntries = await actionEntries(approvalForm);
@@ -100,7 +119,9 @@ test('financial and RBAC controls fail closed', async ({ browser }) => {
   const selfApproval = await invokeServerAction(page, '/finance/reconciliation', approvalEntries);
   expect(selfApproval.status).toBe(500);
   const afterSelfApproval = await fixtureState(context);
-  expect(afterSelfApproval.calls.compensationApprovals).toBe(beforeSelfApproval.calls.compensationApprovals);
+  expect(afterSelfApproval.calls.compensationApprovals).toBe(
+    beforeSelfApproval.calls.compensationApprovals,
+  );
   expect(afterSelfApproval.state.compensationApproved).toBe(false);
   await page.reload();
   await expect(page.getByText(/已完成审批 1\/2/u)).toBeVisible();
@@ -110,8 +131,13 @@ test('financial and RBAC controls fail closed', async ({ browser }) => {
   await expect(page.locator('form:not([method="get"])')).toHaveCount(0);
   await expect(page.getByRole('button', { name: /编辑|调整|删除/u })).toHaveCount(0);
   await mkdir('output/playwright', { recursive: true });
-  await page.locator('nextjs-portal').evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
-  await page.screenshot({ fullPage: true, path: 'output/playwright/acceptance-financial-controls.png' });
+  await page
+    .locator('nextjs-portal')
+    .evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+  await page.screenshot({
+    fullPage: true,
+    path: 'output/playwright/acceptance-financial-controls.png',
+  });
 
   await page.goto(`/tasks/${IDS.task}`);
   await page.getByRole('tab', { name: '原始报文' }).click();
@@ -143,7 +169,9 @@ test('financial and RBAC controls fail closed', async ({ browser }) => {
   await page.goto('/iam');
   await expect(page.getByText(/超级管理员/u)).toBeVisible();
   await expect(page.getByRole('button', { name: '应用管理员变更' })).toHaveCount(1);
-  const safeAdminForm = page.getByRole('button', { name: '应用管理员变更' }).locator('xpath=ancestor::form');
+  const safeAdminForm = page
+    .getByRole('button', { name: '应用管理员变更' })
+    .locator('xpath=ancestor::form');
   await safeAdminForm.getByLabel('操作原因').fill('捕获合法管理员命令元数据');
   await safeAdminForm.getByRole('checkbox').check();
   const adminEntries = await actionEntries(safeAdminForm);
@@ -160,10 +188,14 @@ test('financial and RBAC controls fail closed', async ({ browser }) => {
   const afterLastSuper = await fixtureState(context);
   expect(afterLastSuper.calls.iamCommands).toBe(0);
   await page.reload();
-  const protectedAdmin = page.getByText('admin-****01', { exact: true }).locator('xpath=ancestor::*[@role="group"][1]');
+  const protectedAdmin = page
+    .getByText('admin-****01', { exact: true })
+    .locator('xpath=ancestor::*[@role="group"][1]');
   await expect(protectedAdmin).toContainText('ACTIVE');
   await expect(protectedAdmin.locator('form')).toHaveCount(0);
-  await page.locator('nextjs-portal').evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+  await page
+    .locator('nextjs-portal')
+    .evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
   await page.screenshot({ fullPage: true, path: 'output/playwright/acceptance-rbac-controls.png' });
   await context.close();
 
@@ -175,7 +207,11 @@ test('financial and RBAC controls fail closed', async ({ browser }) => {
   expect(forbidden?.status()).toBe(403);
   await expect(viewerPage.locator('body')).toContainText('FORBIDDEN');
   await expect(viewerPage.locator('body')).not.toBeEmpty();
-  const missingPermission = await invokeServerAction(viewerPage, '/finance/reconciliation', approvalEntries);
+  const missingPermission = await invokeServerAction(
+    viewerPage,
+    '/finance/reconciliation',
+    approvalEntries,
+  );
   expect(missingPermission.status).toBe(403);
   expect(missingPermission.body).toContain('FORBIDDEN');
   await viewer.close();
@@ -205,7 +241,10 @@ test('critical screens pass axe at 1280px and expose keyboard focus', async ({ p
         .exclude('[data-tabster-dummy]')
         .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
         .analyze();
-      expect(results.violations, `${route}: ${results.violations.map((item) => item.id).join(', ')}`).toEqual([]);
+      expect(
+        results.violations,
+        `${route}: ${results.violations.map((item) => item.id).join(', ')}`,
+      ).toEqual([]);
 
       if (route === '/overview') {
         const providers = page.getByRole('link', { name: '供应商' });
@@ -239,10 +278,12 @@ test('critical screens pass axe at 1280px and expose keyboard focus', async ({ p
         await tabTo(page, publicTab);
         await page.keyboard.press('ArrowRight');
         await expect(rawTab).toBeFocused();
-        expect(await rawTab.evaluate((element) => {
-          const bounds = element.getBoundingClientRect();
-          return element.matches(':focus-visible') && bounds.width > 0 && bounds.height > 0;
-        })).toBe(true);
+        expect(
+          await rawTab.evaluate((element) => {
+            const bounds = element.getBoundingClientRect();
+            return element.matches(':focus-visible') && bounds.width > 0 && bounds.height > 0;
+          }),
+        ).toBe(true);
         await page.keyboard.press('Enter');
         await expect(page.getByLabel('脱敏原始报文')).toBeVisible();
       } else if (route === '/finance/ledger') {

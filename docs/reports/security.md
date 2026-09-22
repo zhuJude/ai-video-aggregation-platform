@@ -7,7 +7,7 @@
 
 - `corepack pnpm audit --prod --audit-level high`：`No known vulnerabilities found`，Critical/High 均为 0；没有忽略公告。
 - `tests/e2e/security-boundaries.spec.ts`：PASS。聚合验证 Edge rate limit、IAM security adapters、Payment/Provider webhook callback、Provider circuit、Wallet ledger property。
-- 唯一根锁 SHA-256：`eab7fe9e0c57dd3bb4a228030e25c7ae12d7419b09e6ef47ae05a871219106b9`。
+- 唯一根锁 SHA-256：`e688a6480be6551f3d13daa25e2adfb709cc07a0c49834376f8e96d71f9011ab`。
 
 ## 未通过
 

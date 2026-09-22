@@ -27,11 +27,7 @@ interface AuthenticatedAdmin {
 }
 const VERIFIED_REQUESTS = new WeakMap<object, AuthenticatedAdmin>();
 
-function bindVerifiedRequest(
-  request: AdminHttpRequest,
-  adminId: string,
-  sessionId: string,
-): void {
+function bindVerifiedRequest(request: AdminHttpRequest, adminId: string, sessionId: string): void {
   if (!isUuidV7(adminId) || !isUuidV7(sessionId)) throw stableError('INVALID_ADMIN_PRINCIPAL');
   VERIFIED_REQUESTS.set(request, Object.freeze({ adminId, sessionId }));
 }
@@ -92,10 +88,7 @@ export class RolesController {
 
   @Post('roles')
   @UseGuards(IamAdminGuard)
-  createRole(
-    @Req() request: AdminHttpRequest,
-    @Body() rawBody: unknown,
-  ) {
+  createRole(@Req() request: AdminHttpRequest, @Body() rawBody: unknown) {
     const trusted = principalFromRequest(request);
     const body = roleBody(rawBody, false);
     return this.service.createRole({
@@ -169,10 +162,7 @@ export class RolesController {
 
   @Post('admins/:adminId/disable')
   @UseGuards(IamAdminGuard)
-  disableAdmin(
-    @Req() request: AdminHttpRequest,
-    @Param('adminId') rawAdminId: unknown,
-  ) {
+  disableAdmin(@Req() request: AdminHttpRequest, @Param('adminId') rawAdminId: unknown) {
     return this.service.disableAdmin({
       adminId: uuidV7(rawAdminId),
       context: managementContext(principalFromRequest(request), request),
@@ -216,9 +206,15 @@ export class RolesController {
   }
 }
 
-function roleBody(input: unknown, withVersion: true): RoleInput & { readonly expectedVersion: number };
+function roleBody(
+  input: unknown,
+  withVersion: true,
+): RoleInput & { readonly expectedVersion: number };
 function roleBody(input: unknown, withVersion: false): RoleInput;
-function roleBody(input: unknown, withVersion: boolean): RoleInput & { readonly expectedVersion?: number } {
+function roleBody(
+  input: unknown,
+  withVersion: boolean,
+): RoleInput & { readonly expectedVersion?: number } {
   const body = exactRecord(
     input,
     withVersion

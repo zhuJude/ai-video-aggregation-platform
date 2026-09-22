@@ -13,17 +13,14 @@ describe('catalog API', () => {
   let server: FastifyInstance;
   let store: CatalogStore;
 
-  beforeEach(
-    async () => {
-      ({ app, store } = await createCatalogApplication({
-        internalServiceToken: 'service-token',
-      }));
-      await app.init();
-      server = app.getHttpAdapter().getInstance() as FastifyInstance;
-      await server.ready();
-    },
-    60_000,
-  );
+  beforeEach(async () => {
+    ({ app, store } = await createCatalogApplication({
+      internalServiceToken: 'service-token',
+    }));
+    await app.init();
+    server = app.getHttpAdapter().getInstance() as FastifyInstance;
+    await server.ready();
+  }, 60_000);
 
   afterEach(async () => {
     await app.close();

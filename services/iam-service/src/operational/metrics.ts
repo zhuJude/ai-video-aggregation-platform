@@ -21,7 +21,8 @@ export class IamMetrics {
       'iam_pending_cleanup_failures_total',
       'iam_pending_sessions_cleaned_total',
       'iam_readiness_adapter_stuck_total',
-    ] as const) this.counters.set(name, 0);
+    ] as const)
+      this.counters.set(name, 0);
   }
   increment(name: IamMetricName): void {
     this.counters.set(name, (this.counters.get(name) ?? 0) + 1);
@@ -40,7 +41,10 @@ export class IamMetrics {
       ['iam_authorization_denials_total', 'Denied IAM authorization decisions.'],
       ['iam_pending_cleanup_failures_total', 'Failed bounded pending-session cleanup runs.'],
       ['iam_pending_sessions_cleaned_total', 'Expired pending administrator sessions cleaned.'],
-      ['iam_readiness_adapter_stuck_total', 'Readiness adapters that did not settle within abort grace.'],
+      [
+        'iam_readiness_adapter_stuck_total',
+        'Readiness adapters that did not settle within abort grace.',
+      ],
     ];
     const lines = definitions.flatMap(([name, help]) => [
       `# HELP ${name} ${help}`,

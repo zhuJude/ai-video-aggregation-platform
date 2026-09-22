@@ -179,7 +179,17 @@ export class MemoryIamAdministrationRepository implements IamAdministrationRepos
   ): ReturnType<IamAdministrationRepository['updateRole']> {
     return this.exclusive(() => {
       const current = this.roles.get(input.roleId);
-      const denied = (kind: 'not_found' | 'protected' | 'version_conflict' | 'name_conflict' | 'permission_missing' | 'actor_denied' | 'capability_exceeded', code: string) => {
+      const denied = (
+        kind:
+          | 'not_found'
+          | 'protected'
+          | 'version_conflict'
+          | 'name_conflict'
+          | 'permission_missing'
+          | 'actor_denied'
+          | 'capability_exceeded',
+        code: string,
+      ) => {
         this.recordDecision(input.audit, 'DENIED', code, current ?? null, null);
         return { kind } as const;
       };
@@ -191,9 +201,7 @@ export class MemoryIamAdministrationRepository implements IamAdministrationRepos
       if (current.version !== input.expectedVersion)
         return denied('version_conflict', 'ROLE_VERSION_CONFLICT');
       if (
-        [...this.roles.values()].some(
-          (role) => role.id !== current.id && role.name === input.name,
-        )
+        [...this.roles.values()].some((role) => role.id !== current.id && role.name === input.name)
       )
         return denied('name_conflict', 'ROLE_NAME_CONFLICT');
       if (input.permissionKeys.some((key) => !this.permissions.has(key)))
@@ -246,7 +254,8 @@ export class MemoryIamAdministrationRepository implements IamAdministrationRepos
     input: Parameters<IamAdministrationRepository['assignRole']>[0],
   ): ReturnType<IamAdministrationRepository['assignRole']> {
     return this.exclusive(() => {
-      const admin = this.admins.get(input.adminId), role = this.roles.get(input.roleId);
+      const admin = this.admins.get(input.adminId),
+        role = this.roles.get(input.roleId);
       let result: Awaited<ReturnType<IamAdministrationRepository['assignRole']>>;
       const actorId = input.audit.context.actorId;
       if (input.assignedBy !== actorId || !this.actorCan(actorId, 'iam:admins:write', 'ALL'))
@@ -269,7 +278,9 @@ export class MemoryIamAdministrationRepository implements IamAdministrationRepos
       this.recordDecision(
         input.audit,
         result === 'assigned' || result === 'already_assigned' ? 'SUCCESS' : 'DENIED',
-        result === 'assigned' || result === 'already_assigned' ? undefined : assignmentError(result),
+        result === 'assigned' || result === 'already_assigned'
+          ? undefined
+          : assignmentError(result),
         null,
         result === 'assigned' ? { adminId: input.adminId, roleId: input.roleId } : null,
       );
@@ -291,11 +302,7 @@ export class MemoryIamAdministrationRepository implements IamAdministrationRepos
       else if (!input.expectedAssignment || !assignment) result = 'not_assigned';
       else if (role?.protected && !this.isActiveProtectedAdmin(actorId))
         result = 'protected_role_denied';
-      else if (
-        admin?.status === 'ACTIVE' &&
-        role?.protected &&
-        this.activeSuperAdminCount() <= 1
-      )
+      else if (admin?.status === 'ACTIVE' && role?.protected && this.activeSuperAdminCount() <= 1)
         result = 'last_super_admin';
       else {
         this.assignments.delete(key);
@@ -335,7 +342,9 @@ export class MemoryIamAdministrationRepository implements IamAdministrationRepos
             input.audit,
             result === 'disabled' ? 'SUCCESS' : 'DENIED',
             result === 'disabled' ? undefined : adminError(result),
-            admin ? { id: admin.id, status: result === 'disabled' ? 'ACTIVE' : admin.status } : null,
+            admin
+              ? { id: admin.id, status: result === 'disabled' ? 'ACTIVE' : admin.status }
+              : null,
             admin ?? null,
           );
         },
@@ -411,9 +420,7 @@ export class MemoryIamAdministrationRepository implements IamAdministrationRepos
 
   private isActiveProtectedAdmin(adminId: string | null): boolean {
     return Boolean(
-      adminId &&
-        this.admins.get(adminId)?.status === 'ACTIVE' &&
-        this.isActiveSuperAdmin(adminId),
+      adminId && this.admins.get(adminId)?.status === 'ACTIVE' && this.isActiveSuperAdmin(adminId),
     );
   }
 
@@ -548,32 +555,38 @@ function decodeRoleCursor(value: string): { readonly name: string; readonly id: 
 }
 
 function roleError(result: string): string {
-  return {
-    not_found: 'ROLE_NOT_FOUND',
-    protected: 'PROTECTED_ROLE',
-    version_conflict: 'ROLE_VERSION_CONFLICT',
-    assigned: 'ROLE_ASSIGNED',
-    actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
-  }[result] ?? 'ROLE_MUTATION_DENIED';
+  return (
+    {
+      not_found: 'ROLE_NOT_FOUND',
+      protected: 'PROTECTED_ROLE',
+      version_conflict: 'ROLE_VERSION_CONFLICT',
+      assigned: 'ROLE_ASSIGNED',
+      actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
+    }[result] ?? 'ROLE_MUTATION_DENIED'
+  );
 }
 
 function assignmentError(result: string): string {
-  return {
-    admin_inactive: 'ADMIN_NOT_ACTIVE',
-    role_not_found: 'ROLE_NOT_FOUND',
-    not_assigned: 'ROLE_NOT_ASSIGNED',
-    last_super_admin: 'LAST_SUPER_ADMIN_PROTECTED',
-    actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
-    protected_role_denied: 'PROTECTED_ROLE_ASSIGNMENT_DENIED',
-    capability_exceeded: 'CAPABILITY_CEILING_EXCEEDED',
-  }[result] ?? 'ROLE_ASSIGNMENT_DENIED';
+  return (
+    {
+      admin_inactive: 'ADMIN_NOT_ACTIVE',
+      role_not_found: 'ROLE_NOT_FOUND',
+      not_assigned: 'ROLE_NOT_ASSIGNED',
+      last_super_admin: 'LAST_SUPER_ADMIN_PROTECTED',
+      actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
+      protected_role_denied: 'PROTECTED_ROLE_ASSIGNMENT_DENIED',
+      capability_exceeded: 'CAPABILITY_CEILING_EXCEEDED',
+    }[result] ?? 'ROLE_ASSIGNMENT_DENIED'
+  );
 }
 
 function adminError(result: string): string {
-  return {
-    last_super_admin: 'LAST_SUPER_ADMIN_PROTECTED',
-    actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
-  }[result] ?? 'ADMIN_NOT_FOUND';
+  return (
+    {
+      last_super_admin: 'LAST_SUPER_ADMIN_PROTECTED',
+      actor_denied: 'ADMIN_AUTHORIZATION_DENIED',
+    }[result] ?? 'ADMIN_NOT_FOUND'
+  );
 }
 
 function scopeCovers(granted: RoleRecord['dataScope'], desired: RoleRecord['dataScope']): boolean {

@@ -39,9 +39,7 @@ export class RuleVersionStore {
   }
 
   publish(kind: RuleKind, version: number, publishedBy: string, at = new Date()): RuleVersion {
-    const index = this.rules.findIndex(
-      (rule) => rule.kind === kind && rule.version === version,
-    );
+    const index = this.rules.findIndex((rule) => rule.kind === kind && rule.version === version);
     const draft = this.rules[index];
     if (!draft) throw ruleError('RULE_VERSION_NOT_FOUND');
     if (draft.status !== 'DRAFT') throw ruleError('RULE_VERSION_IMMUTABLE');
@@ -62,8 +60,7 @@ export class RuleVersionStore {
     at = new Date(),
   ): RuleVersion {
     const target = this.rules.find(
-      (rule) =>
-        rule.kind === kind && rule.version === targetVersion && rule.status === 'PUBLISHED',
+      (rule) => rule.kind === kind && rule.version === targetVersion && rule.status === 'PUBLISHED',
     );
     if (!target) throw ruleError('PUBLISHED_RULE_VERSION_NOT_FOUND');
     const nextVersion =

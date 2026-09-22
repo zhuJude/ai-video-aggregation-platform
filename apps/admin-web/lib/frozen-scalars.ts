@@ -34,6 +34,7 @@ export function isCoherentPointsAdjustment(
   const afterPoints = BigInt(after);
   const adjustmentPoints = BigInt(points);
   if (direction === 'CREDIT') return afterPoints === beforePoints + adjustmentPoints;
-  if (direction === 'DEBIT') return beforePoints >= adjustmentPoints && afterPoints === beforePoints - adjustmentPoints;
+  if (direction === 'DEBIT')
+    return beforePoints >= adjustmentPoints && afterPoints === beforePoints - adjustmentPoints;
   return false;
 }

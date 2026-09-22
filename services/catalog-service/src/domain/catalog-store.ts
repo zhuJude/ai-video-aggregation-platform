@@ -10,11 +10,7 @@ import {
 export type ProviderStatus = 'ACTIVE' | 'MAINTENANCE' | 'DISABLED';
 export type ModelStatus = 'DRAFT' | 'ACTIVE' | 'MAINTENANCE' | 'DISABLED';
 export type GenerationMode =
-  | 'TEXT_TO_VIDEO'
-  | 'IMAGE_TO_VIDEO'
-  | 'FIRST_LAST_FRAME'
-  | 'REFERENCE_VIDEO'
-  | 'EXTEND_VIDEO';
+  'TEXT_TO_VIDEO' | 'IMAGE_TO_VIDEO' | 'FIRST_LAST_FRAME' | 'REFERENCE_VIDEO' | 'EXTEND_VIDEO';
 
 export interface CatalogProvider {
   id: string;

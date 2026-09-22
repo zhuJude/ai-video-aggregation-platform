@@ -113,12 +113,26 @@ export interface IamAdministrationRepository {
     readonly dataScope: DataScope;
     readonly permissionKeys: readonly string[];
     readonly audit: AuditDecisionInput;
-  }): Promise<{ readonly kind: 'updated'; readonly role: RoleRecord } | { readonly kind: 'not_found' | 'protected' | 'version_conflict' | 'name_conflict' | 'permission_missing' | 'actor_denied' | 'capability_exceeded' }>;
+  }): Promise<
+    | { readonly kind: 'updated'; readonly role: RoleRecord }
+    | {
+        readonly kind:
+          | 'not_found'
+          | 'protected'
+          | 'version_conflict'
+          | 'name_conflict'
+          | 'permission_missing'
+          | 'actor_denied'
+          | 'capability_exceeded';
+      }
+  >;
   deleteRole(input: {
     readonly roleId: string;
     readonly expectedVersion: number;
     readonly audit: AuditDecisionInput;
-  }): Promise<'deleted' | 'not_found' | 'protected' | 'version_conflict' | 'assigned' | 'actor_denied'>;
+  }): Promise<
+    'deleted' | 'not_found' | 'protected' | 'version_conflict' | 'assigned' | 'actor_denied'
+  >;
   assignRole(input: {
     readonly adminId: string;
     readonly roleId: string;
@@ -138,7 +152,9 @@ export interface IamAdministrationRepository {
     readonly roleId: string;
     readonly expectedAssignment: boolean;
     readonly audit: AuditDecisionInput;
-  }): Promise<'revoked' | 'not_assigned' | 'last_super_admin' | 'actor_denied' | 'protected_role_denied'>;
+  }): Promise<
+    'revoked' | 'not_assigned' | 'last_super_admin' | 'actor_denied' | 'protected_role_denied'
+  >;
   disableAdmin(input: {
     readonly adminId: string;
     readonly audit: AuditDecisionInput;

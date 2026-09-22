@@ -19,7 +19,10 @@ import {
 
 function recordUnclassifiedActionFailure(error: unknown): void {
   if (consumeTechnicalFailure(error)) return;
-  recordSafeTelemetry(defaultSafeTelemetry, createSafeTelemetryEvent('login.action', 'ACTION_FAILURE'));
+  recordSafeTelemetry(
+    defaultSafeTelemetry,
+    createSafeTelemetryEvent('login.action', 'ACTION_FAILURE'),
+  );
 }
 
 async function createHandlers(redirectTo?: string) {
@@ -46,7 +49,9 @@ async function createHandlers(redirectTo?: string) {
   });
 }
 
-export async function preparePasswordAction(identifier: string): Promise<Readonly<{ status: 'READY' | 'ERROR' }>> {
+export async function preparePasswordAction(
+  identifier: string,
+): Promise<Readonly<{ status: 'READY' | 'ERROR' }>> {
   try {
     return await (await createHandlers()).preparePassword(identifier);
   } catch (error) {

@@ -8,8 +8,6 @@ export function identityLockKeys(scope: IdentityLockScope): readonly string[] {
   return [
     `identity-account:${scope.userId}`,
     ...(scope.operationId ? [`identity-operation:${scope.operationId}`] : []),
-    ...(scope.sessionFamilyId
-      ? [`identity-session-family:${scope.sessionFamilyId}`]
-      : []),
+    ...(scope.sessionFamilyId ? [`identity-session-family:${scope.sessionFamilyId}`] : []),
   ].sort();
 }

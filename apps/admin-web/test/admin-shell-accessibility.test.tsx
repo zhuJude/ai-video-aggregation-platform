@@ -32,13 +32,8 @@ describe('AdminShell accessibility and mobile context', () => {
       'href',
       '/users',
     );
-    expect(
-      within(breadcrumbs).queryByRole('button', { name: '用户详情' }),
-    ).toBeNull();
-    expect(within(breadcrumbs).getByText('用户详情')).toHaveAttribute(
-      'aria-current',
-      'page',
-    );
+    expect(within(breadcrumbs).queryByRole('button', { name: '用户详情' })).toBeNull();
+    expect(within(breadcrumbs).getByText('用户详情')).toHaveAttribute('aria-current', 'page');
   });
 
   it('keeps environment and data-scope context inside the mobile navigation', () => {
@@ -53,17 +48,11 @@ describe('AdminShell accessibility and mobile context', () => {
     });
     expect(within(mobileContext).getByText('预发布')).toBeVisible();
     expect(within(mobileContext).getByText('数据范围 已分配')).toBeVisible();
-    expect(screen.getByRole('complementary')).not.toContainElement(
-      mobileContext,
-    );
+    expect(screen.getByRole('complementary')).not.toContainElement(mobileContext);
   });
 
   it('updates the mobile toggle label to reflect open and closed state', () => {
-    render(
-      <AdminShell subject={subject}>
-        {null}
-      </AdminShell>,
-    );
+    render(<AdminShell subject={subject}>{null}</AdminShell>);
 
     const openButton = screen.getByRole('button', { name: '打开导航' });
     fireEvent.click(openButton);
@@ -77,11 +66,7 @@ describe('AdminShell accessibility and mobile context', () => {
   });
 
   it('uses combobox and listbox semantics with arrows and Escape handling', () => {
-    render(
-      <AdminShell subject={subject}>
-        {null}
-      </AdminShell>,
-    );
+    render(<AdminShell subject={subject}>{null}</AdminShell>);
 
     const combobox = screen.getByRole('combobox', { name: '命令搜索' });
     expect(combobox).toHaveAttribute('aria-expanded', 'false');
@@ -93,10 +78,7 @@ describe('AdminShell accessibility and mobile context', () => {
     expect(screen.getByRole('option', { name: '用户' })).toBeVisible();
 
     fireEvent.keyDown(combobox, { key: 'ArrowDown' });
-    expect(combobox).toHaveAttribute(
-      'aria-activedescendant',
-      'admin-command-option-0',
-    );
+    expect(combobox).toHaveAttribute('aria-activedescendant', 'admin-command-option-0');
     fireEvent.keyDown(combobox, { key: 'Escape' });
     expect(combobox).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('listbox')).toBeNull();

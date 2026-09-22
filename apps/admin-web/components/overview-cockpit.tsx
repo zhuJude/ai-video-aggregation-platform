@@ -1,13 +1,6 @@
 'use client';
 
-import {
-  Badge,
-  Card,
-  CardHeader,
-  Text,
-  Title2,
-  makeStyles,
-} from '@fluentui/react-components';
+import { Badge, Card, CardHeader, Text, Title2, makeStyles } from '@fluentui/react-components';
 
 import type {
   OverviewDataset,
@@ -95,7 +88,7 @@ export function OverviewCockpit({ datasets }: OverviewCockpitProps) {
             </div>
             <div className={styles.status}>
               <Text>{statusCopy[dataset.status]}</Text>
-              {dataset.warning ?? dataset.reason ? (
+              {(dataset.warning ?? dataset.reason) ? (
                 <Text
                   className={styles.warning}
                   role={dataset.status === 'ERROR' ? 'alert' : undefined}
@@ -103,16 +96,12 @@ export function OverviewCockpit({ datasets }: OverviewCockpitProps) {
                   {dataset.warning ?? dataset.reason}
                 </Text>
               ) : null}
-              <Text size={200}>
-                来源时间 {dataset.sourceTimestamp ?? '未提供'}
-              </Text>
+              <Text size={200}>来源时间 {dataset.sourceTimestamp ?? '未提供'}</Text>
             </div>
           </Card>
         ))}
       </div>
-      {requiresCaution ? (
-        <Text role="alert">数据不完整，不能作为权威计算依据</Text>
-      ) : null}
+      {requiresCaution ? <Text role="alert">数据不完整，不能作为权威计算依据</Text> : null}
     </section>
   );
 }

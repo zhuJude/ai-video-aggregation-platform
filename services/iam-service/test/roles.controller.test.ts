@@ -12,18 +12,22 @@ describe('RolesController', () => {
     const actorId = generateUuidV7();
     const ingress = await authenticatedRequest(actorId);
 
-    await controller.createRole(
-      ingress,
-      {
-        name: 'support-operator',
-        description: 'Support operator',
-        dataScope: 'ASSIGNED',
-        permissionKeys: ['users:read'],
-      },
-    );
+    await controller.createRole(ingress, {
+      name: 'support-operator',
+      description: 'Support operator',
+      dataScope: 'ASSIGNED',
+      permissionKeys: ['users:read'],
+    });
 
     const call = createRole.mock.calls[0]?.[0] as
-      | { readonly name: string; readonly context: { readonly actorId: string; readonly ipAddress: string; readonly traceId: string } }
+      | {
+          readonly name: string;
+          readonly context: {
+            readonly actorId: string;
+            readonly ipAddress: string;
+            readonly traceId: string;
+          };
+        }
       | undefined;
     expect(call).toEqual(expect.objectContaining({ name: 'support-operator' }));
     expect(call?.context.actorId).toBe(actorId);
@@ -39,7 +43,10 @@ describe('RolesController', () => {
     expect((rolesModule as Record<string, unknown>)['bindVerifiedRequest']).toBeUndefined();
     expect(() =>
       controller.createRole(
-        { ...request(), admin: { adminId: generateUuidV7(), sessionId: generateUuidV7() } } as never,
+        {
+          ...request(),
+          admin: { adminId: generateUuidV7(), sessionId: generateUuidV7() },
+        } as never,
         {
           name: 'support-operator',
           description: 'Support operator',
@@ -49,16 +56,13 @@ describe('RolesController', () => {
       ),
     ).toThrow(expect.objectContaining({ code: 'UNTRUSTED_ADMIN_PRINCIPAL' }));
     expect(() =>
-      controller.createRole(
-        trusted,
-        {
-          name: 'support-operator',
-          description: 'Support operator',
-          dataScope: 'ALL',
-          permissionKeys: [],
-          protected: true,
-        },
-      ),
+      controller.createRole(trusted, {
+        name: 'support-operator',
+        description: 'Support operator',
+        dataScope: 'ALL',
+        permissionKeys: [],
+        protected: true,
+      }),
     ).toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }));
   });
 
@@ -137,20 +141,34 @@ describe('RolesController', () => {
 
     const missing = new IamAdminGuard({ verify: vi.fn() });
     await expect(
-      missing.canActivate({ switchToHttp: () => ({ getRequest: () => ({ headers: {}, ip: '127.0.0.1' }) }) } as never),
+      missing.canActivate({
+        switchToHttp: () => ({ getRequest: () => ({ headers: {}, ip: '127.0.0.1' }) }),
+      } as never),
     ).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACCESS_TOKEN' });
   });
 
   it('does not classify guard or untrusted-principal authentication failures as authorization denials', async () => {
     const metrics = new IamMetrics(() => Promise.resolve(0));
     const controller = new RolesController({ createRole: vi.fn() } as never);
-    expect(() => controller.createRole(request() as never, {
-      name: 'support-operator', description: 'Support operator', dataScope: 'ALL', permissionKeys: [],
-    })).toThrow(expect.objectContaining({ code: 'UNTRUSTED_ADMIN_PRINCIPAL' }));
+    expect(() =>
+      controller.createRole(request() as never, {
+        name: 'support-operator',
+        description: 'Support operator',
+        dataScope: 'ALL',
+        permissionKeys: [],
+      }),
+    ).toThrow(expect.objectContaining({ code: 'UNTRUSTED_ADMIN_PRINCIPAL' }));
     const guard = new IamAdminGuard({ verify: () => Promise.reject(new Error('invalid')) });
-    await expect(guard.canActivate({ switchToHttp: () => ({ getRequest: () => ({
-      headers: { authorization: 'Bearer invalid.token' }, ip: '127.0.0.1',
-    }) }) } as never)).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACCESS_TOKEN' });
+    await expect(
+      guard.canActivate({
+        switchToHttp: () => ({
+          getRequest: () => ({
+            headers: { authorization: 'Bearer invalid.token' },
+            ip: '127.0.0.1',
+          }),
+        }),
+      } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_ADMIN_ACCESS_TOKEN' });
     expect(await metrics.render()).toContain('iam_authorization_denials_total 0');
   });
 });

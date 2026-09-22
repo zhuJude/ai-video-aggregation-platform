@@ -154,8 +154,7 @@ export class PrismaAccountMutationRepository implements AccountMutationRepositor
       persistedFingerprint !== undefined &&
       expectation.requestFingerprints.some(
         ({ digest, keyVersion }) =>
-          digest === persistedFingerprint.digest &&
-          keyVersion === persistedFingerprint.keyVersion,
+          digest === persistedFingerprint.digest && keyVersion === persistedFingerprint.keyVersion,
       )
     ) {
       return 'completed';

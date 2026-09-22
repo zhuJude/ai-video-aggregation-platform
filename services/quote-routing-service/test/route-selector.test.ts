@@ -120,8 +120,8 @@ describe('deterministic route selector', () => {
   });
 
   it('fails explicitly when no candidate is eligible', () => {
-    expect(() =>
-      selectRoute([candidate({ health: 'UNHEALTHY' })], weights),
-    ).toThrow('NO_ELIGIBLE_ROUTE');
+    expect(() => selectRoute([candidate({ health: 'UNHEALTHY' })], weights)).toThrow(
+      'NO_ELIGIBLE_ROUTE',
+    );
   });
 });

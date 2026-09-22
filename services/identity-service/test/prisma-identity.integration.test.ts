@@ -201,10 +201,9 @@ describe.skipIf(!databaseUrl)('Prisma identity integration', () => {
       eventMetadata: EventMetadata.create(),
     };
 
-    await expect(Promise.all([account.changePhone(input), account.changePhone(input)])).resolves.toEqual([
-      undefined,
-      undefined,
-    ]);
+    await expect(
+      Promise.all([account.changePhone(input), account.changePhone(input)]),
+    ).resolves.toEqual([undefined, undefined]);
     expect(verify).toHaveBeenCalledTimes(2);
     await expect(
       account.changePhone({ ...input, newPhoneE164: uniquePhone() }),

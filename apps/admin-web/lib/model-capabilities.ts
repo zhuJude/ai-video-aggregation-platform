@@ -238,8 +238,7 @@ function validateSchemaPolicy(schema: Readonly<Record<string, JsonValue>>): read
       const children = node[keyword];
       if (Array.isArray(children)) {
         if (children.length > 32) errors.push('JSON Schema 复杂度超过安全限制');
-        else
-          for (const child of children as readonly JsonValue[]) visit(child, label, depth + 1);
+        else for (const child of children as readonly JsonValue[]) visit(child, label, depth + 1);
       }
     }
   };

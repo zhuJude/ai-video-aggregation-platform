@@ -119,7 +119,7 @@ function Preview({ definition }: Readonly<{ definition: CapabilityDefinition }>)
     Record<string, Record<string, unknown>> | undefined;
   const fields = [...definition.uiSchema.fields].sort((a, b) => a.order - b.order);
   const requiredFields = Array.isArray(definition.schema.required)
-    ? definition.schema.required as readonly unknown[]
+    ? (definition.schema.required as readonly unknown[])
     : [];
   const defaults = useMemo(
     () =>
@@ -182,7 +182,9 @@ function Preview({ definition }: Readonly<{ definition: CapabilityDefinition }>)
               value={scalarValue}
             >
               {enumValues.map((item) => (
-                <option key={String(item)} value={String(item)}>{String(item)}</option>
+                <option key={String(item)} value={String(item)}>
+                  {String(item)}
+                </option>
               ))}
             </select>
           ) : property?.format === 'asset-reference' ? (
@@ -259,9 +261,7 @@ function Preview({ definition }: Readonly<{ definition: CapabilityDefinition }>)
               pattern={typeof property?.pattern === 'string' ? property.pattern : undefined}
               required={required}
               type={property?.type === 'number' || property?.type === 'integer' ? 'number' : 'text'}
-              value={
-                typeof value === 'string' || typeof value === 'number' ? String(value) : ''
-              }
+              value={typeof value === 'string' || typeof value === 'number' ? String(value) : ''}
             />
           );
           return (
@@ -307,8 +307,7 @@ export function SchemaEditor({
     [initial.history, initial.versionId],
   );
   const canRollback =
-    hasPermission({ permissions }, 'models:rollback') &&
-    eligibleRollbackVersions.length > 0;
+    hasPermission({ permissions }, 'models:rollback') && eligibleRollbackVersions.length > 0;
   const [definition, setDefinition] = useState(initial.definition);
   const [rawSchema, setRawSchema] = useState(() =>
     JSON.stringify(initial.definition.schema, null, 2),
@@ -326,9 +325,7 @@ export function SchemaEditor({
   const pendingRef = useRef(false);
   const [message, setMessage] = useState<string>();
   const [accepted, setAccepted] = useState(false);
-  const [rollbackTarget, setRollbackTarget] = useState(
-    () => eligibleRollbackVersions[0]?.id ?? '',
-  );
+  const [rollbackTarget, setRollbackTarget] = useState(() => eligibleRollbackVersions[0]?.id ?? '');
   const [intentId, setIntentId] = useState(() => createUuidV7());
   const validationEpoch = useRef(0);
   const operationEpoch = useRef(0);
@@ -434,13 +431,7 @@ export function SchemaEditor({
     setPending(true);
     try {
       await onSave(
-        definitionForm(
-          initial.model.id,
-          initial.version,
-          initial.versionId,
-          definition,
-          intentId,
-        ),
+        definitionForm(initial.model.id, initial.version, initial.versionId, definition, intentId),
       );
       if (operationEpoch.current === epoch) setMessage('草稿已保存，等待权威版本刷新');
     } catch {
@@ -461,8 +452,7 @@ export function SchemaEditor({
       await onCreateDraft(
         identityForm(initial.model.id, initial.version, initial.versionId, intentId),
       );
-      if (operationEpoch.current === epoch)
-        setMessage('新草稿已创建，等待权威版本刷新');
+      if (operationEpoch.current === epoch) setMessage('新草稿已创建，等待权威版本刷新');
     } catch {
       if (operationEpoch.current === epoch) setMessage('新草稿创建被拒绝或暂时不可用');
     } finally {
@@ -918,10 +908,10 @@ export function SchemaEditor({
                       value={rollbackTarget}
                     >
                       {eligibleRollbackVersions.map((entry) => (
-                          <option key={entry.id} value={entry.id}>
-                            v{entry.version}
-                          </option>
-                        ))}
+                        <option key={entry.id} value={entry.id}>
+                          v{entry.version}
+                        </option>
+                      ))}
                     </select>
                   </Field>
                 ) : null}

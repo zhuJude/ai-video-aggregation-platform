@@ -424,7 +424,13 @@ function parseTaskMutationReceipt(
   }>,
 ) {
   const receipt = exactReceipt(value, [
-    'auditRecordId', 'idempotencyKey', 'operation', 'requestId', 'status', 'taskId', 'version',
+    'auditRecordId',
+    'idempotencyKey',
+    'operation',
+    'requestId',
+    'status',
+    'taskId',
+    'version',
   ]);
   if (
     !isUuidV7(receipt.auditRecordId) ||
@@ -455,7 +461,7 @@ function parseQueueMutationReceipt(
   const limitKeys = ['concurrencyLimit', 'defaultPriority', 'rateLimitPerMinute'];
   const receipt = exactReceipt(value, [
     'auditRecordId',
-    ...((binding.action === 'UPDATE_LIMITS') ? limitKeys : []),
+    ...(binding.action === 'UPDATE_LIMITS' ? limitKeys : []),
     'idempotencyKey',
     'operation',
     'paused',
@@ -1357,8 +1363,7 @@ export function createPricingRollbackAction(
     };
     const current = parsePricingView(await dependencies.port.getPricing(base));
     const eligibleTarget = current.versions.some(
-      (version) =>
-        version.status !== 'DRAFT' && isSameUuidV7(version.versionId, targetVersionId),
+      (version) => version.status !== 'DRAFT' && isSameUuidV7(version.versionId, targetVersionId),
     );
     if (
       current.version !== expectedVersion ||
@@ -1721,8 +1726,7 @@ export function createRoutingRollbackAction(
     };
     const current = parseRoutingPolicyView(await dependencies.port.getRouting(base));
     const eligibleTarget = current.versions.some(
-      (version) =>
-        version.status !== 'DRAFT' && isSameUuidV7(version.versionId, targetVersionId),
+      (version) => version.status !== 'DRAFT' && isSameUuidV7(version.versionId, targetVersionId),
     );
     if (
       current.version !== expectedVersion ||
@@ -1837,7 +1841,12 @@ export function createTaskAction(
       impactToken,
       taskId,
     });
-    return parseTaskMutationReceipt(response, { action, expectedVersion, idempotencyKey: intentId, taskId });
+    return parseTaskMutationReceipt(response, {
+      action,
+      expectedVersion,
+      idempotencyKey: intentId,
+      taskId,
+    });
   };
 }
 

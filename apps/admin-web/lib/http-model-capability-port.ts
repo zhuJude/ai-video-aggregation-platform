@@ -269,7 +269,9 @@ export function createHttpModelCapabilityPorts(
   });
 
   const commandPort: ModelCapabilityCommandPort = Object.freeze({
-    async previewRollback(input: Parameters<NonNullable<ModelCapabilityCommandPort['previewRollback']>>[0]) {
+    async previewRollback(
+      input: Parameters<NonNullable<ModelCapabilityCommandPort['previewRollback']>>[0],
+    ) {
       const preview = exactRecord(input, [
         'expectedVersion',
         'modelId',

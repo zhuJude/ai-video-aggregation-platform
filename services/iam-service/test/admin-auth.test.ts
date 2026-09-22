@@ -55,24 +55,29 @@ function fixture(
   let randomSequence = 0;
   let uuidSequence = 10;
   const coordinator = new MemoryAdminAccessCoordinator();
-  new MemoryIamAdministrationRepository({
-    admins: [{ id: ADMIN_ID, email: 'ops@example.com', status: 'ACTIVE' }],
-  }, coordinator);
+  new MemoryIamAdministrationRepository(
+    {
+      admins: [{ id: ADMIN_ID, email: 'ops@example.com', status: 'ACTIVE' }],
+    },
+    coordinator,
+  );
   const repository = new MemoryAdminAuthRepository(
-    [{
-      id: ADMIN_ID,
-      email: 'ops@example.com',
-      passwordHash: 'hash:correct-password',
-      status: 'ACTIVE',
-      mfaEnabled: false,
-      pendingTotpSecretCiphertext: null,
-      totpSecretCiphertext: null,
-      lastTotpTimeStep: null,
-      recoveryGeneration: null,
-      mfaFailureCount: 0,
-      mfaFailureWindowStartedAt: null,
-      mfaLockedUntil: null,
-    }],
+    [
+      {
+        id: ADMIN_ID,
+        email: 'ops@example.com',
+        passwordHash: 'hash:correct-password',
+        status: 'ACTIVE',
+        mfaEnabled: false,
+        pendingTotpSecretCiphertext: null,
+        totpSecretCiphertext: null,
+        lastTotpTimeStep: null,
+        recoveryGeneration: null,
+        mfaFailureCount: 0,
+        mfaFailureWindowStartedAt: null,
+        mfaLockedUntil: null,
+      },
+    ],
     coordinator,
   );
   const passwordHasher = new FakePasswordHasher();
@@ -496,9 +501,9 @@ describe('AdminAuthService', () => {
       'Chrome',
     );
     revokeDuringSigning = () =>
-      f.repository.revokeSessionFamily(active.session.adminId, active.session.familyId, f.now()).then(
-        () => undefined,
-      );
+      f.repository
+        .revokeSessionFamily(active.session.adminId, active.session.familyId, f.now())
+        .then(() => undefined);
 
     await expect(f.service.rotateRefresh(active.refreshToken)).rejects.toMatchObject({
       code: 'ADMIN_TOKEN_ISSUANCE_FAILED',
@@ -609,9 +614,12 @@ describe('AdminAuthService', () => {
       code: 'ADMIN_DISABLE_COORDINATOR_UNAVAILABLE',
     });
     const coordinator = new MemoryAdminAccessCoordinator();
-    const management = new MemoryIamAdministrationRepository({
-      admins: [{ id: ADMIN_ID, email: 'ops@example.com', status: 'ACTIVE' }],
-    }, coordinator);
+    const management = new MemoryIamAdministrationRepository(
+      {
+        admins: [{ id: ADMIN_ID, email: 'ops@example.com', status: 'ACTIVE' }],
+      },
+      coordinator,
+    );
     const bootstrap = await management.bootstrapSuperAdmin({
       adminId: ADMIN_ID,
       roleId: '0198fabc-1234-7abc-8abc-000000000099',

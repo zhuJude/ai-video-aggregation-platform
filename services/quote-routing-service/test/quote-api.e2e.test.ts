@@ -38,15 +38,12 @@ describe('quote and routing APIs', () => {
   let server: FastifyInstance;
   let repository: InMemoryQuoteRepository;
 
-  beforeEach(
-    async () => {
-      ({ app, repository } = await createQuoteRoutingApplication());
-      await app.init();
-      server = app.getHttpAdapter().getInstance() as FastifyInstance;
-      await server.ready();
-    },
-    60_000,
-  );
+  beforeEach(async () => {
+    ({ app, repository } = await createQuoteRoutingApplication());
+    await app.init();
+    server = app.getHttpAdapter().getInstance() as FastifyInstance;
+    await server.ready();
+  }, 60_000);
 
   afterEach(async () => {
     await app.close();

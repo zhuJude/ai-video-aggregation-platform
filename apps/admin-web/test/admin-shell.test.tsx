@@ -1,39 +1,47 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/require-await -- Vitest asymmetric matchers are typed as any; async fakes implement production port signatures. */
 
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 import { AdminShell } from '../components/admin-shell';
 import { LoginPanel } from '../components/login-panel';
-import {
-  publicPasswordStepResult,
-  validateTotpInput,
-} from '../lib/login-flow';
-import {
-  AuthorizationError,
-  signAdminSession,
-} from '../lib/session-auth';
+import { publicPasswordStepResult, validateTotpInput } from '../lib/login-flow';
+import { AuthorizationError, signAdminSession } from '../lib/session-auth';
 
 const allAdminPermissions = [
-  '*', 'audit:read', 'content:read', 'finance:read', 'iam:read', 'models:read',
-  'overview:read', 'pricing:read', 'providers:read', 'routing:read', 'system:read',
-  'tasks:read', 'tickets:read', 'users:export', 'users:phone-exact', 'users:read',
-  'users:refresh', 'users:status', 'wallet:adjust',
+  '*',
+  'audit:read',
+  'content:read',
+  'finance:read',
+  'iam:read',
+  'models:read',
+  'overview:read',
+  'pricing:read',
+  'providers:read',
+  'routing:read',
+  'system:read',
+  'tasks:read',
+  'tickets:read',
+  'users:export',
+  'users:phone-exact',
+  'users:read',
+  'users:refresh',
+  'users:status',
+  'wallet:adjust',
 ] as const;
 const traceIdPattern = /^[0-9a-f]{32}$/u;
 const uuidV7Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function equivalentNonCanonicalSegment(value: string): string | undefined {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  const decode = (candidate: string) => atob(candidate.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(candidate.length / 4) * 4, '='));
+  const decode = (candidate: string) =>
+    atob(
+      candidate
+        .replaceAll('-', '+')
+        .replaceAll('_', '/')
+        .padEnd(Math.ceil(candidate.length / 4) * 4, '='),
+    );
   const expected = decode(value);
   for (const character of alphabet) {
     const candidate = `${value.slice(0, -1)}${character}`;
@@ -41,10 +49,7 @@ function equivalentNonCanonicalSegment(value: string): string | undefined {
   }
   return undefined;
 }
-import {
-  requireAdminPermission,
-  requireAdminScopedPermission,
-} from '../lib/server-guard';
+import { requireAdminPermission, requireAdminScopedPermission } from '../lib/server-guard';
 import { config, proxy } from '../proxy';
 import {
   type AdminAuthPort,
@@ -66,9 +71,7 @@ import {
 describe('AdminShell', () => {
   it('hides finance navigation without finance permission', () => {
     render(
-      <AdminShell subject={{ permissions: ['users:read'], dataScope: 'ALL' }}>
-        {null}
-      </AdminShell>,
+      <AdminShell subject={{ permissions: ['users:read'], dataScope: 'ALL' }}>{null}</AdminShell>,
     );
 
     expect(screen.queryByRole('link', { name: '财务' })).not.toBeInTheDocument();
@@ -76,15 +79,9 @@ describe('AdminShell', () => {
   });
 
   it('renders the exact operations navigation for a fully authorized subject', () => {
-    render(
-      <AdminShell subject={{ permissions: ['*'], dataScope: 'ALL' }}>
-        {null}
-      </AdminShell>,
-    );
+    render(<AdminShell subject={{ permissions: ['*'], dataScope: 'ALL' }}>{null}</AdminShell>);
 
-    expect(
-      screen.getAllByRole('link').map((link) => link.textContent),
-    ).toEqual([
+    expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual([
       '总览',
       '用户',
       '供应商',
@@ -99,14 +96,8 @@ describe('AdminShell', () => {
       '审计',
       '系统运行',
     ]);
-    expect(screen.getByRole('link', { name: '定价' })).toHaveAttribute(
-      'href',
-      '/pricing',
-    );
-    expect(screen.getByRole('link', { name: '路由' })).toHaveAttribute(
-      'href',
-      '/routing',
-    );
+    expect(screen.getByRole('link', { name: '定价' })).toHaveAttribute('href', '/pricing');
+    expect(screen.getByRole('link', { name: '路由' })).toHaveAttribute('href', '/routing');
   });
 
   it('shows the admin identity, command search, breadcrumbs and environment', () => {
@@ -126,9 +117,7 @@ describe('AdminShell', () => {
     expect(screen.getByText('镜界运营控制台')).toBeVisible();
     expect(screen.getByText('admin.ai-video.internal')).toBeVisible();
     expect(screen.getByRole('combobox', { name: '命令搜索' })).toBeVisible();
-    expect(screen.getByRole('navigation', { name: '面包屑' })).toHaveTextContent(
-      '用户账户详情',
-    );
+    expect(screen.getByRole('navigation', { name: '面包屑' })).toHaveTextContent('用户账户详情');
     expect(screen.getAllByText('预发布')).toHaveLength(2);
     expect(screen.getAllByText('数据范围 已分配')).toHaveLength(2);
   });
@@ -160,9 +149,7 @@ describe('AdminShell', () => {
 
   it('filters command links from permitted navigation without leaking unauthorized routes', () => {
     render(
-      <AdminShell subject={{ permissions: ['users:read'], dataScope: 'OWN' }}>
-        {null}
-      </AdminShell>,
+      <AdminShell subject={{ permissions: ['users:read'], dataScope: 'OWN' }}>{null}</AdminShell>,
     );
     const search = screen.getByRole('combobox', { name: '命令搜索' });
 
@@ -170,17 +157,16 @@ describe('AdminShell', () => {
     const permittedResults = screen.getByRole('listbox', {
       name: '命令搜索结果',
     });
-    expect(
-      within(permittedResults).getByRole('link', { name: '用户' }),
-    ).toHaveAttribute('href', '/users');
+    expect(within(permittedResults).getByRole('link', { name: '用户' })).toHaveAttribute(
+      'href',
+      '/users',
+    );
 
     fireEvent.change(search, { target: { value: '财务' } });
     const restrictedResults = screen.getByRole('listbox', {
       name: '命令搜索结果',
     });
-    expect(
-      within(restrictedResults).queryByRole('link', { name: '财务' }),
-    ).not.toBeInTheDocument();
+    expect(within(restrictedResults).queryByRole('link', { name: '财务' })).not.toBeInTheDocument();
     expect(within(restrictedResults).getByText('没有可用命令')).toBeVisible();
   });
 
@@ -191,18 +177,14 @@ describe('AdminShell', () => {
       </AdminShell>,
     );
 
-    expect(
-      screen.getAllByText(/^(?:镜界)?运营控制台$/),
-    ).toHaveLength(1);
+    expect(screen.getAllByText(/^(?:镜界)?运营控制台$/)).toHaveLength(1);
   });
 });
 
 describe('MFA login', () => {
   it('accepts only local non-sensitive admin return targets', () => {
     expect(
-      normalizeAdminLoginReturnTarget(
-        '/tasks?cursor=next_1&query=failed-job&status=FAILED',
-      ),
+      normalizeAdminLoginReturnTarget('/tasks?cursor=next_1&query=failed-job&status=FAILED'),
     ).toBe('/tasks?cursor=next_1&query=failed-job&status=FAILED');
     expect(normalizeAdminLoginReturnTarget('https://evil.example/tasks')).toBeUndefined();
     expect(normalizeAdminLoginReturnTarget('//evil.example/tasks')).toBeUndefined();
@@ -212,17 +194,38 @@ describe('MFA login', () => {
 
   it('delivers a server preflight cookie before enabling the credential POST', async () => {
     let release: (() => void) | undefined;
-    const preflightAction = vi.fn(() => new Promise<{ status: 'READY' }>((resolve) => { release = () => { resolve({ status: 'READY' }); }; }));
-    const passwordAction = vi.fn(async (
-      _previousState: ReturnType<typeof publicPasswordStepResult> | null,
-      _formData: FormData,
-    ) => {
-      void _previousState;
-      void _formData;
-      return publicPasswordStepResult();
+    const preflightAction = vi.fn(
+      () =>
+        new Promise<{ status: 'READY' }>((resolve) => {
+          release = () => {
+            resolve({ status: 'READY' });
+          };
+        }),
+    );
+    const passwordAction = vi.fn(
+      async (
+        _previousState: ReturnType<typeof publicPasswordStepResult> | null,
+        _formData: FormData,
+      ) => {
+        void _previousState;
+        void _formData;
+        return publicPasswordStepResult();
+      },
+    );
+    render(
+      <LoginPanel
+        passwordAction={passwordAction}
+        preflightAction={preflightAction}
+        totpAction={async () => ({
+          status: 'INVALID_TOTP',
+          message: '验证失败，请重试',
+          cooldownSeconds: 0,
+        })}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/管理员账号/), {
+      target: { value: 'operator@example.invalid' },
     });
-    render(<LoginPanel passwordAction={passwordAction} preflightAction={preflightAction} totpAction={async () => ({ status: 'INVALID_TOTP', message: '验证失败，请重试', cooldownSeconds: 0 })} />);
-    fireEvent.change(screen.getByLabelText(/管理员账号/), { target: { value: 'operator@example.invalid' } });
     fireEvent.change(screen.getByLabelText(/密码/), { target: { value: 'secret' } });
     const passwordFormElement = screen.getByLabelText(/密码/).closest('form');
     if (!passwordFormElement) throw new Error('Missing password form');
@@ -235,7 +238,9 @@ describe('MFA login', () => {
     release?.();
     await screen.findByRole('button', { name: '继续验证' });
     fireEvent.click(screen.getByRole('button', { name: '继续验证' }));
-    await waitFor(() => { expect(passwordAction).toHaveBeenCalledOnce(); });
+    await waitFor(() => {
+      expect(passwordAction).toHaveBeenCalledOnce();
+    });
   });
 
   it('serializes preflights and ignores a stale identifier result before credential submission', async () => {
@@ -243,18 +248,33 @@ describe('MFA login', () => {
       identifier: string;
       resolve: (result: { status: 'READY' }) => void;
     }> = [];
-    const preflightAction = vi.fn((identifier: string) => new Promise<{ status: 'READY' }>((resolve) => {
-      pending.push({ identifier, resolve });
-    }));
-    const passwordAction = vi.fn(async (
-      _previousState: ReturnType<typeof publicPasswordStepResult> | null,
-      _formData: FormData,
-    ) => {
-      void _previousState;
-      void _formData;
-      return publicPasswordStepResult();
-    });
-    render(<LoginPanel passwordAction={passwordAction} preflightAction={preflightAction} totpAction={async () => ({ status: 'INVALID_TOTP', message: '验证失败，请重试', cooldownSeconds: 0 })} />);
+    const preflightAction = vi.fn(
+      (identifier: string) =>
+        new Promise<{ status: 'READY' }>((resolve) => {
+          pending.push({ identifier, resolve });
+        }),
+    );
+    const passwordAction = vi.fn(
+      async (
+        _previousState: ReturnType<typeof publicPasswordStepResult> | null,
+        _formData: FormData,
+      ) => {
+        void _previousState;
+        void _formData;
+        return publicPasswordStepResult();
+      },
+    );
+    render(
+      <LoginPanel
+        passwordAction={passwordAction}
+        preflightAction={preflightAction}
+        totpAction={async () => ({
+          status: 'INVALID_TOTP',
+          message: '验证失败，请重试',
+          cooldownSeconds: 0,
+        })}
+      />,
+    );
 
     const identifierInput = screen.getByLabelText(/管理员账号/);
     fireEvent.change(identifierInput, { target: { value: 'first@example.invalid' } });
@@ -263,26 +283,42 @@ describe('MFA login', () => {
     expect(preflightAction).toHaveBeenCalledTimes(1);
 
     fireEvent.change(identifierInput, { target: { value: ' second@example.invalid ' } });
-    await act(async () => { pending[0]?.resolve({ status: 'READY' }); });
-    await waitFor(() => { expect(preflightAction).toHaveBeenCalledWith('second@example.invalid'); });
+    await act(async () => {
+      pending[0]?.resolve({ status: 'READY' });
+    });
+    await waitFor(() => {
+      expect(preflightAction).toHaveBeenCalledWith('second@example.invalid');
+    });
     expect(screen.queryByRole('button', { name: '继续验证' })).not.toBeInTheDocument();
 
-    await act(async () => { pending[1]?.resolve({ status: 'READY' }); });
+    await act(async () => {
+      pending[1]?.resolve({ status: 'READY' });
+    });
     await screen.findByRole('button', { name: '继续验证' });
     fireEvent.change(screen.getByLabelText(/密码/), { target: { value: 'secret' } });
     fireEvent.click(screen.getByRole('button', { name: '继续验证' }));
-    await waitFor(() => { expect(passwordAction).toHaveBeenCalledOnce(); });
+    await waitFor(() => {
+      expect(passwordAction).toHaveBeenCalledOnce();
+    });
     const submitted = passwordAction.mock.calls[0]?.[1];
     expect(submitted?.get('identifier')).toBe('second@example.invalid');
   });
 
   it('keeps a password action failure on the password step with an accessible error', async () => {
-    render(<LoginPanel
-      passwordAction={async () => ({ step: 'password', message: '无法建立安全登录，请重试' })}
-      preflightAction={async () => ({ status: 'READY' })}
-      totpAction={async () => ({ status: 'INVALID_TOTP', message: '验证失败，请重试', cooldownSeconds: 0 })}
-    />);
-    fireEvent.change(screen.getByLabelText(/管理员账号/), { target: { value: 'operator@example.invalid' } });
+    render(
+      <LoginPanel
+        passwordAction={async () => ({ step: 'password', message: '无法建立安全登录，请重试' })}
+        preflightAction={async () => ({ status: 'READY' })}
+        totpAction={async () => ({
+          status: 'INVALID_TOTP',
+          message: '验证失败，请重试',
+          cooldownSeconds: 0,
+        })}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/管理员账号/), {
+      target: { value: 'operator@example.invalid' },
+    });
     fireEvent.change(screen.getByLabelText(/密码/), { target: { value: 'secret' } });
     fireEvent.click(screen.getByRole('button', { name: '准备安全登录' }));
     await screen.findByRole('button', { name: '继续验证' });
@@ -298,12 +334,20 @@ describe('MFA login', () => {
       message: '无法建立安全登录，请重试',
       requiresPreflight: true as const,
     }));
-    render(<LoginPanel
-      passwordAction={passwordAction}
-      preflightAction={preflightAction}
-      totpAction={async () => ({ status: 'INVALID_TOTP', message: '验证失败，请重试', cooldownSeconds: 0 })}
-    />);
-    fireEvent.change(screen.getByLabelText(/管理员账号/), { target: { value: 'operator@example.invalid' } });
+    render(
+      <LoginPanel
+        passwordAction={passwordAction}
+        preflightAction={preflightAction}
+        totpAction={async () => ({
+          status: 'INVALID_TOTP',
+          message: '验证失败，请重试',
+          cooldownSeconds: 0,
+        })}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/管理员账号/), {
+      target: { value: 'operator@example.invalid' },
+    });
     fireEvent.change(screen.getByLabelText(/密码/), { target: { value: 'secret' } });
     fireEvent.click(screen.getByRole('button', { name: '准备安全登录' }));
     await screen.findByRole('button', { name: '继续验证' });
@@ -312,28 +356,38 @@ describe('MFA login', () => {
     await screen.findByRole('button', { name: '重新建立安全登录' });
     expect(screen.getByText('管理员登录')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '重新建立安全登录' }));
-    await waitFor(() => { expect(preflightAction).toHaveBeenCalledTimes(2); });
+    await waitFor(() => {
+      expect(preflightAction).toHaveBeenCalledTimes(2);
+    });
     await screen.findByRole('button', { name: '继续验证' });
   });
 
   it('keeps a delivered preflight ready after an indeterminate password failure', async () => {
-    render(<LoginPanel
-      passwordAction={async () => ({ step: 'password', message: '无法建立安全登录，请重试' })}
-      preflightAction={async () => ({ status: 'READY' })}
-      totpAction={async () => ({ status: 'INVALID_TOTP', message: '验证失败，请重试', cooldownSeconds: 0 })}
-    />);
-    fireEvent.change(screen.getByLabelText(/管理员账号/), { target: { value: 'operator@example.invalid' } });
+    render(
+      <LoginPanel
+        passwordAction={async () => ({ step: 'password', message: '无法建立安全登录，请重试' })}
+        preflightAction={async () => ({ status: 'READY' })}
+        totpAction={async () => ({
+          status: 'INVALID_TOTP',
+          message: '验证失败，请重试',
+          cooldownSeconds: 0,
+        })}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/管理员账号/), {
+      target: { value: 'operator@example.invalid' },
+    });
     fireEvent.change(screen.getByLabelText(/密码/), { target: { value: 'secret' } });
     fireEvent.click(screen.getByRole('button', { name: '准备安全登录' }));
     await screen.findByRole('button', { name: '继续验证' });
     fireEvent.click(screen.getByRole('button', { name: '继续验证' }));
-    await waitFor(() => { expect(screen.getByRole('button', { name: '继续验证' })).toBeEnabled(); });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '继续验证' })).toBeEnabled();
+    });
   });
 
   it('returns a password response with no credential-validity input', () => {
-    expect(publicPasswordStepResult().message).not.toMatch(
-      /账户不存在|用户未找到/,
-    );
+    expect(publicPasswordStepResult().message).not.toMatch(/账户不存在|用户未找到/);
   });
 
   it.each(['12345', '1234567', '12a456', '１２３４５６', ' 123456 '])(
@@ -477,16 +531,33 @@ describe('server-backed MFA actions', () => {
       now: () => now,
     });
 
-    await expect(accepted.submitPassword(passwordForm())).resolves.toEqual(publicPasswordStepResult());
-    await expect(rejected.submitPassword(passwordForm())).resolves.toEqual({ step: 'password', message: '无法建立安全登录，请重试' });
+    await expect(accepted.submitPassword(passwordForm())).resolves.toEqual(
+      publicPasswordStepResult(),
+    );
+    await expect(rejected.submitPassword(passwordForm())).resolves.toEqual({
+      step: 'password',
+      message: '无法建立安全登录，请重试',
+    });
     expect(acceptedCookies.writes).toHaveLength(1);
     expect(acceptedCookies.writes[0]).toMatchObject({
       name: ADMIN_MFA_CHALLENGE_COOKIE,
       options: { httpOnly: true, maxAge: 600, sameSite: 'strict', secure: true },
     });
     expect(rejectedCookies.writes).toHaveLength(1);
-    await expect(verifyAdminMfaChallenge(acceptedCookies.get(ADMIN_MFA_CHALLENGE_COOKIE), challengeSigningKey, now)).resolves.toMatchObject({ stage: 'TOTP' });
-    await expect(verifyAdminMfaChallenge(rejectedCookies.get(ADMIN_MFA_CHALLENGE_COOKIE), challengeSigningKey, now)).resolves.toMatchObject({ stage: 'PASSWORD' });
+    await expect(
+      verifyAdminMfaChallenge(
+        acceptedCookies.get(ADMIN_MFA_CHALLENGE_COOKIE),
+        challengeSigningKey,
+        now,
+      ),
+    ).resolves.toMatchObject({ stage: 'TOTP' });
+    await expect(
+      verifyAdminMfaChallenge(
+        rejectedCookies.get(ADMIN_MFA_CHALLENGE_COOKIE),
+        challengeSigningKey,
+        now,
+      ),
+    ).resolves.toMatchObject({ stage: 'PASSWORD' });
   });
 
   it('returns a fixed-shape decoy with the same password message when the auth port is unavailable', async () => {
@@ -507,7 +578,10 @@ describe('server-backed MFA actions', () => {
       now: () => now,
     });
 
-    await expect(actions.submitPassword(passwordForm())).resolves.toEqual({ step: 'password', message: '无法建立安全登录，请重试' });
+    await expect(actions.submitPassword(passwordForm())).resolves.toEqual({
+      step: 'password',
+      message: '无法建立安全登录，请重试',
+    });
     expect(cookies.writes).toHaveLength(1);
     expect(cookies.writes[0]).toMatchObject({
       name: ADMIN_MFA_CHALLENGE_COOKIE,
@@ -702,9 +776,7 @@ describe('server-backed MFA actions', () => {
     expect(acceptedResult).toEqual(publicPasswordStepResult());
     expect(decoyResult).toEqual({ step: 'password', message: '无法建立安全登录，请重试' });
     expect(decoyCookies.writes).toHaveLength(acceptedCookies.writes.length);
-    expect(decoyCookies.writes[0]?.options).toEqual(
-      acceptedCookies.writes[0]?.options,
-    );
+    expect(decoyCookies.writes[0]?.options).toEqual(acceptedCookies.writes[0]?.options);
     const acceptedClaims = await verifyAdminMfaChallenge(
       acceptedCookies.get(ADMIN_MFA_CHALLENGE_COOKIE),
       challengeSigningKey,
@@ -800,7 +872,16 @@ describe('server-backed MFA actions', () => {
     expiredCookies.values.set(
       ADMIN_MFA_CHALLENGE_COOKIE,
       await signAdminMfaChallenge(
-        { audience: 'admin-mfa', challengeId: 'A'.repeat(43), correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', expiresAt: now - 1, identifierBinding: 'A'.repeat(43), seed: 'A'.repeat(43), stage: 'TOTP', version: 1 },
+        {
+          audience: 'admin-mfa',
+          challengeId: 'A'.repeat(43),
+          correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+          expiresAt: now - 1,
+          identifierBinding: 'A'.repeat(43),
+          seed: 'A'.repeat(43),
+          stage: 'TOTP',
+          version: 1,
+        },
         challengeSigningKey,
       ),
     );
@@ -857,17 +938,38 @@ describe('server-backed MFA actions', () => {
       name: ADMIN_SESSION_COOKIE,
       options: { httpOnly: true, sameSite: 'strict', secure: true },
     });
-    await expect(verifyAdminSession(cookies.get(ADMIN_SESSION_COOKIE), sessionSigningKey, now)).resolves.toMatchObject({ sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f' });
+    await expect(
+      verifyAdminSession(cookies.get(ADMIN_SESSION_COOKIE), sessionSigningKey, now),
+    ).resolves.toMatchObject({ sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f' });
   });
 
   it('issues a fresh random session instance for each independent MFA login', async () => {
     const authPort: AdminAuthPort = {
-      async beginPasswordChallenge() { return { challengeId: 'A'.repeat(43), expiresAt: now + 120_000 }; },
-      async verifyTotp() { return { kind: 'AUTHENTICATED', subject: { dataScope: 'OWN', permissions: ['overview:read'], subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f' }, expiresAt: now + 3_600_000 }; },
+      async beginPasswordChallenge() {
+        return { challengeId: 'A'.repeat(43), expiresAt: now + 120_000 };
+      },
+      async verifyTotp() {
+        return {
+          kind: 'AUTHENTICATED',
+          subject: {
+            dataScope: 'OWN',
+            permissions: ['overview:read'],
+            subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+          },
+          expiresAt: now + 3_600_000,
+        };
+      },
     };
     const issue = async (sessionInstanceId: string) => {
       const cookiePort = createCookiePort();
-      const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies: cookiePort, createSessionInstanceId: () => sessionInstanceId, now: () => now, sessionSigningKey });
+      const actions = createLoginActionHandlers({
+        authPort,
+        challengeSigningKey,
+        cookies: cookiePort,
+        createSessionInstanceId: () => sessionInstanceId,
+        now: () => now,
+        sessionSigningKey,
+      });
       await actions.submitPassword(passwordForm());
       await actions.submitTotp(totpForm('042731'));
       return verifyAdminSession(cookiePort.get(ADMIN_SESSION_COOKIE), sessionSigningKey, now);
@@ -905,7 +1007,11 @@ describe('server-backed MFA actions', () => {
       authPort,
       challengeSigningKey,
       cookies,
-      createFlowId: () => ids.shift() ?? (() => { throw new Error('unexpected id'); })(),
+      createFlowId: () =>
+        ids.shift() ??
+        (() => {
+          throw new Error('unexpected id');
+        })(),
       now: () => now,
       sessionSigningKey,
     });
@@ -920,19 +1026,40 @@ describe('server-backed MFA actions', () => {
     expect(totpInputs[0]?.correlationId).toBe(passwordInputs[0]?.correlationId);
     expect(totpInputs[1]?.correlationId).toBe(passwordInputs[0]?.correlationId);
     expect(totpInputs[1]?.idempotencyKey).not.toBe(totpInputs[0]?.idempotencyKey);
-    const claims = await verifyAdminMfaChallenge(cookies.get(ADMIN_MFA_CHALLENGE_COOKIE), challengeSigningKey, now);
+    const claims = await verifyAdminMfaChallenge(
+      cookies.get(ADMIN_MFA_CHALLENGE_COOKIE),
+      challengeSigningKey,
+      now,
+    );
     expect(claims).toMatchObject({ correlationId: passwordInputs[0]?.correlationId });
   });
 
   it('rotates the password intent only after an authoritative denial', async () => {
     const cookies = createCookiePort();
     const inputs: Array<Parameters<AdminAuthPort['beginPasswordChallenge']>[0]> = [];
-    const ids = ['0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f', '0198f7a4-c6db-7b39-8a4e-73af0c1d2e3f', '0198f7a4-c6dc-7b39-8a4e-73af0c1d2e3f'];
+    const ids = [
+      '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+      '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
+      '0198f7a4-c6db-7b39-8a4e-73af0c1d2e3f',
+      '0198f7a4-c6dc-7b39-8a4e-73af0c1d2e3f',
+    ];
     const actions = createLoginActionHandlers({
-      authPort: { async beginPasswordChallenge(input) { inputs.push(input); return { challengeId: 'A'.repeat(43), expiresAt: now + 120_000, rotateIntent: true }; }, async verifyTotp() { return { kind: 'REJECTED', attemptsRemaining: 4 }; } },
+      authPort: {
+        async beginPasswordChallenge(input) {
+          inputs.push(input);
+          return { challengeId: 'A'.repeat(43), expiresAt: now + 120_000, rotateIntent: true };
+        },
+        async verifyTotp() {
+          return { kind: 'REJECTED', attemptsRemaining: 4 };
+        },
+      },
       challengeSigningKey,
       cookies,
-      createFlowId: () => ids.shift() ?? (() => { throw new Error('unexpected id'); })(),
+      createFlowId: () =>
+        ids.shift() ??
+        (() => {
+          throw new Error('unexpected id');
+        })(),
       now: () => now,
       sessionSigningKey,
     });
@@ -947,19 +1074,38 @@ describe('server-backed MFA actions', () => {
     const passwordInputs: Array<Parameters<AdminAuthPort['beginPasswordChallenge']>[0]> = [];
     const totpInputs: Array<Parameters<AdminAuthPort['verifyTotp']>[0]> = [];
     const authPort: AdminAuthPort = {
-      async beginPasswordChallenge(input) { passwordInputs.push(input); return { challengeId: 'A'.repeat(43), expiresAt: now + 120_000 }; },
-      async verifyTotp(input) { totpInputs.push(input); throw new Error('response lost'); },
+      async beginPasswordChallenge(input) {
+        passwordInputs.push(input);
+        return { challengeId: 'A'.repeat(43), expiresAt: now + 120_000 };
+      },
+      async verifyTotp(input) {
+        totpInputs.push(input);
+        throw new Error('response lost');
+      },
     };
-    const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies, now: () => now, requirePreflight: true, sessionSigningKey });
+    const actions = createLoginActionHandlers({
+      authPort,
+      challengeSigningKey,
+      cookies,
+      now: () => now,
+      requirePreflight: true,
+      sessionSigningKey,
+    });
     await expect(actions.submitPassword(passwordForm())).resolves.toEqual({
       step: 'password',
       message: '无法建立安全登录，请重试',
       requiresPreflight: true,
     });
     expect(passwordInputs).toHaveLength(0);
-    await expect(actions.preparePassword('operator@example.invalid')).resolves.toEqual({ status: 'READY' });
+    await expect(actions.preparePassword('operator@example.invalid')).resolves.toEqual({
+      status: 'READY',
+    });
     const deliveredPasswordCookie = cookies.get(ADMIN_MFA_CHALLENGE_COOKIE) ?? '';
-    const passwordClaims = await verifyAdminMfaChallenge(deliveredPasswordCookie, challengeSigningKey, now);
+    const passwordClaims = await verifyAdminMfaChallenge(
+      deliveredPasswordCookie,
+      challengeSigningKey,
+      now,
+    );
     expect(passwordClaims).toMatchObject({ audience: 'admin-mfa', stage: 'PASSWORD', version: 1 });
     expect(deliveredPasswordCookie).not.toMatch(/not-a-real-password|operator@example.invalid/u);
 
@@ -970,12 +1116,18 @@ describe('server-backed MFA actions', () => {
     expect(passwordInputs[1]?.correlationId).toBe(passwordInputs[0]?.correlationId);
 
     cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, deliveredPasswordCookie);
-    const changedPassword = passwordForm(); changedPassword.set('password', 'different-password');
+    const changedPassword = passwordForm();
+    changedPassword.set('password', 'different-password');
     await actions.submitPassword(changedPassword);
     expect(passwordInputs[2]?.idempotencyKey).not.toBe(passwordInputs[0]?.idempotencyKey);
     cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, deliveredPasswordCookie);
-    const changedIdentifier = passwordForm(); changedIdentifier.set('identifier', 'other@example.invalid');
-    await expect(actions.submitPassword(changedIdentifier)).resolves.toEqual({ step: 'password', message: '无法建立安全登录，请重试', requiresPreflight: true });
+    const changedIdentifier = passwordForm();
+    changedIdentifier.set('identifier', 'other@example.invalid');
+    await expect(actions.submitPassword(changedIdentifier)).resolves.toEqual({
+      step: 'password',
+      message: '无法建立安全登录，请重试',
+      requiresPreflight: true,
+    });
     expect(passwordInputs).toHaveLength(3);
 
     cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, deliveredPasswordCookie);
@@ -988,67 +1140,167 @@ describe('server-backed MFA actions', () => {
     await actions.submitTotp(totpForm('222222'));
     expect(totpInputs[1]?.idempotencyKey).toBe(totpInputs[0]?.idempotencyKey);
     expect(totpInputs[2]?.idempotencyKey).not.toBe(totpInputs[0]?.idempotencyKey);
-    expect(totpInputs.every((input) => input.correlationId === passwordInputs[0]?.correlationId)).toBe(true);
+    expect(
+      totpInputs.every((input) => input.correlationId === passwordInputs[0]?.correlationId),
+    ).toBe(true);
   });
 
   it('requires preflight recovery for tampered, expired, and wrong-stage local cookies without calling IAM', async () => {
     let iamCalls = 0;
     const cookies = createCookiePort();
     const authPort: AdminAuthPort = {
-      async beginPasswordChallenge() { iamCalls += 1; return { challengeId: 'A'.repeat(43), expiresAt: now + 120_000 }; },
-      async verifyTotp() { throw new Error('not used'); },
+      async beginPasswordChallenge() {
+        iamCalls += 1;
+        return { challengeId: 'A'.repeat(43), expiresAt: now + 120_000 };
+      },
+      async verifyTotp() {
+        throw new Error('not used');
+      },
     };
-    const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies, now: () => now, requirePreflight: true, sessionSigningKey });
+    const actions = createLoginActionHandlers({
+      authPort,
+      challengeSigningKey,
+      cookies,
+      now: () => now,
+      requirePreflight: true,
+      sessionSigningKey,
+    });
     await actions.preparePassword('operator@example.invalid');
     const delivered = cookies.get(ADMIN_MFA_CHALLENGE_COOKIE) ?? '';
     cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, `${delivered}x`);
-    await expect(actions.submitPassword(passwordForm())).resolves.toMatchObject({ step: 'password', requiresPreflight: true });
+    await expect(actions.submitPassword(passwordForm())).resolves.toMatchObject({
+      step: 'password',
+      requiresPreflight: true,
+    });
 
-    cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, await signAdminMfaChallenge({
-      audience: 'admin-mfa', correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', expiresAt: now - 1,
-      identifierBinding: 'A'.repeat(43), seed: 'A'.repeat(43), stage: 'PASSWORD', version: 1,
-    }, challengeSigningKey));
-    await expect(actions.submitPassword(passwordForm())).resolves.toMatchObject({ step: 'password', requiresPreflight: true });
+    cookies.values.set(
+      ADMIN_MFA_CHALLENGE_COOKIE,
+      await signAdminMfaChallenge(
+        {
+          audience: 'admin-mfa',
+          correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+          expiresAt: now - 1,
+          identifierBinding: 'A'.repeat(43),
+          seed: 'A'.repeat(43),
+          stage: 'PASSWORD',
+          version: 1,
+        },
+        challengeSigningKey,
+      ),
+    );
+    await expect(actions.submitPassword(passwordForm())).resolves.toMatchObject({
+      step: 'password',
+      requiresPreflight: true,
+    });
 
-    cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, await signAdminMfaChallenge({
-      audience: 'admin-mfa', challengeId: 'A'.repeat(43), correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', expiresAt: now + 60_000,
-      identifierBinding: 'A'.repeat(43), seed: 'A'.repeat(43), stage: 'TOTP', version: 1,
-    }, challengeSigningKey));
-    await expect(actions.submitPassword(passwordForm())).resolves.toMatchObject({ step: 'password', requiresPreflight: true });
+    cookies.values.set(
+      ADMIN_MFA_CHALLENGE_COOKIE,
+      await signAdminMfaChallenge(
+        {
+          audience: 'admin-mfa',
+          challengeId: 'A'.repeat(43),
+          correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+          expiresAt: now + 60_000,
+          identifierBinding: 'A'.repeat(43),
+          seed: 'A'.repeat(43),
+          stage: 'TOTP',
+          version: 1,
+        },
+        challengeSigningKey,
+      ),
+    );
+    await expect(actions.submitPassword(passwordForm())).resolves.toMatchObject({
+      step: 'password',
+      requiresPreflight: true,
+    });
     expect(iamCalls).toBe(0);
   });
 
   it.each([
     ['malformed JSON', async () => new Response('{', { status: 200 }), 'MALFORMED_RESPONSE'],
-    ['malformed schema', async () => Response.json({ challengeId: 'bad', expiresInSeconds: 600 }), 'MALFORMED_RESPONSE'],
+    [
+      'malformed schema',
+      async () => Response.json({ challengeId: 'bad', expiresInSeconds: 600 }),
+      'MALFORMED_RESPONSE',
+    ],
     ['network', async () => Promise.reject(new Error('offline')), 'NETWORK_FAILURE'],
-    ['timeout', async (_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener('abort', () => { reject(new DOMException('timed out', 'AbortError')); }); }), 'TIMEOUT'],
+    [
+      'timeout',
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('timed out', 'AbortError'));
+          });
+        }),
+      'TIMEOUT',
+    ],
     ['429', async () => Response.json({}, { status: 429 }), 'UPSTREAM_FAILURE'],
     ['500', async () => Response.json({}, { status: 500 }), 'UPSTREAM_FAILURE'],
-  ])('lets the trusted HTTP adapter own exactly one %s password technical event', async (_label, fetchImpl, reason) => {
-    const events: unknown[] = [];
-    const telemetry = { record(event: unknown) { events.push(event); } };
-    const cookies = createCookiePort();
-    const authPort = createHttpAdminAuthPort(
-      { apiUrl: 'https://iam.example.invalid', kmsIdentityReference: 'kms://service/admin-web' },
-      { deadlineMs: 1, fetchImpl: fetchImpl as typeof fetch, now: () => now, telemetry },
-    );
-    const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies, now: () => now, requirePreflight: true, sessionSigningKey, telemetry });
-    await actions.preparePassword('operator@example.invalid');
-    await expect(actions.submitPassword(passwordForm())).resolves.toMatchObject({ step: 'password' });
-    expect(events).toEqual([expect.objectContaining({ correlationId: expect.stringMatching(uuidV7Pattern), operation: 'iam.password.begin', reason, traceId: expect.stringMatching(traceIdPattern) })]);
-    expect(JSON.stringify(events)).not.toMatch(/operator@example\.invalid|not-a-real-password/u);
-  });
+  ])(
+    'lets the trusted HTTP adapter own exactly one %s password technical event',
+    async (_label, fetchImpl, reason) => {
+      const events: unknown[] = [];
+      const telemetry = {
+        record(event: unknown) {
+          events.push(event);
+        },
+      };
+      const cookies = createCookiePort();
+      const authPort = createHttpAdminAuthPort(
+        { apiUrl: 'https://iam.example.invalid', kmsIdentityReference: 'kms://service/admin-web' },
+        { deadlineMs: 1, fetchImpl: fetchImpl as typeof fetch, now: () => now, telemetry },
+      );
+      const actions = createLoginActionHandlers({
+        authPort,
+        challengeSigningKey,
+        cookies,
+        now: () => now,
+        requirePreflight: true,
+        sessionSigningKey,
+        telemetry,
+      });
+      await actions.preparePassword('operator@example.invalid');
+      await expect(actions.submitPassword(passwordForm())).resolves.toMatchObject({
+        step: 'password',
+      });
+      expect(events).toEqual([
+        expect.objectContaining({
+          correlationId: expect.stringMatching(uuidV7Pattern),
+          operation: 'iam.password.begin',
+          reason,
+          traceId: expect.stringMatching(traceIdPattern),
+        }),
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(/operator@example\.invalid|not-a-real-password/u);
+    },
+  );
 
   it('records no technical event for a strict password business rejection', async () => {
     const events: unknown[] = [];
-    const telemetry = { record(event: unknown) { events.push(event); } };
+    const telemetry = {
+      record(event: unknown) {
+        events.push(event);
+      },
+    };
     const cookies = createCookiePort();
     const authPort = createHttpAdminAuthPort(
       { apiUrl: 'https://iam.example.invalid', kmsIdentityReference: 'kms://service/admin-web' },
-      { fetchImpl: async () => Response.json({ kind: 'REJECTED', reason: 'INVALID_CREDENTIALS' }, { status: 401 }), now: () => now, telemetry },
+      {
+        fetchImpl: async () =>
+          Response.json({ kind: 'REJECTED', reason: 'INVALID_CREDENTIALS' }, { status: 401 }),
+        now: () => now,
+        telemetry,
+      },
     );
-    const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies, now: () => now, requirePreflight: true, sessionSigningKey, telemetry });
+    const actions = createLoginActionHandlers({
+      authPort,
+      challengeSigningKey,
+      cookies,
+      now: () => now,
+      requirePreflight: true,
+      sessionSigningKey,
+      telemetry,
+    });
     await actions.preparePassword('operator@example.invalid');
     await actions.submitPassword(passwordForm());
     expect(events).toEqual([]);
@@ -1056,76 +1308,213 @@ describe('server-backed MFA actions', () => {
 
   it('records one action-level event for an unclassified password-port exception', async () => {
     const events: unknown[] = [];
-    const telemetry = { record(event: unknown) { events.push(event); } };
+    const telemetry = {
+      record(event: unknown) {
+        events.push(event);
+      },
+    };
     const cookies = createCookiePort();
     const authPort: AdminAuthPort = {
-      async beginPasswordChallenge() { throw Object.assign(new Error('fake failure'), { reason: 'NETWORK_FAILURE' }); },
-      async verifyTotp() { throw new Error('not used'); },
+      async beginPasswordChallenge() {
+        throw Object.assign(new Error('fake failure'), { reason: 'NETWORK_FAILURE' });
+      },
+      async verifyTotp() {
+        throw new Error('not used');
+      },
     };
-    const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies, now: () => now, requirePreflight: true, sessionSigningKey, telemetry });
+    const actions = createLoginActionHandlers({
+      authPort,
+      challengeSigningKey,
+      cookies,
+      now: () => now,
+      requirePreflight: true,
+      sessionSigningKey,
+      telemetry,
+    });
     await actions.preparePassword('operator@example.invalid');
     await actions.submitPassword(passwordForm());
-    expect(events).toEqual([expect.objectContaining({ correlationId: expect.stringMatching(uuidV7Pattern), operation: 'login.password', reason: 'UPSTREAM_FAILURE', traceId: expect.stringMatching(traceIdPattern) })]);
+    expect(events).toEqual([
+      expect.objectContaining({
+        correlationId: expect.stringMatching(uuidV7Pattern),
+        operation: 'login.password',
+        reason: 'UPSTREAM_FAILURE',
+        traceId: expect.stringMatching(traceIdPattern),
+      }),
+    ]);
   });
 
   it.each([
     ['malformed JSON', async () => new Response('{', { status: 200 }), 'MALFORMED_RESPONSE'],
-    ['malformed schema', async () => Response.json({ kind: 'CONSUMED', extra: true }), 'MALFORMED_RESPONSE'],
+    [
+      'malformed schema',
+      async () => Response.json({ kind: 'CONSUMED', extra: true }),
+      'MALFORMED_RESPONSE',
+    ],
     ['network', async () => Promise.reject(new Error('offline')), 'NETWORK_FAILURE'],
-    ['timeout', async (_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => { init?.signal?.addEventListener('abort', () => { reject(new DOMException('timed out', 'AbortError')); }); }), 'TIMEOUT'],
+    [
+      'timeout',
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('timed out', 'AbortError'));
+          });
+        }),
+      'TIMEOUT',
+    ],
     ['429', async () => Response.json({}, { status: 429 }), 'UPSTREAM_FAILURE'],
     ['500', async () => Response.json({}, { status: 500 }), 'UPSTREAM_FAILURE'],
-  ])('lets the trusted HTTP adapter own exactly one %s TOTP technical event', async (_label, fetchImpl, reason) => {
-    const events: unknown[] = [];
-    const telemetry = { record(event: unknown) { events.push(event); } };
-    const cookies = createCookiePort();
-    cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, await signAdminMfaChallenge({
-      audience: 'admin-mfa', challengeId: 'A'.repeat(43), correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', expiresAt: now + 60_000,
-      identifierBinding: 'A'.repeat(43), seed: 'A'.repeat(43), stage: 'TOTP', version: 1,
-    }, challengeSigningKey));
-    const authPort = createHttpAdminAuthPort(
-      { apiUrl: 'https://iam.example.invalid', kmsIdentityReference: 'kms://service/admin-web' },
-      { deadlineMs: 1, fetchImpl: fetchImpl as typeof fetch, now: () => now, telemetry },
-    );
-    const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies, now: () => now, sessionSigningKey, telemetry });
-    await expect(actions.submitTotp(totpForm('111111'))).resolves.toMatchObject({ status: 'INVALID_TOTP' });
-    expect(events).toEqual([expect.objectContaining({ correlationId: expect.stringMatching(uuidV7Pattern), operation: 'iam.totp.verify', reason, traceId: expect.stringMatching(traceIdPattern) })]);
-    expect(JSON.stringify(events)).not.toMatch(/111111|A{16}/u);
-  });
+  ])(
+    'lets the trusted HTTP adapter own exactly one %s TOTP technical event',
+    async (_label, fetchImpl, reason) => {
+      const events: unknown[] = [];
+      const telemetry = {
+        record(event: unknown) {
+          events.push(event);
+        },
+      };
+      const cookies = createCookiePort();
+      cookies.values.set(
+        ADMIN_MFA_CHALLENGE_COOKIE,
+        await signAdminMfaChallenge(
+          {
+            audience: 'admin-mfa',
+            challengeId: 'A'.repeat(43),
+            correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+            expiresAt: now + 60_000,
+            identifierBinding: 'A'.repeat(43),
+            seed: 'A'.repeat(43),
+            stage: 'TOTP',
+            version: 1,
+          },
+          challengeSigningKey,
+        ),
+      );
+      const authPort = createHttpAdminAuthPort(
+        { apiUrl: 'https://iam.example.invalid', kmsIdentityReference: 'kms://service/admin-web' },
+        { deadlineMs: 1, fetchImpl: fetchImpl as typeof fetch, now: () => now, telemetry },
+      );
+      const actions = createLoginActionHandlers({
+        authPort,
+        challengeSigningKey,
+        cookies,
+        now: () => now,
+        sessionSigningKey,
+        telemetry,
+      });
+      await expect(actions.submitTotp(totpForm('111111'))).resolves.toMatchObject({
+        status: 'INVALID_TOTP',
+      });
+      expect(events).toEqual([
+        expect.objectContaining({
+          correlationId: expect.stringMatching(uuidV7Pattern),
+          operation: 'iam.totp.verify',
+          reason,
+          traceId: expect.stringMatching(traceIdPattern),
+        }),
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(/111111|A{16}/u);
+    },
+  );
 
   it.each([
     [401, { attemptsRemaining: 2, kind: 'REJECTED', reason: 'INVALID_CODE' }],
     [423, { attemptsRemaining: 0, kind: 'REJECTED', lockedUntil: now + 60_000, reason: 'LOCKED' }],
   ])('records no technical event for strict TOTP business rejection %s', async (status, body) => {
     const events: unknown[] = [];
-    const telemetry = { record(event: unknown) { events.push(event); } };
+    const telemetry = {
+      record(event: unknown) {
+        events.push(event);
+      },
+    };
     const cookies = createCookiePort();
-    cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, await signAdminMfaChallenge({
-      audience: 'admin-mfa', challengeId: 'A'.repeat(43), correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', expiresAt: now + 60_000,
-      identifierBinding: 'A'.repeat(43), seed: 'A'.repeat(43), stage: 'TOTP', version: 1,
-    }, challengeSigningKey));
+    cookies.values.set(
+      ADMIN_MFA_CHALLENGE_COOKIE,
+      await signAdminMfaChallenge(
+        {
+          audience: 'admin-mfa',
+          challengeId: 'A'.repeat(43),
+          correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+          expiresAt: now + 60_000,
+          identifierBinding: 'A'.repeat(43),
+          seed: 'A'.repeat(43),
+          stage: 'TOTP',
+          version: 1,
+        },
+        challengeSigningKey,
+      ),
+    );
     const authPort = createHttpAdminAuthPort(
       { apiUrl: 'https://iam.example.invalid', kmsIdentityReference: 'kms://service/admin-web' },
       { fetchImpl: async () => Response.json(body, { status }), now: () => now, telemetry },
     );
-    const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies, now: () => now, sessionSigningKey, telemetry });
+    const actions = createLoginActionHandlers({
+      authPort,
+      challengeSigningKey,
+      cookies,
+      now: () => now,
+      sessionSigningKey,
+      telemetry,
+    });
     await actions.submitTotp(totpForm('111111'));
     expect(events).toEqual([]);
   });
 
-  it.each([new Error('fake failure'), Object.assign(new Error('forged failure'), { reason: 'MALFORMED_RESPONSE' })])('records one action-level event for an unclassified fake-port exception %#', async (failure) => {
-    const events: unknown[] = [];
-    const telemetry = { record(event: unknown) { events.push(event); } };
-    const cookies = createCookiePort();
-    cookies.values.set(ADMIN_MFA_CHALLENGE_COOKIE, await signAdminMfaChallenge({
-      audience: 'admin-mfa', challengeId: 'A'.repeat(43), correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', expiresAt: now + 60_000,
-      identifierBinding: 'A'.repeat(43), seed: 'A'.repeat(43), stage: 'TOTP', version: 1,
-    }, challengeSigningKey));
-    const authPort: AdminAuthPort = { async beginPasswordChallenge() { throw new Error('not used'); }, async verifyTotp() { throw failure; } };
-    const actions = createLoginActionHandlers({ authPort, challengeSigningKey, cookies, now: () => now, sessionSigningKey, telemetry });
-    await actions.submitTotp(totpForm('111111'));
-    expect(events).toEqual([expect.objectContaining({ correlationId: expect.stringMatching(uuidV7Pattern), operation: 'login.totp', reason: 'UPSTREAM_FAILURE', traceId: expect.stringMatching(traceIdPattern) })]);
-  });
+  it.each([
+    new Error('fake failure'),
+    Object.assign(new Error('forged failure'), { reason: 'MALFORMED_RESPONSE' }),
+  ])(
+    'records one action-level event for an unclassified fake-port exception %#',
+    async (failure) => {
+      const events: unknown[] = [];
+      const telemetry = {
+        record(event: unknown) {
+          events.push(event);
+        },
+      };
+      const cookies = createCookiePort();
+      cookies.values.set(
+        ADMIN_MFA_CHALLENGE_COOKIE,
+        await signAdminMfaChallenge(
+          {
+            audience: 'admin-mfa',
+            challengeId: 'A'.repeat(43),
+            correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+            expiresAt: now + 60_000,
+            identifierBinding: 'A'.repeat(43),
+            seed: 'A'.repeat(43),
+            stage: 'TOTP',
+            version: 1,
+          },
+          challengeSigningKey,
+        ),
+      );
+      const authPort: AdminAuthPort = {
+        async beginPasswordChallenge() {
+          throw new Error('not used');
+        },
+        async verifyTotp() {
+          throw failure;
+        },
+      };
+      const actions = createLoginActionHandlers({
+        authPort,
+        challengeSigningKey,
+        cookies,
+        now: () => now,
+        sessionSigningKey,
+        telemetry,
+      });
+      await actions.submitTotp(totpForm('111111'));
+      expect(events).toEqual([
+        expect.objectContaining({
+          correlationId: expect.stringMatching(uuidV7Pattern),
+          operation: 'login.totp',
+          reason: 'UPSTREAM_FAILURE',
+          traceId: expect.stringMatching(traceIdPattern),
+        }),
+      ]);
+    },
+  );
 });
 
 describe('admin authorization boundary', () => {
@@ -1141,26 +1530,45 @@ describe('admin authorization boundary', () => {
 
     const currentTime = Date.now();
     const claims = {
-      audience: 'admin-mfa', correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f', expiresAt: currentTime + ADMIN_MFA_CHALLENGE_TTL_MS,
-      identifierBinding: 'A'.repeat(43), seed: 'A'.repeat(43), stage: 'PASSWORD', version: 1,
+      audience: 'admin-mfa',
+      correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+      expiresAt: currentTime + ADMIN_MFA_CHALLENGE_TTL_MS,
+      identifierBinding: 'A'.repeat(43),
+      seed: 'A'.repeat(43),
+      stage: 'PASSWORD',
+      version: 1,
     } as const;
     const boundary = await signAdminMfaChallenge(claims as never, signingKey);
-    await expect(verifyAdminMfaChallenge(boundary, signingKey, currentTime)).resolves.toMatchObject({ stage: 'PASSWORD' });
-    await expect(verifyAdminMfaChallenge(boundary, signingKey, currentTime + ADMIN_MFA_CHALLENGE_TTL_MS)).resolves.toBeNull();
-    const overlong = await signAdminMfaChallenge({ ...claims, expiresAt: currentTime + ADMIN_MFA_CHALLENGE_TTL_MS + 1 } as never, signingKey);
+    await expect(verifyAdminMfaChallenge(boundary, signingKey, currentTime)).resolves.toMatchObject(
+      { stage: 'PASSWORD' },
+    );
+    await expect(
+      verifyAdminMfaChallenge(boundary, signingKey, currentTime + ADMIN_MFA_CHALLENGE_TTL_MS),
+    ).resolves.toBeNull();
+    const overlong = await signAdminMfaChallenge(
+      { ...claims, expiresAt: currentTime + ADMIN_MFA_CHALLENGE_TTL_MS + 1 } as never,
+      signingKey,
+    );
     await expect(verifyAdminMfaChallenge(overlong, signingKey, currentTime)).resolves.toBeNull();
-    await expect(signAdminMfaChallenge({ ...claims, challengeId: canonical } as never, signingKey)).rejects.toThrow('Invalid admin MFA claims');
+    await expect(
+      signAdminMfaChallenge({ ...claims, challengeId: canonical } as never, signingKey),
+    ).rejects.toThrow('Invalid admin MFA claims');
   });
 
   it('rejects extra signed session claims', async () => {
-    await expect(signAdminSession({
-      dataScope: 'ALL',
-      expiresAt: Date.now() + 60_000,
-      permissions: ['users:read'],
-      sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
-      subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
-      secret: 'tainted',
-    } as never, signingKey)).rejects.toThrow('Invalid admin session claims');
+    await expect(
+      signAdminSession(
+        {
+          dataScope: 'ALL',
+          expiresAt: Date.now() + 60_000,
+          permissions: ['users:read'],
+          sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
+          subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+          secret: 'tainted',
+        } as never,
+        signingKey,
+      ),
+    ).rejects.toThrow('Invalid admin session claims');
   });
 
   it('enforces the frozen unique bounded permission set and a browser-safe token bound', async () => {
@@ -1173,61 +1581,128 @@ describe('admin authorization boundary', () => {
     };
     const token = await signAdminSession(claims, signingKey);
     expect(token.length).toBeLessThanOrEqual(3000);
-    await expect(verifyAdminSession(token, signingKey)).resolves.toMatchObject({ permissions: allAdminPermissions });
+    await expect(verifyAdminSession(token, signingKey)).resolves.toMatchObject({
+      permissions: allAdminPermissions,
+    });
     for (const permissions of [
       ['unknown:permission'],
       ['users:read', 'users:read'],
       [...allAdminPermissions, 'users:read'],
       ['x'.repeat(5000)],
     ]) {
-      await expect(signAdminSession({ ...claims, permissions } as never, signingKey)).rejects.toThrow('Invalid admin session claims');
+      await expect(
+        signAdminSession({ ...claims, permissions } as never, signingKey),
+      ).rejects.toThrow('Invalid admin session claims');
     }
     await expect(verifyAdminSession('A'.repeat(3001), signingKey)).resolves.toBeNull();
   });
 
   it('rejects non-canonical and malformed MFA token segments', async () => {
-    const token = await signAdminMfaChallenge({
-      audience: 'admin-mfa',
-      challengeId: 'A'.repeat(43),
-      correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
-      expiresAt: Date.now() + 60_000,
-      identifierBinding: 'A'.repeat(43),
-      seed: 'A'.repeat(43),
-      stage: 'TOTP',
-      version: 1,
-    }, signingKey);
+    const token = await signAdminMfaChallenge(
+      {
+        audience: 'admin-mfa',
+        challengeId: 'A'.repeat(43),
+        correlationId: '0198f7a4-c6d9-7b39-8a4e-73af0c1d2e3f',
+        expiresAt: Date.now() + 60_000,
+        identifierBinding: 'A'.repeat(43),
+        seed: 'A'.repeat(43),
+        stage: 'TOTP',
+        version: 1,
+      },
+      signingKey,
+    );
     const [payload = '', signature = ''] = token.split('.');
     const alias = equivalentNonCanonicalSegment(signature);
     expect(alias).toBeDefined();
     if (!alias) throw new Error('Expected a non-canonical base64url alias');
-    for (const candidate of [`${payload}.${alias}`, `${payload}.${signature}=`, `${payload}.${signature}.extra`, `${'A'.repeat(5000)}.${signature}`, `${payload}.+/=`]) {
+    for (const candidate of [
+      `${payload}.${alias}`,
+      `${payload}.${signature}=`,
+      `${payload}.${signature}.extra`,
+      `${'A'.repeat(5000)}.${signature}`,
+      `${payload}.+/=`,
+    ]) {
       await expect(verifyAdminMfaChallenge(candidate, signingKey)).resolves.toBeNull();
     }
   });
 
   it('rejects non-canonical, padded, extra-segment, and overlong session token encodings', async () => {
-    const token = await signAdminSession({ dataScope: 'ALL', expiresAt: Date.now() + 60_000, permissions: ['users:read'], sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f', subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f' }, signingKey);
+    const token = await signAdminSession(
+      {
+        dataScope: 'ALL',
+        expiresAt: Date.now() + 60_000,
+        permissions: ['users:read'],
+        sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
+        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+      },
+      signingKey,
+    );
     const [payload = '', signature = ''] = token.split('.');
     const alias = equivalentNonCanonicalSegment(signature);
     expect(alias).toBeDefined();
     if (!alias) throw new Error('Expected a non-canonical base64url alias');
-    for (const candidate of [`${payload}.${alias}`, `${payload}.${signature}=`, `${payload}.${signature}.extra`, `${'A'.repeat(5000)}.${signature}`, `${payload}.+/=`]) {
+    for (const candidate of [
+      `${payload}.${alias}`,
+      `${payload}.${signature}=`,
+      `${payload}.${signature}.extra`,
+      `${'A'.repeat(5000)}.${signature}`,
+      `${payload}.+/=`,
+    ]) {
       await expect(verifyAdminSession(candidate, signingKey)).resolves.toBeNull();
     }
   });
 
-  it.each(['550e8400-e29b-41d4-a716-446655440000', 'arbitrary-admin'])('refuses to issue a session for a non-UUIDv7 subject (%s)', async (subjectId) => {
-    await expect(signAdminSession({ dataScope: 'ALL', expiresAt: Date.now() + 60_000, permissions: ['users:read'], sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f', subjectId }, signingKey)).rejects.toThrow('Invalid admin session claims');
-  });
+  it.each(['550e8400-e29b-41d4-a716-446655440000', 'arbitrary-admin'])(
+    'refuses to issue a session for a non-UUIDv7 subject (%s)',
+    async (subjectId) => {
+      await expect(
+        signAdminSession(
+          {
+            dataScope: 'ALL',
+            expiresAt: Date.now() + 60_000,
+            permissions: ['users:read'],
+            sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
+            subjectId,
+          },
+          signingKey,
+        ),
+      ).rejects.toThrow('Invalid admin session claims');
+    },
+  );
 
-  it.each([undefined, '550e8400-e29b-41d4-a716-446655440000', ' arbitrary '])('refuses a missing or malformed session instance (%s)', async (sessionInstanceId) => {
-    await expect(signAdminSession({ dataScope: 'ALL', expiresAt: Date.now() + 60_000, permissions: ['users:read'], sessionInstanceId, subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f' } as never, signingKey)).rejects.toThrow('Invalid admin session claims');
-  });
+  it.each([undefined, '550e8400-e29b-41d4-a716-446655440000', ' arbitrary '])(
+    'refuses a missing or malformed session instance (%s)',
+    async (sessionInstanceId) => {
+      await expect(
+        signAdminSession(
+          {
+            dataScope: 'ALL',
+            expiresAt: Date.now() + 60_000,
+            permissions: ['users:read'],
+            sessionInstanceId,
+            subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+          } as never,
+          signingKey,
+        ),
+      ).rejects.toThrow('Invalid admin session claims');
+    },
+  );
 
   it('accepts an uppercase UUIDv7 instance without normalizing the signed authority value', async () => {
     const sessionInstanceId = '0198F7A4-C6DA-7B39-8A4E-73AF0C1D2E3F';
-    const token = await signAdminSession({ dataScope: 'ALL', expiresAt: Date.now() + 60_000, permissions: ['users:read'], sessionInstanceId, subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f' }, signingKey);
-    await expect(verifyAdminSession(token, signingKey)).resolves.toMatchObject({ sessionInstanceId });
+    const token = await signAdminSession(
+      {
+        dataScope: 'ALL',
+        expiresAt: Date.now() + 60_000,
+        permissions: ['users:read'],
+        sessionInstanceId,
+        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+      },
+      signingKey,
+    );
+    await expect(verifyAdminSession(token, signingKey)).resolves.toMatchObject({
+      sessionInstanceId,
+    });
   });
 
   it('rejects a protected server action without authentication', async () => {
@@ -1236,15 +1711,14 @@ describe('admin authorization boundary', () => {
         sessionToken: undefined,
         signingKey,
       }),
-    ).rejects.toEqual(
-      new AuthorizationError('UNAUTHENTICATED', '需要管理员登录'),
-    );
+    ).rejects.toEqual(new AuthorizationError('UNAUTHENTICATED', '需要管理员登录'));
   });
 
   it('independently rejects a server action without its required permission', async () => {
     const sessionToken = await signAdminSession(
       {
-        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f', sessionInstanceId: "0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f",
+        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+        sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
         permissions: ['users:read'],
         dataScope: 'ASSIGNED',
         expiresAt: Date.now() + 60_000,
@@ -1254,12 +1728,13 @@ describe('admin authorization boundary', () => {
 
     await expect(
       requireAdminPermission('finance:read', { sessionToken, signingKey }),
-    ).rejects.toEqual(
-      new AuthorizationError('FORBIDDEN', '权限不足'),
-    );
+    ).rejects.toEqual(new AuthorizationError('FORBIDDEN', '权限不足'));
     await expect(
       requireAdminPermission('users:read', { sessionToken, signingKey }),
-    ).resolves.toMatchObject({ subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f', dataScope: 'ASSIGNED' });
+    ).resolves.toMatchObject({
+      subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+      dataScope: 'ASSIGNED',
+    });
   });
 
   it('redirects an unauthenticated protected route through the Next 16 proxy', async () => {
@@ -1305,7 +1780,10 @@ describe('admin authorization boundary', () => {
     process.env.ADMIN_SESSION_SIGNING_KEY = signingKey;
     try {
       const cases = [
-        ['/tasks', new URLSearchParams({ cursor: 'next_1', query: 'failed-job', status: 'FAILED' })],
+        [
+          '/tasks',
+          new URLSearchParams({ cursor: 'next_1', query: 'failed-job', status: 'FAILED' }),
+        ],
         ['/tickets', new URLSearchParams({ cursor: 'next_1', query: 'refund', status: 'OPEN' })],
         ['/content', new URLSearchParams({ cursor: 'next_1', status: 'PUBLISHED' })],
         [
@@ -1364,23 +1842,20 @@ describe('admin authorization boundary', () => {
   });
 
   it('allows the public login route through the proxy', async () => {
-    const response = await proxy(
-      new NextRequest('https://admin.ai-video.internal/login'),
-    );
+    const response = await proxy(new NextRequest('https://admin.ai-video.internal/login'));
 
     expect(response.headers.get('location')).toBeNull();
   });
 
   it('does not exempt login-prefixed routes from the proxy matcher', () => {
-    expect(config.matcher).toEqual([
-      '/((?!_next/static|_next/image|favicon.ico).*)',
-    ]);
+    expect(config.matcher).toEqual(['/((?!_next/static|_next/image|favicon.ico).*)']);
   });
 
   it('returns 403 when an authenticated subject lacks the route permission', async () => {
     const sessionToken = await signAdminSession(
       {
-        subjectId: '0198f7a4-c6d3-7b39-8a4e-73af0c1d2e3f', sessionInstanceId: "0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f",
+        subjectId: '0198f7a4-c6d3-7b39-8a4e-73af0c1d2e3f',
+        sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
         permissions: ['users:read'],
         dataScope: 'OWN',
         expiresAt: Date.now() + 60_000,
@@ -1406,7 +1881,8 @@ describe('admin authorization boundary', () => {
   it('fails closed for every planned secure root and dynamic sub-route', async () => {
     const sessionToken = await signAdminSession(
       {
-        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f', sessionInstanceId: "0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f",
+        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+        sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
         permissions: [],
         dataScope: 'ALL',
         expiresAt: Date.now() + 60_000,
@@ -1448,7 +1924,8 @@ describe('admin authorization boundary', () => {
   it('requires separate pricing and routing permissions', async () => {
     const sessionToken = await signAdminSession(
       {
-        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f', sessionInstanceId: "0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f",
+        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+        sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
         permissions: ['pricing:read'],
         dataScope: 'ALL',
         expiresAt: Date.now() + 60_000,
@@ -1479,7 +1956,8 @@ describe('admin authorization boundary', () => {
   it('denies an authenticated request to an unknown secure route', async () => {
     const sessionToken = await signAdminSession(
       {
-        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f', sessionInstanceId: "0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f",
+        subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+        sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
         permissions: ['*'],
         dataScope: 'ALL',
         expiresAt: Date.now() + 60_000,
@@ -1534,7 +2012,10 @@ describe('scoped server action authorization', () => {
         sessionToken: await tokenFor('0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f', 'ALL'),
         signingKey,
       }),
-    ).resolves.toMatchObject({ subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f' , sessionInstanceId: "0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f"});
+    ).resolves.toMatchObject({
+      subjectId: '0198f7a4-c6d2-7b39-8a4e-73af0c1d2e3f',
+      sessionInstanceId: '0198f7a4-c6da-7b39-8a4e-73af0c1d2e3f',
+    });
     await expect(
       requireAdminScopedPermission('users:refresh', resource, {
         sessionToken: await tokenFor('0198f7a4-c6d3-7b39-8a4e-73af0c1d2e3f', 'OWN'),
@@ -1560,5 +2041,4 @@ describe('scoped server action authorization', () => {
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
-
 });

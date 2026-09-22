@@ -36,8 +36,7 @@ export async function renderPricingPage(
     loadPricingView(dependencies),
     requireAdminAuthorization('pricing:read', dependencies.context),
   ]);
-  const globalMutationPermissions =
-    auth.claims.dataScope === 'ALL' ? auth.claims.permissions : [];
+  const globalMutationPermissions = auth.claims.dataScope === 'ALL' ? auth.claims.permissions : [];
   return (
     <section aria-labelledby="pricing-heading">
       <Title2 as="h2" id="pricing-heading">

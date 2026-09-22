@@ -14,11 +14,7 @@ export class SafeHttpRequestError extends Error {
 }
 
 export function isValidDeadline(deadlineMs: number): boolean {
-  return (
-    Number.isInteger(deadlineMs) &&
-    deadlineMs > 0 &&
-    deadlineMs <= MAX_UPSTREAM_DEADLINE_MS
-  );
+  return Number.isInteger(deadlineMs) && deadlineMs > 0 && deadlineMs <= MAX_UPSTREAM_DEADLINE_MS;
 }
 
 export async function fetchWithDeadline<T>(

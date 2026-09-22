@@ -1,9 +1,5 @@
 export type PrivacyIdentifierDomain =
-  | 'redis-phone'
-  | 'redis-ip'
-  | 'redis-device'
-  | 'log-phone'
-  | 'account-operation';
+  'redis-phone' | 'redis-ip' | 'redis-device' | 'log-phone' | 'account-operation';
 
 export interface PrivacyIdentifierSecretProvider {
   getPrivacyIdentifierSecret(kmsKeyReference: string): Promise<Uint8Array>;

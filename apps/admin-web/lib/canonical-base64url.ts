@@ -15,9 +15,13 @@ export function decodeCanonicalBase64Url(
     value.length < (bounds.minimumLength ?? 1) ||
     value.length > bounds.maximumLength ||
     !BASE64URL.test(value)
-  ) return null;
+  )
+    return null;
   try {
-    const padded = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
+    const padded = value
+      .replaceAll('-', '+')
+      .replaceAll('_', '/')
+      .padEnd(Math.ceil(value.length / 4) * 4, '=');
     const binary = atob(padded);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
     return encodeCanonicalBase64Url(bytes) === value ? bytes : null;

@@ -1,4 +1,9 @@
-import { passwordPreflightFailure, passwordPreflightRequired, publicPasswordStepResult, validateTotpInput } from './login-flow';
+import {
+  passwordPreflightFailure,
+  passwordPreflightRequired,
+  publicPasswordStepResult,
+  validateTotpInput,
+} from './login-flow';
 import type { AdminMfaChallengeClaims, AdminSessionClaims } from './session-auth';
 import {
   ADMIN_MFA_CHALLENGE_COOKIE,
@@ -49,18 +54,22 @@ export type TotpVerificationResult =
 export type AdminAuthenticatedSubject = Omit<AdminSessionClaims, 'expiresAt' | 'sessionInstanceId'>;
 
 export interface AdminAuthPort {
-  beginPasswordChallenge(input: Readonly<{
-    correlationId?: string;
-    identifier: string;
-    idempotencyKey?: string;
-    password: string;
-  }>): Promise<PasswordChallengeResult>;
-  verifyTotp(input: Readonly<{
-    challengeId: string;
-    code: string;
-    correlationId?: string;
-    idempotencyKey?: string;
-  }>): Promise<TotpVerificationResult>;
+  beginPasswordChallenge(
+    input: Readonly<{
+      correlationId?: string;
+      identifier: string;
+      idempotencyKey?: string;
+      password: string;
+    }>,
+  ): Promise<PasswordChallengeResult>;
+  verifyTotp(
+    input: Readonly<{
+      challengeId: string;
+      code: string;
+      correlationId?: string;
+      idempotencyKey?: string;
+    }>,
+  ): Promise<TotpVerificationResult>;
 }
 
 export type CookieOptions = Readonly<{
@@ -123,10 +132,7 @@ const challengeCookieOptions = (expiresAt: number): CookieOptions => ({
   maxAge: ADMIN_MFA_CHALLENGE_TTL_MS / 1000,
 });
 
-function normalizeChallenge(
-  value: unknown,
-  now: number,
-): PasswordChallengeResult | null {
+function normalizeChallenge(value: unknown, now: number): PasswordChallengeResult | null {
   if (!value || typeof value !== 'object') {
     return null;
   }
@@ -165,10 +171,7 @@ export function createLoginActionHandlers({
   redirectTo,
 }: LoginActionDependencies) {
   const loginRedirectTo = normalizeAdminLoginReturnTarget(redirectTo) ?? '/overview';
-  if (
-    !isValidAdminSigningKey(challengeSigningKey) ||
-    !isValidAdminSigningKey(sessionSigningKey)
-  ) {
+  if (!isValidAdminSigningKey(challengeSigningKey) || !isValidAdminSigningKey(sessionSigningKey)) {
     throw recordTechnicalFailure(
       telemetry,
       createSafeTelemetryEvent('login.config', 'INVALID_CONFIG'),
@@ -178,11 +181,7 @@ export function createLoginActionHandlers({
 
   async function storeChallenge(input: AdminMfaChallengeClaims): Promise<void> {
     const token = await signAdminMfaChallenge(input, challengeSigningKey);
-    cookies.set(
-      ADMIN_MFA_CHALLENGE_COOKIE,
-      token,
-      challengeCookieOptions(input.expiresAt),
-    );
+    cookies.set(ADMIN_MFA_CHALLENGE_COOKIE, token, challengeCookieOptions(input.expiresAt));
   }
 
   function recordActionTechnicalFailure(
@@ -224,20 +223,34 @@ export function createLoginActionHandlers({
       const identifier = formString(formData, 'identifier').trim();
       const password = formString(formData, 'password');
       if (!identifier || !password) return publicPasswordStepResult();
-      const existing = await verifyAdminMfaChallenge(cookies.get(ADMIN_MFA_CHALLENGE_COOKIE), challengeSigningKey, currentTime);
-      const expectedBinding = await createAdminMfaIdentifierBinding(identifier, challengeSigningKey);
+      const existing = await verifyAdminMfaChallenge(
+        cookies.get(ADMIN_MFA_CHALLENGE_COOKIE),
+        challengeSigningKey,
+        currentTime,
+      );
+      const expectedBinding = await createAdminMfaIdentifierBinding(
+        identifier,
+        challengeSigningKey,
+      );
       let flow =
         existing?.stage === 'PASSWORD' && existing.identifierBinding === expectedBinding
           ? { ...existing, redirectTo: loginRedirectTo }
           : null;
       if (!flow && !requirePreflight) flow = await passwordFlow(identifier, currentTime);
       if (!flow) {
-        recordSafeTelemetry(telemetry, createSafeTelemetryEvent('login.password', 'CHALLENGE_INVALID'));
+        recordSafeTelemetry(
+          telemetry,
+          createSafeTelemetryEvent('login.password', 'CHALLENGE_INVALID'),
+        );
         return passwordPreflightRequired();
       }
 
       try {
-        const idempotencyKey = await deriveAdminMfaIdempotencyKey(flow.seed, `password:${identifier}:${password}`, challengeSigningKey);
+        const idempotencyKey = await deriveAdminMfaIdempotencyKey(
+          flow.seed,
+          `password:${identifier}:${password}`,
+          challengeSigningKey,
+        );
 
         const result = await authPort.beginPasswordChallenge({
           correlationId: flow.correlationId,
@@ -299,7 +312,11 @@ export function createLoginActionHandlers({
       if (!isValidAdminMfaChallengeId(challenge.challengeId)) return genericTotpFailure;
 
       try {
-        const idempotencyKey = await deriveAdminMfaIdempotencyKey(challenge.seed, `totp:${challenge.challengeId}:${validatedCode.code}`, challengeSigningKey);
+        const idempotencyKey = await deriveAdminMfaIdempotencyKey(
+          challenge.seed,
+          `totp:${challenge.challengeId}:${validatedCode.code}`,
+          challengeSigningKey,
+        );
         const result = await authPort.verifyTotp({
           challengeId: challenge.challengeId,
           code: validatedCode.code,
@@ -319,16 +336,11 @@ export function createLoginActionHandlers({
             },
             sessionSigningKey,
           );
-          cookies.set(
-            ADMIN_SESSION_COOKIE,
-            sessionToken,
-            cookieOptions(result.expiresAt),
-          );
+          cookies.set(ADMIN_SESSION_COOKIE, sessionToken, cookieOptions(result.expiresAt));
           cookies.delete(ADMIN_MFA_CHALLENGE_COOKIE);
           return {
             status: 'AUTHENTICATED',
-            redirectTo:
-              normalizeAdminLoginReturnTarget(challenge.redirectTo) ?? '/overview',
+            redirectTo: normalizeAdminLoginReturnTarget(challenge.redirectTo) ?? '/overview',
           };
         }
 
@@ -337,9 +349,7 @@ export function createLoginActionHandlers({
         }
 
         if (result.kind === 'REJECTED' && result.lockedUntil) {
-          const cooldownSeconds = Math.ceil(
-            (result.lockedUntil - currentTime) / 1000,
-          );
+          const cooldownSeconds = Math.ceil((result.lockedUntil - currentTime) / 1000);
           if (cooldownSeconds > 0) {
             return {
               status: 'LOCKED',

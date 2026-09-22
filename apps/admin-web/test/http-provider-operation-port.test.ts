@@ -305,11 +305,7 @@ describe('HTTP provider operations port', () => {
     const signingKey = 'provider-http-integration-signing-key-at-least-32-bytes';
     const fetchImpl = vi.fn(async (request: URL | RequestInfo, init?: RequestInit) => {
       const url =
-        typeof request === 'string'
-          ? request
-          : request instanceof URL
-            ? request.href
-            : request.url;
+        typeof request === 'string' ? request : request instanceof URL ? request.href : request.url;
       if (init?.method === 'GET' && url.endsWith(`/v1/admin/providers/${providerId}`))
         return new Response(JSON.stringify(detail), { status: 200 });
       return new Response(
@@ -360,21 +356,32 @@ describe('HTTP provider operations port', () => {
 
   it('composes CREATE metadata with the normalized HTTP receipt', async () => {
     const signingKey = 'provider-http-create-signing-key-at-least-32-bytes';
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      auditRecordId: auditId,
-      providerId,
-      requestId,
-      status: 'ENABLED',
-      version: 1,
-    }), { status: 200 }));
-    const ports = createHttpProviderOperationPorts(environment, { fetchImpl: fetchImpl as typeof fetch });
-    const sessionToken = await signAdminSession({
-      dataScope: 'ALL',
-      expiresAt: Date.now() + 60_000,
-      permissions: ['providers:write'],
-      sessionInstanceId: idempotencyKey,
-      subjectId: actorId,
-    }, signingKey);
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            auditRecordId: auditId,
+            providerId,
+            requestId,
+            status: 'ENABLED',
+            version: 1,
+          }),
+          { status: 200 },
+        ),
+    );
+    const ports = createHttpProviderOperationPorts(environment, {
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    const sessionToken = await signAdminSession(
+      {
+        dataScope: 'ALL',
+        expiresAt: Date.now() + 60_000,
+        permissions: ['providers:write'],
+        sessionInstanceId: idempotencyKey,
+        subjectId: actorId,
+      },
+      signingKey,
+    );
     const action = createProviderMetadataAction({
       context: { sessionToken, signingKey },
       detailPort: ports.detailPort,

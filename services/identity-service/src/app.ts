@@ -7,7 +7,10 @@ import { Redis } from 'ioredis';
 import { AliyunSmsSender, type AliyunSmsClientProvider } from './adapters/aliyun-sms.sender.js';
 import { HmacChallengeCodeHasher } from './adapters/hmac-challenge-code.hasher.js';
 import { HmacPrivacyIdentifierHasher } from './adapters/hmac-privacy-identifier.hasher.js';
-import { JoseAccessTokenVerifier, type AccessVerificationKeyProvider } from './adapters/jose-access-token.verifier.js';
+import {
+  JoseAccessTokenVerifier,
+  type AccessVerificationKeyProvider,
+} from './adapters/jose-access-token.verifier.js';
 import { PrismaAccountMutationRepository } from './adapters/prisma-account-mutation.repository.js';
 import { PrismaSessionRepository } from './adapters/prisma-session.repository.js';
 import { RedisChallengeStore } from './adapters/redis-challenge.store.js';
@@ -57,145 +60,192 @@ export async function createIdentityApplication(
   const environment = options.environment ?? parseIdentityEnvironment(process.env);
   const lifecycle = options.lifecycle ?? new IdentityResourceLifecycle();
   const cloud = options.cloud ?? unavailableCloudInfrastructure();
-  if (!lifecycle.has('cloud')) lifecycle.register('cloud', async () => {
-    await cloud.close();
-    process.stdout.write(`${JSON.stringify({ level: 'info', event: 'identity_cloud_resources_closed' })}\n`);
-  });
+  if (!lifecycle.has('cloud'))
+    lifecycle.register('cloud', async () => {
+      await cloud.close();
+      process.stdout.write(
+        `${JSON.stringify({ level: 'info', event: 'identity_cloud_resources_closed' })}\n`,
+      );
+    });
   let app: NestFastifyApplication | undefined;
   try {
     assertIdentityCloudInfrastructure(cloud);
-  const prisma = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: environment.databaseUrl, query_timeout: environment.databaseOperationTimeoutMs, connectionTimeoutMillis: environment.databaseOperationTimeoutMs }),
-  });
-  lifecycle.register('database', () => prisma.$disconnect());
-  const readinessPrisma = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: environment.databaseUrl, query_timeout: environment.readinessTimeoutMs, connectionTimeoutMillis: environment.readinessTimeoutMs }),
-  });
-  lifecycle.register('readiness_database', () => readinessPrisma.$disconnect());
-  const redis = new Redis(environment.redisUrl, {
-    lazyConnect: true,
-    maxRetriesPerRequest: 1,
-    enableReadyCheck: true,
-    commandTimeout: environment.redisOperationTimeoutMs,
-    connectTimeout: environment.redisOperationTimeoutMs,
-  });
-  lifecycle.register('redis', () => closeRedis(redis));
-  redis.on('error', () => undefined);
-  const readinessRedis = new Redis(environment.redisUrl, {
-    lazyConnect: true, maxRetriesPerRequest: 1, enableReadyCheck: true,
-    commandTimeout: environment.readinessTimeoutMs, connectTimeout: environment.readinessTimeoutMs,
-  });
-  lifecycle.register('readiness_redis', () => disconnectRedis(readinessRedis));
-  readinessRedis.on('error', () => undefined);
-  const watchdog = new EventLoopWatchdog(environment.eventLoopStallThresholdMs);
-  lifecycle.register('watchdog', () => { watchdog.close(); });
-  const sessionsRepository = new PrismaSessionRepository(prisma);
-  const accountRepository = new PrismaAccountMutationRepository(prisma);
-  const metrics = new IdentityMetrics(() =>
-    prisma.session.count({
-      where: { consumedAt: null, revokedAt: null, expiresAt: { gt: new Date() }, user: { status: 'ACTIVE' } },
-    }),
-  );
-  const privacy = new HmacPrivacyIdentifierHasher(
-    cloud.privacySecretProvider,
-    environment.privacyKeyReference,
-    environment.previousPrivacyKeyReferences,
-  );
-  const sms = new SmsChallengeService({
-    store: new RedisChallengeStore(redis),
-    sender: new AliyunSmsSender(
-      cloud.smsClientProvider,
-      {
-        getReferences: () => Promise.resolve({
-          credentialKind: environment.smsCredentialKind,
-          signNameKmsReference: environment.smsSignNameReference,
-          templateCodeKmsReference: environment.smsTemplateCodeReference,
-          roleKmsReference: environment.smsRoleReference,
-        }),
-      },
-      cloud.kmsConfigResolver,
-    ),
-    hasher: new HmacChallengeCodeHasher(
-      cloud.challengeSecretProvider,
+    const prisma = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: environment.databaseUrl,
+        query_timeout: environment.databaseOperationTimeoutMs,
+        connectionTimeoutMillis: environment.databaseOperationTimeoutMs,
+      }),
+    });
+    lifecycle.register('database', () => prisma.$disconnect());
+    const readinessPrisma = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: environment.databaseUrl,
+        query_timeout: environment.readinessTimeoutMs,
+        connectionTimeoutMillis: environment.readinessTimeoutMs,
+      }),
+    });
+    lifecycle.register('readiness_database', () => readinessPrisma.$disconnect());
+    const redis = new Redis(environment.redisUrl, {
+      lazyConnect: true,
+      maxRetriesPerRequest: 1,
+      enableReadyCheck: true,
+      commandTimeout: environment.redisOperationTimeoutMs,
+      connectTimeout: environment.redisOperationTimeoutMs,
+    });
+    lifecycle.register('redis', () => closeRedis(redis));
+    redis.on('error', () => undefined);
+    const readinessRedis = new Redis(environment.redisUrl, {
+      lazyConnect: true,
+      maxRetriesPerRequest: 1,
+      enableReadyCheck: true,
+      commandTimeout: environment.readinessTimeoutMs,
+      connectTimeout: environment.readinessTimeoutMs,
+    });
+    lifecycle.register('readiness_redis', () => disconnectRedis(readinessRedis));
+    readinessRedis.on('error', () => undefined);
+    const watchdog = new EventLoopWatchdog(environment.eventLoopStallThresholdMs);
+    lifecycle.register('watchdog', () => {
+      watchdog.close();
+    });
+    const sessionsRepository = new PrismaSessionRepository(prisma);
+    const accountRepository = new PrismaAccountMutationRepository(prisma);
+    const metrics = new IdentityMetrics(() =>
+      prisma.session.count({
+        where: {
+          consumedAt: null,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+          user: { status: 'ACTIVE' },
+        },
+      }),
+    );
+    const privacy = new HmacPrivacyIdentifierHasher(
+      cloud.privacySecretProvider,
+      environment.privacyKeyReference,
+      environment.previousPrivacyKeyReferences,
+    );
+    const sms = new SmsChallengeService({
+      store: new RedisChallengeStore(redis),
+      sender: new AliyunSmsSender(
+        cloud.smsClientProvider,
+        {
+          getReferences: () =>
+            Promise.resolve({
+              credentialKind: environment.smsCredentialKind,
+              signNameKmsReference: environment.smsSignNameReference,
+              templateCodeKmsReference: environment.smsTemplateCodeReference,
+              roleKmsReference: environment.smsRoleReference,
+            }),
+        },
+        cloud.kmsConfigResolver,
+      ),
+      hasher: new HmacChallengeCodeHasher(
+        cloud.challengeSecretProvider,
+        environment.smsChallengeKeyReference,
+      ),
+      privacyIdentifierHasher: privacy,
+      securityMetrics: metrics,
+    });
+    const sessionService = new SessionService({
+      repository: sessionsRepository,
+      accessTokenIssuer: cloud.accessTokenIssuer,
+    });
+    const accountService = new IdentityAccountService({
+      repository: accountRepository,
+      smsVerifier: sms,
+      operationFingerprintHasher: privacy,
+    });
+    const keyReferences = [
       environment.smsChallengeKeyReference,
-    ),
-    privacyIdentifierHasher: privacy,
-    securityMetrics: metrics,
-  });
-  const sessionService = new SessionService({
-    repository: sessionsRepository,
-    accessTokenIssuer: cloud.accessTokenIssuer,
-  });
-  const accountService = new IdentityAccountService({
-    repository: accountRepository,
-    smsVerifier: sms,
-    operationFingerprintHasher: privacy,
-  });
-  const keyReferences = [
-    environment.smsChallengeKeyReference,
-    environment.privacyKeyReference,
-    ...environment.previousPrivacyKeyReferences,
-    environment.jwtSigningKeyReference,
-    environment.smsSignNameReference,
-    environment.smsTemplateCodeReference,
-    environment.smsRoleReference,
-  ];
-  const health = new ServiceHealth(
-    [
-      { name: 'postgres', check: async () => { await readinessPrisma.$queryRaw`SELECT 1::int AS ok`; return true; } },
-      { name: 'redis', check: async () => { await readinessRedis.ping(); return true; } },
-      { name: 'kms', check: (signal) => cloud.kmsReady(keyReferences, signal) },
-      { name: 'sms', check: (signal) => cloud.smsReady(signal) },
-    ],
-    watchdog,
-    environment.readinessTimeoutMs,
-    environment.readinessTimeoutMs,
-    environment.readinessAbortGraceMs,
-    { adapterStuck: (dependency) => {
-      metrics.increment('identity_readiness_adapter_stuck_total');
-      process.emitWarning('READINESS_ADAPTER_STUCK', { code: 'READINESS_ADAPTER_STUCK', detail: dependency });
-    } },
-  );
-  lifecycle.register('health', () => { health.close(); });
-  const verifier = new JoseAccessTokenVerifier({
-    keyProvider: cloud.accessVerificationKeyProvider,
-    statusRepository: sessionsRepository,
-  });
-  const resources = new RuntimeResources(lifecycle);
+      environment.privacyKeyReference,
+      ...environment.previousPrivacyKeyReferences,
+      environment.jwtSigningKeyReference,
+      environment.smsSignNameReference,
+      environment.smsTemplateCodeReference,
+      environment.smsRoleReference,
+    ];
+    const health = new ServiceHealth(
+      [
+        {
+          name: 'postgres',
+          check: async () => {
+            await readinessPrisma.$queryRaw`SELECT 1::int AS ok`;
+            return true;
+          },
+        },
+        {
+          name: 'redis',
+          check: async () => {
+            await readinessRedis.ping();
+            return true;
+          },
+        },
+        { name: 'kms', check: (signal) => cloud.kmsReady(keyReferences, signal) },
+        { name: 'sms', check: (signal) => cloud.smsReady(signal) },
+      ],
+      watchdog,
+      environment.readinessTimeoutMs,
+      environment.readinessTimeoutMs,
+      environment.readinessAbortGraceMs,
+      {
+        adapterStuck: (dependency) => {
+          metrics.increment('identity_readiness_adapter_stuck_total');
+          process.emitWarning('READINESS_ADAPTER_STUCK', {
+            code: 'READINESS_ADAPTER_STUCK',
+            detail: dependency,
+          });
+        },
+      },
+    );
+    lifecycle.register('health', () => {
+      health.close();
+    });
+    const verifier = new JoseAccessTokenVerifier({
+      keyProvider: cloud.accessVerificationKeyProvider,
+      statusRepository: sessionsRepository,
+    });
+    const resources = new RuntimeResources(lifecycle);
 
-  @Module({
-    controllers: [AuthController, BrowserRefreshController, OperationsController],
-    providers: [
-      JwtAccessGuard,
-      IdentityHttpExceptionFilter,
-      { provide: 'SESSION_SERVICE', useValue: sessionService },
-      { provide: 'SMS_CHALLENGE_SERVICE', useValue: sms },
-      { provide: 'IDENTITY_ACCOUNT_SERVICE', useValue: accountService },
-      { provide: 'ACCESS_TOKEN_VERIFIER', useValue: verifier },
-      { provide: 'SERVICE_METRICS', useValue: metrics },
-      { provide: 'SERVICE_HEALTH', useValue: health },
-      { provide: RuntimeResources, useValue: resources },
-    ],
-  })
-  // Nest dynamic modules are intentionally declarative containers.
-  // eslint-disable-next-line @typescript-eslint/no-extraneous-class
-  class IdentityRuntimeModule {}
+    @Module({
+      controllers: [AuthController, BrowserRefreshController, OperationsController],
+      providers: [
+        JwtAccessGuard,
+        IdentityHttpExceptionFilter,
+        { provide: 'SESSION_SERVICE', useValue: sessionService },
+        { provide: 'SMS_CHALLENGE_SERVICE', useValue: sms },
+        { provide: 'IDENTITY_ACCOUNT_SERVICE', useValue: accountService },
+        { provide: 'ACCESS_TOKEN_VERIFIER', useValue: verifier },
+        { provide: 'SERVICE_METRICS', useValue: metrics },
+        { provide: 'SERVICE_HEALTH', useValue: health },
+        { provide: RuntimeResources, useValue: resources },
+      ],
+    })
+    // Nest dynamic modules are intentionally declarative containers.
+    // eslint-disable-next-line @typescript-eslint/no-extraneous-class
+    class IdentityRuntimeModule {}
 
-  app = await NestFactory.create<NestFastifyApplication>(
-    IdentityRuntimeModule,
-    new FastifyAdapter({ logger: false }),
-    { logger: false },
-  );
-  app.useGlobalFilters(new IdentityHttpExceptionFilter());
-  await app.init();
-  return { app, environment };
+    app = await NestFactory.create<NestFastifyApplication>(
+      IdentityRuntimeModule,
+      new FastifyAdapter({ logger: false }),
+      { logger: false },
+    );
+    app.useGlobalFilters(new IdentityHttpExceptionFilter());
+    await app.init();
+    return { app, environment };
   } catch (error) {
     if (app) {
-      try { await app.close(); }
-      catch { /* The shared lifecycle below still closes every registered resource. */ }
+      try {
+        await app.close();
+      } catch {
+        /* The shared lifecycle below still closes every registered resource. */
+      }
     }
-    try { await lifecycle.close(); }
-    catch { /* Lifecycle emits a fixed, non-sensitive aggregate; preserve the startup error. */ }
+    try {
+      await lifecycle.close();
+    } catch {
+      /* Lifecycle emits a fixed, non-sensitive aggregate; preserve the startup error. */
+    }
     throw error;
   }
 }
@@ -222,7 +272,9 @@ function unavailableCloudInfrastructure(): IdentityCloudInfrastructure {
   };
 }
 
-function assertIdentityCloudInfrastructure(cloud: unknown): asserts cloud is IdentityCloudInfrastructure {
+function assertIdentityCloudInfrastructure(
+  cloud: unknown,
+): asserts cloud is IdentityCloudInfrastructure {
   if (
     !hasMethod(member(cloud, 'accessTokenIssuer'), 'issue') ||
     !hasMethod(member(cloud, 'accessVerificationKeyProvider'), 'resolve') ||
@@ -230,20 +282,34 @@ function assertIdentityCloudInfrastructure(cloud: unknown): asserts cloud is Ide
     !hasMethod(member(cloud, 'privacySecretProvider'), 'getPrivacyIdentifierSecret') ||
     !hasMethod(member(cloud, 'smsClientProvider'), 'getClient') ||
     !hasMethod(member(cloud, 'kmsConfigResolver'), 'resolveValue') ||
-    !hasMethod(cloud, 'kmsReady') || !hasMethod(cloud, 'smsReady') || !hasMethod(cloud, 'close')
-  ) throw stableError('INVALID_CLOUD_INFRASTRUCTURE');
+    !hasMethod(cloud, 'kmsReady') ||
+    !hasMethod(cloud, 'smsReady') ||
+    !hasMethod(cloud, 'close')
+  )
+    throw stableError('INVALID_CLOUD_INFRASTRUCTURE');
 }
 
 function member(owner: unknown, key: string): unknown {
-  return (typeof owner === 'object' && owner !== null) || typeof owner === 'function' ? Reflect.get(owner, key) as unknown : undefined;
+  return (typeof owner === 'object' && owner !== null) || typeof owner === 'function'
+    ? (Reflect.get(owner, key) as unknown)
+    : undefined;
 }
 
-function hasMethod(owner: unknown, key: string): boolean { return typeof member(owner, key) === 'function'; }
+function hasMethod(owner: unknown, key: string): boolean {
+  return typeof member(owner, key) === 'function';
+}
 
 async function closeRedis(redis: Redis): Promise<void> {
-  if (redis.status !== 'ready') { redis.disconnect(false); return; }
-  try { await redis.quit(); }
-  catch (error) { redis.disconnect(false); throw error; }
+  if (redis.status !== 'ready') {
+    redis.disconnect(false);
+    return;
+  }
+  try {
+    await redis.quit();
+  } catch (error) {
+    redis.disconnect(false);
+    throw error;
+  }
 }
 
 function disconnectRedis(redis: Redis): Promise<void> {

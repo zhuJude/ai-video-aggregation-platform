@@ -18,7 +18,9 @@ export async function lookupExactPhoneAction(formData: FormData) {
 
 export async function requestWalletAdjustmentAction(
   formData: FormData,
-): Promise<Readonly<{ auditRecordId: string; ok: true; requestId: string; status: 'PENDING_APPROVAL' }>> {
+): Promise<
+  Readonly<{ auditRecordId: string; ok: true; requestId: string; status: 'PENDING_APPROVAL' }>
+> {
   const ports = createHttpUserOperationPorts();
   return createWalletAdjustmentRequestAction({
     adjustmentPort: ports.adjustmentPort,
@@ -28,17 +30,26 @@ export async function requestWalletAdjustmentAction(
 
 export async function previewWalletAdjustmentAction(formData: FormData) {
   const ports = createHttpUserOperationPorts();
-  return createWalletAdjustmentPreviewAction({ adjustmentPort: ports.adjustmentPort, scopePort: ports.scopePort })(formData);
+  return createWalletAdjustmentPreviewAction({
+    adjustmentPort: ports.adjustmentPort,
+    scopePort: ports.scopePort,
+  })(formData);
 }
 
 export async function previewWalletAdjustmentApprovalAction(formData: FormData) {
   const ports = createHttpUserOperationPorts();
-  return createWalletAdjustmentApprovalPreviewAction({ adjustmentPort: ports.adjustmentPort, scopePort: ports.scopePort })(formData);
+  return createWalletAdjustmentApprovalPreviewAction({
+    adjustmentPort: ports.adjustmentPort,
+    scopePort: ports.scopePort,
+  })(formData);
 }
 
 export async function approveWalletAdjustmentAction(formData: FormData) {
   const ports = createHttpUserOperationPorts();
-  return createWalletAdjustmentApprovalAction({ adjustmentPort: ports.adjustmentPort, scopePort: ports.scopePort })(formData);
+  return createWalletAdjustmentApprovalAction({
+    adjustmentPort: ports.adjustmentPort,
+    scopePort: ports.scopePort,
+  })(formData);
 }
 
 export async function requestUsersCsvExportAction(
@@ -48,7 +59,9 @@ export async function requestUsersCsvExportAction(
   return createUserCsvExportAction({ exportPort: ports.exportPort })(formData);
 }
 
-export async function requestUserStatusChangeAction(formData: FormData): Promise<Readonly<{ auditRecordId: string; ok: true; requestId: string }>> {
+export async function requestUserStatusChangeAction(
+  formData: FormData,
+): Promise<Readonly<{ auditRecordId: string; ok: true; requestId: string }>> {
   const ports = createHttpUserOperationPorts();
   return createUserStatusAction({ port: ports.statusPort, scopePort: ports.scopePort })(formData);
 }

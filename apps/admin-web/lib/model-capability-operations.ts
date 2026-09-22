@@ -101,15 +101,17 @@ export interface ModelCapabilityPort {
 
 export interface ModelCapabilityCommandPort {
   execute(input: CommandInput): Promise<unknown>;
-  previewRollback?(input: Readonly<{
-    expectedVersion: number;
-    modelId: string;
-    requestContext: OutboundRequestContext;
-    scope: DataScope;
-    sourceVersionId: string;
-    targetVersionId: string;
-    trustedSessionToken: string;
-  }>): Promise<unknown>;
+  previewRollback?(
+    input: Readonly<{
+      expectedVersion: number;
+      modelId: string;
+      requestContext: OutboundRequestContext;
+      scope: DataScope;
+      sourceVersionId: string;
+      targetVersionId: string;
+      trustedSessionToken: string;
+    }>,
+  ): Promise<unknown>;
 }
 
 function assertNoProxyTree(value: unknown, depth = 0, seen = new Set<object>()): void {

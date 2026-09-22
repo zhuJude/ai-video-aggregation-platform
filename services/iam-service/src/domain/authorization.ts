@@ -17,10 +17,7 @@ export interface ResourceAuthorizationContext {
 
 const SCOPE_ORDER: readonly DataScope[] = ['OWN', 'ASSIGNED'];
 
-export function mergeDataScopes(
-  grants: unknown,
-  permission: string,
-): readonly DataScope[] {
+export function mergeDataScopes(grants: unknown, permission: string): readonly DataScope[] {
   if (!Array.isArray(grants) || !validPermission(permission)) return [];
   const matching = new Set<DataScope>();
   for (const candidate of grants as readonly unknown[]) {

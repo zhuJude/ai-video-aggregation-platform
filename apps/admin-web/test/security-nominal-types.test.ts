@@ -44,8 +44,12 @@ describe('nominal security boundary types', () => {
       context,
     );
 
-    expectTypeOf(rejectedPlainContext).toExtend<Readonly<{ correlationId: string; traceId: string }>>();
-    expectTypeOf(rejectedAliasedContext).toExtend<Readonly<{ correlationId: string; traceId: string }>>();
+    expectTypeOf(rejectedPlainContext).toExtend<
+      Readonly<{ correlationId: string; traceId: string }>
+    >();
+    expectTypeOf(rejectedAliasedContext).toExtend<
+      Readonly<{ correlationId: string; traceId: string }>
+    >();
     expectTypeOf(context).toEqualTypeOf<OutboundRequestContext>();
     expectTypeOf(rejectedPlainEvent).toExtend<Readonly<{ operation: string; reason: string }>>();
     expectTypeOf(event).toEqualTypeOf<SafeTelemetryEvent>();

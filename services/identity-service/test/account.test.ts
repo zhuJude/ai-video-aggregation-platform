@@ -20,9 +20,7 @@ const operationFingerprintHasher = {
       keyVersion: 'test-v1',
     }),
   hashCandidates: (domain: string, rawIdentifier: string) =>
-    Promise.resolve([
-      { digest: testFingerprint(domain, rawIdentifier), keyVersion: 'test-v1' },
-    ]),
+    Promise.resolve([{ digest: testFingerprint(domain, rawIdentifier), keyVersion: 'test-v1' }]),
 };
 
 function testFingerprint(domain: string, rawIdentifier: string): string {
@@ -54,9 +52,7 @@ function versionedTestHasher(
     hashCurrent: (domain: string, rawIdentifier: string) =>
       Promise.resolve(candidate(current, domain, rawIdentifier)),
     hashCandidates: (domain: string, rawIdentifier: string) =>
-      Promise.resolve(
-        [current, ...previous].map((key) => candidate(key, domain, rawIdentifier)),
-      ),
+      Promise.resolve([current, ...previous].map((key) => candidate(key, domain, rawIdentifier))),
   };
 }
 
@@ -404,8 +400,7 @@ describe('IdentityAccountService', () => {
       resolveNew = resolve;
     });
     const verifier: SmsChallengeVerifier = {
-      verify: ({ phoneE164 }) =>
-        phoneE164 === '+8613800138000' ? currentProof : newProof,
+      verify: ({ phoneE164 }) => (phoneE164 === '+8613800138000' ? currentProof : newProof),
     };
     const service = new IdentityAccountService({
       repository,
@@ -443,33 +438,46 @@ describe('IdentityAccountService', () => {
 
   it.each([
     ['true + error', true, new Error('new redis lost'), 'SENSITIVE_OPERATION_REVERIFY_REQUIRED'],
-    ['error + true', new Error('current redis lost'), true, 'SENSITIVE_OPERATION_REVERIFY_REQUIRED'],
+    [
+      'error + true',
+      new Error('current redis lost'),
+      true,
+      'SENSITIVE_OPERATION_REVERIFY_REQUIRED',
+    ],
     ['true + false', true, false, 'SENSITIVE_OPERATION_REVERIFY_REQUIRED'],
-    ['both errors', new Error('current lost'), new Error('new lost'), 'SENSITIVE_OPERATION_REVERIFY_REQUIRED'],
+    [
+      'both errors',
+      new Error('current lost'),
+      new Error('new lost'),
+      'SENSITIVE_OPERATION_REVERIFY_REQUIRED',
+    ],
     ['both false', false, false, 'PHONE_VERIFICATION_FAILED'],
-  ])('classifies dual proof outcome %s without leaking verifier failures', async (_case, current, next, code) => {
-    const repository = new MemoryAccountRepository();
-    const verifier: SmsChallengeVerifier = {
-      verify: ({ phoneE164 }) => {
-        const outcome = phoneE164 === '+8613800138000' ? current : next;
-        return outcome instanceof Error ? Promise.reject(outcome) : Promise.resolve(outcome);
-      },
-    };
-    const service = new IdentityAccountService({
-      repository,
-      smsVerifier: verifier,
-      operationFingerprintHasher,
-    });
-    const failure = service.changePhone({
-      userId: 'u1',
-      currentPhoneCode: '111111',
-      newPhoneE164: '+8613900139000',
-      newPhoneCode: '222222',
-      operationId: '0198fabc-1234-7abc-8abc-474747474747',
-      eventMetadata: EventMetadata.create(),
-    });
-    await expect(failure).rejects.toMatchObject({ code, message: code });
-  });
+  ])(
+    'classifies dual proof outcome %s without leaking verifier failures',
+    async (_case, current, next, code) => {
+      const repository = new MemoryAccountRepository();
+      const verifier: SmsChallengeVerifier = {
+        verify: ({ phoneE164 }) => {
+          const outcome = phoneE164 === '+8613800138000' ? current : next;
+          return outcome instanceof Error ? Promise.reject(outcome) : Promise.resolve(outcome);
+        },
+      };
+      const service = new IdentityAccountService({
+        repository,
+        smsVerifier: verifier,
+        operationFingerprintHasher,
+      });
+      const failure = service.changePhone({
+        userId: 'u1',
+        currentPhoneCode: '111111',
+        newPhoneE164: '+8613900139000',
+        newPhoneCode: '222222',
+        operationId: '0198fabc-1234-7abc-8abc-474747474747',
+        eventMetadata: EventMetadata.create(),
+      });
+      await expect(failure).rejects.toMatchObject({ code, message: code });
+    },
+  );
 
   it('maps an uncertain close-account OTP verifier failure to stable re-verification', async () => {
     const repository = new MemoryAccountRepository();
@@ -559,9 +567,7 @@ describe('IdentityAccountService', () => {
     repository.appendOutbox = () => Promise.reject(new Error('db detail +8613900139000 222222'));
     const service = new IdentityAccountService({
       repository,
-      smsVerifier: new CodeVerifier(
-        new Set(['+8613800138000:111111', '+8613900139000:222222']),
-      ),
+      smsVerifier: new CodeVerifier(new Set(['+8613800138000:111111', '+8613900139000:222222'])),
       operationFingerprintHasher,
     });
 
@@ -626,10 +632,9 @@ describe('IdentityAccountService', () => {
     const duringRotation = new IdentityAccountService({
       repository,
       smsVerifier: verifier,
-      operationFingerprintHasher: versionedTestHasher(
-        { version: 'v2', keyByte: 2 },
-        [{ version: 'v1', keyByte: 1 }],
-      ),
+      operationFingerprintHasher: versionedTestHasher({ version: 'v2', keyByte: 2 }, [
+        { version: 'v1', keyByte: 1 },
+      ]),
     });
     await expect(duringRotation.changePhone(input)).resolves.toBeUndefined();
     expect(verifier.calls).toHaveLength(2);
@@ -647,11 +652,7 @@ describe('IdentityAccountService', () => {
   it('rejects reuse of one operation id for a different normalized phone intent', async () => {
     const repository = new MemoryAccountRepository();
     const verifier = new CodeVerifier(
-      new Set([
-        '+8613800138000:111111',
-        '+8613900139000:222222',
-        '+8613700137000:333333',
-      ]),
+      new Set(['+8613800138000:111111', '+8613900139000:222222', '+8613700137000:333333']),
     );
     const service = new IdentityAccountService({
       repository,
@@ -738,7 +739,10 @@ describe('IdentityAccountService', () => {
       operationFingerprintHasher,
     });
 
-    await Promise.all([service.updateProfile('u1', 'first'), service.updateProfile('u1', 'second')]);
+    await Promise.all([
+      service.updateProfile('u1', 'first'),
+      service.updateProfile('u1', 'second'),
+    ]);
 
     expect(repository.maxActiveTransactions).toBe(1);
   });

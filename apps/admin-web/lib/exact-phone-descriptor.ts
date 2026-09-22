@@ -22,14 +22,21 @@ type DescriptorPayload = Readonly<{
 }>;
 
 type SigningContext = Readonly<{ now?: () => number; signingKey: string | undefined }>;
-type VerificationContext = SigningContext & Readonly<{ scope: DataScope; sessionInstanceId: string; subjectId: string }>;
+type VerificationContext = SigningContext &
+  Readonly<{ scope: DataScope; sessionInstanceId: string; subjectId: string }>;
 
 export function isValidExactPhoneDescriptorSigningKey(value: unknown): value is string {
   return typeof value === 'string' && new TextEncoder().encode(value).byteLength >= 32;
 }
 
 async function importKey(signingKey: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey('raw', new TextEncoder().encode(signingKey), { hash: 'SHA-256', name: 'HMAC' }, false, ['sign', 'verify']);
+  return crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(signingKey),
+    { hash: 'SHA-256', name: 'HMAC' },
+    false,
+    ['sign', 'verify'],
+  );
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -51,16 +58,39 @@ export function isValidExactPhoneUpstreamHandle(value: unknown): value is string
 }
 
 export async function sealExactPhoneSearchDescriptor(
-  input: Readonly<{ expiresAt: string; handle: string; scope: DataScope; sessionInstanceId: string; subjectId: string }>,
+  input: Readonly<{
+    expiresAt: string;
+    handle: string;
+    scope: DataScope;
+    sessionInstanceId: string;
+    subjectId: string;
+  }>,
   { now = Date.now, signingKey }: SigningContext,
 ): Promise<string> {
   if (!isValidExactPhoneDescriptorSigningKey(signingKey)) throw new Error('搜索凭证签名配置无效');
-  if (!isValidExactPhoneUpstreamHandle(input.handle) || !isValidExactPhoneUpstreamExpiry(input.expiresAt, now()) || !isUuidV7(input.subjectId) || !isUuidV7(input.sessionInstanceId)) invalid();
-  const payload: DescriptorPayload = { audience: AUDIENCE, expiresAt: input.expiresAt, handle: input.handle, sessionInstanceId: input.sessionInstanceId, scope: input.scope, subjectId: input.subjectId, version: VERSION };
+  if (
+    !isValidExactPhoneUpstreamHandle(input.handle) ||
+    !isValidExactPhoneUpstreamExpiry(input.expiresAt, now()) ||
+    !isUuidV7(input.subjectId) ||
+    !isUuidV7(input.sessionInstanceId)
+  )
+    invalid();
+  const payload: DescriptorPayload = {
+    audience: AUDIENCE,
+    expiresAt: input.expiresAt,
+    handle: input.handle,
+    sessionInstanceId: input.sessionInstanceId,
+    scope: input.scope,
+    subjectId: input.subjectId,
+    version: VERSION,
+  };
   const encodedPayload = new TextEncoder().encode(JSON.stringify(payload));
-  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', await importKey(signingKey), encodedPayload));
+  const signature = new Uint8Array(
+    await crypto.subtle.sign('HMAC', await importKey(signingKey), encodedPayload),
+  );
   const envelope = new Uint8Array(encodedPayload.length + signature.length);
-  envelope.set(encodedPayload); envelope.set(signature, encodedPayload.length);
+  envelope.set(encodedPayload);
+  envelope.set(signature, encodedPayload.length);
   const token = bytesToBase64Url(envelope);
   if (!TOKEN.test(token) || containsSensitivePhoneLikeValue(token)) invalid();
   return token;
@@ -71,19 +101,42 @@ export async function verifyExactPhoneSearchDescriptor(
   { now = Date.now, scope, sessionInstanceId, signingKey, subjectId }: VerificationContext,
 ): Promise<Readonly<{ expiresAt: string; handle: string }>> {
   if (!isValidExactPhoneDescriptorSigningKey(signingKey)) throw new Error('搜索凭证签名配置无效');
-  if (typeof token !== 'string' || !TOKEN.test(token) || containsSensitivePhoneLikeValue(token) || !isUuidV7(subjectId) || !isUuidV7(sessionInstanceId)) invalid();
+  if (
+    typeof token !== 'string' ||
+    !TOKEN.test(token) ||
+    containsSensitivePhoneLikeValue(token) ||
+    !isUuidV7(subjectId) ||
+    !isUuidV7(sessionInstanceId)
+  )
+    invalid();
   try {
     const envelope = decodeCanonicalBase64Url(token, { maximumLength: 2048, minimumLength: 32 });
     if (!envelope) invalid();
     if (envelope.length <= SIGNATURE_BYTES) invalid();
     const payloadBytes = envelope.slice(0, -SIGNATURE_BYTES);
     const signature = envelope.slice(-SIGNATURE_BYTES);
-    if (!await crypto.subtle.verify('HMAC', await importKey(signingKey), signature, payloadBytes)) invalid();
-    const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Partial<DescriptorPayload>;
-    if (payload.version !== VERSION || payload.audience !== AUDIENCE || payload.scope !== scope || !isSameUuidV7(payload.sessionInstanceId, sessionInstanceId) || !isSameUuidV7(payload.subjectId, subjectId) || !isValidExactPhoneUpstreamHandle(payload.handle) || !isValidExactPhoneUpstreamExpiry(payload.expiresAt, now())) invalid();
+    if (!(await crypto.subtle.verify('HMAC', await importKey(signingKey), signature, payloadBytes)))
+      invalid();
+    const payload = JSON.parse(
+      new TextDecoder().decode(payloadBytes),
+    ) as Partial<DescriptorPayload>;
+    if (
+      payload.version !== VERSION ||
+      payload.audience !== AUDIENCE ||
+      payload.scope !== scope ||
+      !isSameUuidV7(payload.sessionInstanceId, sessionInstanceId) ||
+      !isSameUuidV7(payload.subjectId, subjectId) ||
+      !isValidExactPhoneUpstreamHandle(payload.handle) ||
+      !isValidExactPhoneUpstreamExpiry(payload.expiresAt, now())
+    )
+      invalid();
     return { expiresAt: payload.expiresAt, handle: payload.handle };
   } catch (error) {
-    if (error instanceof Error && (error.message === '搜索凭证无效' || error.message === '搜索凭证签名配置无效')) throw error;
+    if (
+      error instanceof Error &&
+      (error.message === '搜索凭证无效' || error.message === '搜索凭证签名配置无效')
+    )
+      throw error;
     return invalid();
   }
 }

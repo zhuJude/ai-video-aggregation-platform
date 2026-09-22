@@ -499,8 +499,8 @@ export class MemoryAdminAuthRepository implements AdminAuthRepository {
         )
         .sort(
           (left, right) =>
-            (left.pendingExpiresAt?.getTime() ?? 0) -
-              (right.pendingExpiresAt?.getTime() ?? 0) || left.id.localeCompare(right.id),
+            (left.pendingExpiresAt?.getTime() ?? 0) - (right.pendingExpiresAt?.getTime() ?? 0) ||
+            left.id.localeCompare(right.id),
         )
         .slice(0, boundedLimit);
       for (const session of expired) {

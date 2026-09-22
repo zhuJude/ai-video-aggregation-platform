@@ -30,7 +30,9 @@ export async function renderProviderDetailRoute(
   );
 }
 
-export default async function ProviderDetailPage({ params }: Readonly<{ params: Promise<{ id: string }> }>) {
+export default async function ProviderDetailPage({
+  params,
+}: Readonly<{ params: Promise<{ id: string }> }>) {
   const { id } = await params;
   return renderProviderDetailRoute(id, { port: createHttpProviderOperationPorts().detailPort });
 }

@@ -7,7 +7,8 @@ import type {
 } from './iam-administration.repository.js';
 import { assertUuidV7 } from '../domain/uuid-v7.js';
 
-const SENSITIVE_FIELD = /(?:password|secret|token|authorization|cookie|otp|totp|recovery|code|ciphertext|access[_-]?key|private[_-]?key)/i;
+const SENSITIVE_FIELD =
+  /(?:password|secret|token|authorization|cookie|otp|totp|recovery|code|ciphertext|access[_-]?key|private[_-]?key)/i;
 const MAX_REDACTION_DEPTH = 16;
 
 export class AuditService {

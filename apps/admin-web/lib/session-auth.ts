@@ -6,8 +6,7 @@ import { decodeCanonicalBase64Url, encodeCanonicalBase64Url } from './canonical-
 export const ADMIN_SESSION_COOKIE = '__Host-admin_session';
 export const ADMIN_MFA_CHALLENGE_COOKIE = '__Host-admin_mfa';
 export const ADMIN_MFA_CHALLENGE_TTL_SECONDS = 10 * 60;
-export const ADMIN_MFA_CHALLENGE_TTL_MS =
-  ADMIN_MFA_CHALLENGE_TTL_SECONDS * 1000;
+export const ADMIN_MFA_CHALLENGE_TTL_MS = ADMIN_MFA_CHALLENGE_TTL_SECONDS * 1000;
 export const ADMIN_MFA_CHALLENGE_ID_LENGTH = 43;
 export const ADMIN_MFA_AUDIENCE = 'admin-mfa';
 export const ADMIN_MFA_VERSION = 1;
@@ -51,9 +50,7 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 }
 
 export function createRandomAdminMfaChallengeId(): string {
-  return bytesToBase64Url(
-    crypto.getRandomValues(new Uint8Array(32)),
-  );
+  return bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
 }
 
 export function isValidAdminMfaChallengeId(value: unknown): value is string {
@@ -68,13 +65,8 @@ function textToBase64Url(value: string): string {
   return bytesToBase64Url(new TextEncoder().encode(value));
 }
 
-export function isValidAdminSigningKey(
-  signingKey: string | undefined,
-): signingKey is string {
-  return (
-    typeof signingKey === 'string' &&
-    new TextEncoder().encode(signingKey).byteLength >= 32
-  );
+export function isValidAdminSigningKey(signingKey: string | undefined): signingKey is string {
+  return typeof signingKey === 'string' && new TextEncoder().encode(signingKey).byteLength >= 32;
 }
 
 async function importSigningKey(signingKey: string): Promise<CryptoKey> {
@@ -92,13 +84,19 @@ async function importSigningKey(signingKey: string): Promise<CryptoKey> {
 }
 
 function isAdminSessionClaims(value: unknown): value is AdminSessionClaims {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
     return false;
   }
 
   const candidate = value as Partial<AdminSessionClaims>;
   return (
-    Object.keys(value).sort().join(',') === 'dataScope,expiresAt,permissions,sessionInstanceId,subjectId' &&
+    Object.keys(value).sort().join(',') ===
+      'dataScope,expiresAt,permissions,sessionInstanceId,subjectId' &&
     isUuidV7(candidate.subjectId) &&
     isUuidV7(candidate.sessionInstanceId) &&
     isValidAdminPermissions(candidate.permissions) &&
@@ -110,10 +108,13 @@ function isAdminSessionClaims(value: unknown): value is AdminSessionClaims {
   );
 }
 
-function isAdminMfaChallengeClaims(
-  value: unknown,
-): value is AdminMfaChallengeClaims {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+function isAdminMfaChallengeClaims(value: unknown): value is AdminMfaChallengeClaims {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
     return false;
   }
 
@@ -151,14 +152,27 @@ function isAdminMfaChallengeClaims(
 }
 
 async function hmacBytes(value: string, signingKey: string): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.sign('HMAC', await importSigningKey(signingKey), new TextEncoder().encode(value)));
+  return new Uint8Array(
+    await crypto.subtle.sign(
+      'HMAC',
+      await importSigningKey(signingKey),
+      new TextEncoder().encode(value),
+    ),
+  );
 }
 
-export async function createAdminMfaIdentifierBinding(identifier: string, signingKey: string): Promise<string> {
+export async function createAdminMfaIdentifierBinding(
+  identifier: string,
+  signingKey: string,
+): Promise<string> {
   return bytesToBase64Url(await hmacBytes(`admin-mfa:identifier:${identifier}`, signingKey));
 }
 
-export async function deriveAdminMfaIdempotencyKey(seed: string, attempt: string, signingKey: string): Promise<string> {
+export async function deriveAdminMfaIdempotencyKey(
+  seed: string,
+  attempt: string,
+  signingKey: string,
+): Promise<string> {
   if (!isValidAdminMfaChallengeId(seed)) throw new Error('Invalid admin MFA seed');
   const bytes = (await hmacBytes(`admin-mfa:command:${seed}:${attempt}`, signingKey)).slice(0, 16);
   bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x70;
@@ -176,7 +190,8 @@ async function signClaims(value: unknown, signingKey: string): Promise<string> {
   );
 
   const token = `${payload}.${bytesToBase64Url(new Uint8Array(signature))}`;
-  if (token.length > ADMIN_AUTH_TOKEN_MAX_LENGTH) throw new Error('Admin auth token exceeds safe cookie bound');
+  if (token.length > ADMIN_AUTH_TOKEN_MAX_LENGTH)
+    throw new Error('Admin auth token exceeds safe cookie bound');
   return token;
 }
 
@@ -199,7 +214,9 @@ async function verifyClaims(
     return null;
   }
 
-  const payloadBytes = decodeCanonicalBase64Url(payload, { maximumLength: ADMIN_AUTH_TOKEN_MAX_LENGTH });
+  const payloadBytes = decodeCanonicalBase64Url(payload, {
+    maximumLength: ADMIN_AUTH_TOKEN_MAX_LENGTH,
+  });
   const signatureBytes = decodeCanonicalBase64Url(encodedSignature, { maximumLength: 128 });
   if (!payloadBytes || !signatureBytes) return null;
   try {
@@ -213,9 +230,7 @@ async function verifyClaims(
       return null;
     }
 
-    return JSON.parse(
-      new TextDecoder().decode(payloadBytes),
-    ) as unknown;
+    return JSON.parse(new TextDecoder().decode(payloadBytes)) as unknown;
   } catch {
     return null;
   }

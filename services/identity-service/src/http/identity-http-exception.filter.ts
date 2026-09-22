@@ -43,11 +43,7 @@ export class IdentityHttpExceptionFilter implements ExceptionFilter {
 }
 
 function stableCode(exception: unknown): string {
-  if (
-    exception instanceof Error &&
-    'code' in exception &&
-    typeof exception.code === 'string'
-  ) {
+  if (exception instanceof Error && 'code' in exception && typeof exception.code === 'string') {
     return exception.code;
   }
   return 'INTERNAL_SERVER_ERROR';

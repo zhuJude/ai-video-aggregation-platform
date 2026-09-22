@@ -9,10 +9,12 @@ export class OperationsController {
     @Inject('SERVICE_METRICS') private readonly metrics: IamMetrics,
   ) {}
   @Get('healthz') healthz(@Res() reply: FastifyReply): void {
-    const result = this.health.liveness(); reply.status(result.statusCode).send(result.body);
+    const result = this.health.liveness();
+    reply.status(result.statusCode).send(result.body);
   }
   @Get('readyz') async readyz(@Res() reply: FastifyReply): Promise<void> {
-    const result = await this.health.readiness(); reply.status(result.statusCode).send(result.body);
+    const result = await this.health.readiness();
+    reply.status(result.statusCode).send(result.body);
   }
   @Get('metrics') async metricz(@Res() reply: FastifyReply): Promise<void> {
     reply.type('text/plain; version=0.0.4; charset=utf-8').send(await this.metrics.render());

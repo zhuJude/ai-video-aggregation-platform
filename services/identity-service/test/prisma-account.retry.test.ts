@@ -79,9 +79,7 @@ describe('PrismaAccountMutationRepository serialization retries', () => {
       timeout: 10_000,
     });
     expect(lockQueries).toHaveLength(2);
-    expect(
-      lockQueries.map((query) => (query as { values: unknown[] }).values[0]),
-    ).toEqual([
+    expect(lockQueries.map((query) => (query as { values: unknown[] }).values[0])).toEqual([
       'identity-account:0198fabc-1234-7abc-8abc-111111111111',
       'identity-operation:0198fabc-1234-7abc-8abc-222222222222',
     ]);
@@ -154,7 +152,10 @@ describe('PrismaAccountMutationRepository serialization retries', () => {
             const gate = new Promise<void>((resolve) => {
               release = resolve;
             });
-            lockTails.set(key, previous.then(() => gate));
+            lockTails.set(
+              key,
+              previous.then(() => gate),
+            );
             await previous;
             releases.push(release);
             return [];
@@ -179,14 +180,8 @@ describe('PrismaAccountMutationRepository serialization retries', () => {
     };
 
     await Promise.all([
-      repository.transaction(
-        { userId: '0198fabc-1234-7abc-8abc-111111111111', operationId },
-        work,
-      ),
-      repository.transaction(
-        { userId: '0198fabc-1234-7abc-8abc-333333333333', operationId },
-        work,
-      ),
+      repository.transaction({ userId: '0198fabc-1234-7abc-8abc-111111111111', operationId }, work),
+      repository.transaction({ userId: '0198fabc-1234-7abc-8abc-333333333333', operationId }, work),
     ]);
 
     expect(maxActive).toBe(1);
