@@ -15,7 +15,8 @@
     "verify:prisma-build": "node scripts/verify-prisma-build.mjs",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
-    "prisma:validate": "prisma validate"
+    "prisma:validate": "prisma validate",
+    "prelint": "pnpm run prisma:generate"
   },
   "dependencies": {
     "@nestjs/common": "12.0.1",

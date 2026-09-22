@@ -15,6 +15,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:validate": "prisma validate",
+    "prelint": "pnpm run prisma:generate",
     "verify": "pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build && pnpm verify:prisma-build"
   },
   "dependencies": {
