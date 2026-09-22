@@ -1,0 +1,18 @@
+image:
+  repository: registry-vpc.cn-hangzhou.aliyuncs.com/platform/provider-runtime
+
+serviceAccount:
+  roleArn: acs:ram::1234567890123456:role/ai-video-production-provider-runtime
+
+keda:
+  enabled: true
+  minReplicaCount: 1
+  maxReplicaCount: 50
+  prometheus:
+    serverAddress: http://ack-prometheus-server.monitoring.svc:9090
+  rocketmq:
+    endpoint: rocketmq-vpc-endpoint
+    topic: delayed-polling
+    consumerGroup: provider-runtime
+    lagThreshold: '100'
+    activationLagThreshold: '10'

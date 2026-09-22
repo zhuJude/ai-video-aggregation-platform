@@ -1,0 +1,37 @@
+replicaCount: 2
+
+image:
+  repository: registry-vpc.cn-hangzhou.aliyuncs.com/platform/service
+  digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+
+serviceAccount:
+  roleArn: acs:ram::1234567890123456:role/ai-video-production-service
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 2000m
+    memory: 1Gi
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 30
+  targetCPUUtilizationPercentage: 65
+  qps:
+    enabled: true
+    averageValue: '75'
+
+networkPolicy:
+  enabled: true
+  egress:
+    cidrs:
+      - 10.20.0.0/16
+    providerCidrs:
+      - 100.64.0.0/10

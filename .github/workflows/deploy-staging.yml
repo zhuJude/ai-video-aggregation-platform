@@ -1,0 +1,183 @@
+name: deploy-staging
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [codex/integration]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on:
+      group: ack-vpc
+      labels: linux
+    environment: staging
+    timeout-minutes: 90
+    env:
+      ALICLOUD_REGION: cn-hangzhou
+      ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      ACR_INSTANCE_ID: ${{ vars.ACR_INSTANCE_ID }}
+      ACK_CLUSTER_ID: ${{ vars.STAGING_ACK_CLUSTER_ID }}
+      STAGING_HOST: ${{ vars.STAGING_HOST }}
+    steps:
+      - name: Check out verified integration commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Require the tested commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.workflow_run.head_sha }}"
+          test "${{ vars.BUDGET_ALERTS_ACTIVE }}" = "true"
+
+      - name: Exchange GitHub OIDC for a short-lived staging role
+        id: aliyun-oidc
+        uses: aliyun/configure-aliyun-credentials-action@v1
+        with:
+          role-to-assume: ${{ vars.STAGING_DEPLOY_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.ALICLOUD_GITHUB_OIDC_PROVIDER_ARN }}
+          role-session-name: staging-${{ github.run_id }}
+          role-session-expiration: 1800
+          audience: sts.aliyuncs.com
+
+      - name: Install deployment tools
+        uses: aliyun/setup-aliyun-cli-action@v1
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.21.0
+      - uses: sigstore/cosign-installer@v3.8.2
+        with:
+          cosign-release: v2.4.3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Configure private ACK context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/kube"
+          aliyun cs describe-cluster-user-kubeconfig \
+            --cluster-id "$ACK_CLUSTER_ID" \
+            --region "$ALICLOUD_REGION" \
+            --private-ip-address true |
+            jq -er '.config' > "$RUNNER_TEMP/kube/config"
+          chmod 600 "$RUNNER_TEMP/kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >> "$GITHUB_ENV"
+
+      - name: Authenticate to private ACR with temporary credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_json="$(aliyun cr GetAuthorizationToken \
+            --InstanceId "$ACR_INSTANCE_ID" \
+            --RegionId "$ALICLOUD_REGION")"
+          username="$(jq -er '.TempUsername // .tempUsername' <<<"$auth_json")"
+          token="$(jq -er '.AuthorizationToken // .authorizationToken' <<<"$auth_json")"
+          printf '%s' "$token" | docker login "$ACR_REGISTRY" --username "$username" --password-stdin
+
+      - name: Build, scan-chain, sign, migrate and deploy by digest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/release"
+          : > "$RUNNER_TEMP/release/images.txt"
+          mapfile -t dockerfiles < <(find apps services -name Dockerfile -type f -print | sort)
+          test "${#dockerfiles[@]}" -gt 0
+
+          current_service=""
+          previous_revision=""
+          rollback() {
+            set +e
+            if [[ -n "$current_service" && -n "$previous_revision" && "$previous_revision" != "0" ]]; then
+              helm rollback "$current_service" "$previous_revision" --namespace platform --wait --timeout 10m
+            fi
+          }
+          trap rollback ERR
+
+          for dockerfile in "${dockerfiles[@]}"; do
+            current_service="$(basename "$(dirname "$dockerfile")")"
+            context="$(dirname "$dockerfile")"
+            tag="$ACR_REGISTRY/platform/$current_service:release-${{ github.event.workflow_run.head_sha }}"
+            docker buildx build --provenance=true --sbom=true --push \
+              --file "$dockerfile" --tag "$tag" "$context"
+            digest="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            image_ref="$ACR_REGISTRY/platform/$current_service@$digest"
+            cosign sign --yes "$image_ref"
+            printf '%s=%s\n' "$current_service" "$image_ref" >> "$RUNNER_TEMP/release/images.txt"
+
+            if helm status "$current_service" --namespace platform >/dev/null 2>&1; then
+              previous_revision="$(helm history "$current_service" --namespace platform -o json |
+                jq -er 'map(select(.status == "deployed")) | last | .revision')"
+            else
+              previous_revision="0"
+            fi
+            helm upgrade --install "$current_service" infra/helm/platform-service \
+              --namespace platform --create-namespace \
+              -f infra/helm/environments/staging.yaml \
+              --set-string fullnameOverride="$current_service" \
+              --set-string image.repository="$ACR_REGISTRY/platform/$current_service" \
+              --set-string image.digest="$digest" \
+              --set-string serviceAccount.roleArn="${{ vars.STAGING_SERVICE_ROLE_PREFIX }}$current_service" \
+              --set replicaCount=0 --set autoscaling.enabled=false --set pdb.enabled=false \
+              --wait --atomic --timeout 10m
+
+            job="$current_service-migrate-${{ github.run_id }}"
+            kubectl delete job "$job" --namespace platform --ignore-not-found
+            kubectl create --namespace platform -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: $job
+          spec:
+            backoffLimit: 1
+            ttlSecondsAfterFinished: 3600
+            template:
+              spec:
+                serviceAccountName: $current_service
+                restartPolicy: Never
+                containers:
+                  - name: migrate
+                    image: $image_ref
+                    command: ["/app/bin/migrate", "up", "--expand-only"]
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      runAsNonRoot: true
+                      capabilities:
+                        drop: ["ALL"]
+          EOF
+            kubectl wait --namespace platform --for=condition=complete "job/$job" --timeout=10m
+
+            ingress_enabled=false
+            [[ "$current_service" == "edge-gateway" ]] && ingress_enabled=true
+            helm upgrade "$current_service" infra/helm/platform-service \
+              --namespace platform \
+              -f infra/helm/environments/staging.yaml \
+              --set-string fullnameOverride="$current_service" \
+              --set-string image.repository="$ACR_REGISTRY/platform/$current_service" \
+              --set-string image.digest="$digest" \
+              --set-string serviceAccount.roleArn="${{ vars.STAGING_SERVICE_ROLE_PREFIX }}$current_service" \
+              --set ingress.enabled="$ingress_enabled" \
+              --set-string ingress.host="$STAGING_HOST" \
+              --wait --atomic --timeout 10m
+            kubectl rollout status "deployment/$current_service" --namespace platform --timeout=10m
+          done
+
+          curl --fail --show-error --retry 6 --retry-all-errors "https://$STAGING_HOST/health/ready"
+
+      - name: Upload immutable staging image manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-images-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/release/images.txt
+          retention-days: 30
