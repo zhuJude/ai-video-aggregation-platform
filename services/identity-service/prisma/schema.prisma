@@ -1,0 +1,55 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String    @id @db.Uuid
+  phoneE164 String    @unique @map("phone_e164")
+  nickname  String
+  status    String    @default("ACTIVE")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  sessions  Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id                 String    @id @db.Uuid
+  userId             String    @map("user_id") @db.Uuid
+  familyId           String    @default(dbgenerated("identity_uuid_v7()")) @map("family_id") @db.Uuid
+  refreshTokenDigest String    @unique @map("refresh_token_hash")
+  deviceName         String    @map("device_name")
+  expiresAt          DateTime  @map("expires_at")
+  consumedAt         DateTime? @map("consumed_at")
+  revokedAt          DateTime? @map("revoked_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  user               User      @relation(fields: [userId], references: [id])
+
+  @@index([userId, revokedAt])
+  @@index([familyId, revokedAt])
+  @@map("sessions")
+}
+
+model OutboxEvent {
+  id            String    @id @db.Uuid
+  aggregateId   String    @map("aggregate_id") @db.Uuid
+  type          String
+  version       Int
+  occurredAt    DateTime  @map("occurred_at")
+  traceId       String    @map("trace_id") @db.Char(32)
+  correlationId String    @map("correlation_id") @db.Uuid
+  causationId   String?   @map("causation_id") @db.Uuid
+  producer      String
+  data          Json
+  dedupeKey     String    @unique @map("dedupe_key")
+  publishedAt   DateTime? @map("published_at")
+
+  @@index([publishedAt, occurredAt])
+  @@map("outbox_events")
+}

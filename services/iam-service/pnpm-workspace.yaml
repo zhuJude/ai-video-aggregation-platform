@@ -1,0 +1,8 @@
+allowBuilds:
+  '@prisma/engines': true
+  argon2: true
+  esbuild: true
+  prisma: true
+overrides:
+  deepmerge-ts: 8.0.0
+  mysql2: 3.22.0
