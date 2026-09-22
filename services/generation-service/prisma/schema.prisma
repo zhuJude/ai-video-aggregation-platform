@@ -1,0 +1,224 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TaskStatus {
+  QUOTED
+  RESERVED
+  QUEUED
+  SUBMITTING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+  EXPIRED
+  SETTLED
+  REFUNDED
+}
+
+enum RepairCaseStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  DISMISSED
+}
+
+enum TaskIdempotencyStatus {
+  IN_PROGRESS
+  SUCCEEDED
+  FAILED
+}
+
+enum TaskCreationPhase {
+  CLAIMED
+  RESERVE_REQUESTED
+  RESERVED
+  PERSISTENCE_FAILED
+  COMPENSATION_REQUESTED
+  COMPENSATED
+  REPAIR_REQUIRED
+  SUCCEEDED
+  FAILED
+}
+
+enum TaskTransitionSource {
+  API
+  ORCHESTRATOR
+  WORKER
+  CALLBACK
+  POLLER
+  REPAIR
+}
+
+enum TaskTransitionActorType {
+  USER
+  OPERATOR
+  SERVICE
+  PROVIDER
+}
+
+model GenerationTask {
+  id                       String            @id @db.Uuid
+  userId                   String            @db.Uuid
+  quoteId                  String            @unique @db.Uuid
+  capabilityVersionId      String            @db.Uuid
+  status                   TaskStatus        @default(QUOTED)
+  quoteSnapshot            Json
+  quoteSnapshotSha256      String            @db.Char(64)
+  capabilitySnapshot       Json
+  capabilitySnapshotSha256 String            @db.Char(64)
+  pricingSnapshot          Json
+  pricingSnapshotSha256    String            @db.Char(64)
+  parametersSnapshot       Json
+  parametersSnapshotSha256 String            @db.Char(64)
+  version                  Int               @default(0)
+  createdAt                DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime          @updatedAt @db.Timestamptz(3)
+  transitions              TaskTransition[]
+  idempotencyRecords       TaskIdempotency[]
+  repairCases              TaskRepairCase[]
+  saga                     TaskSaga?
+
+  @@index([userId, createdAt, id])
+  @@index([status, updatedAt])
+  @@index([capabilityVersionId, createdAt])
+}
+
+model TaskSaga {
+  taskId                    String         @id @db.Uuid
+  version                   Int            @default(0)
+  quotedPoints              String         @db.VarChar(40)
+  settlementPoints          String         @db.VarChar(40)
+  providerAccepted          Boolean        @default(false)
+  providerStateRank         Int            @default(0)
+  providerId                String?        @db.Uuid
+  providerTaskId            String?        @db.VarChar(512)
+  modelCode                 String?        @db.VarChar(160)
+  executionId               String?        @db.Uuid
+  routeEpoch                Int            @default(0)
+  assetImportRequested      Boolean        @default(false)
+  assetImportDispatched     Boolean        @default(false)
+  assetId                   String?        @db.Uuid
+  routingFailoverAuthorized Boolean        @default(false)
+  cancellationChargePoints  String?        @db.VarChar(40)
+  cancelRequested           Boolean        @default(false)
+  financialDisposition      String?        @db.VarChar(80)
+  financialSettlementKey    String?        @db.VarChar(120)
+  financialReleaseKey       String?        @db.VarChar(120)
+  substitute                Json?
+  createdAt                 DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt                 DateTime       @updatedAt @db.Timestamptz(3)
+  task                      GenerationTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, providerTaskId])
+  @@index([updatedAt])
+}
+
+model TaskTransition {
+  id          String                  @id @db.Uuid
+  taskId      String                  @db.Uuid
+  fromStatus  TaskStatus
+  toStatus    TaskStatus
+  taskVersion Int
+  reasonCode  String                  @db.VarChar(80)
+  source      TaskTransitionSource
+  actorType   TaskTransitionActorType
+  actorId     String                  @db.VarChar(160)
+  traceId     String                  @db.Char(32)
+  metadata    Json?
+  createdAt   DateTime                @default(now()) @db.Timestamptz(3)
+  task        GenerationTask          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, taskVersion])
+  @@index([taskId, createdAt])
+  @@index([toStatus, createdAt])
+  @@index([traceId])
+  @@index([source, createdAt])
+}
+
+model TaskIdempotency {
+  id                      String                @id @db.Uuid
+  userId                  String                @db.Uuid
+  idempotencyKey          String                @db.VarChar(160)
+  requestSha256           String                @db.Char(64)
+  proposedTaskId          String                @db.Uuid
+  quotedPoints            String                @db.VarChar(40)
+  reserveBusinessKey      String                @db.VarChar(120)
+  compensationBusinessKey String                @db.VarChar(120)
+  traceId                 String                @db.Char(32)
+  leaseToken              String                @unique @db.Char(64)
+  phase                   TaskCreationPhase     @default(CLAIMED)
+  status                  TaskIdempotencyStatus @default(IN_PROGRESS)
+  response                Json?
+  taskId                  String?               @db.Uuid
+  createdAt               DateTime              @default(now()) @db.Timestamptz(3)
+  expiresAt               DateTime              @db.Timestamptz(3)
+  task                    GenerationTask?       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  repairCases             TaskRepairCase[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([taskId])
+  @@index([expiresAt])
+}
+
+model OutboxEvent {
+  id               String    @id @db.Uuid
+  aggregateType    String    @db.VarChar(80)
+  aggregateId      String    @db.Uuid
+  eventType        String    @db.VarChar(160)
+  eventVersion     Int
+  deduplicationKey String?   @unique @db.VarChar(240)
+  payload          Json
+  headers          Json
+  occurredAt       DateTime  @db.Timestamptz(3)
+  availableAt      DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt      DateTime? @db.Timestamptz(3)
+  attempts         Int       @default(0)
+  lastError        String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([publishedAt, availableAt])
+  @@index([aggregateType, aggregateId, occurredAt])
+}
+
+model InboxMessage {
+  id             String    @id @db.Uuid
+  consumer       String    @db.VarChar(120)
+  messageId      String    @db.VarChar(160)
+  eventType      String    @db.VarChar(160)
+  payloadSha256  String    @db.Char(64)
+  receivedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  processedAt    DateTime? @db.Timestamptz(3)
+  lastError      String?
+  leaseToken     String?   @db.Char(64)
+  leaseExpiresAt DateTime? @db.Timestamptz(3)
+
+  @@unique([consumer, messageId])
+  @@index([consumer, processedAt, receivedAt])
+}
+
+model TaskRepairCase {
+  id               String           @id @db.Uuid
+  taskId           String?          @db.Uuid
+  idempotencyId    String?          @unique @db.Uuid
+  status           RepairCaseStatus @default(OPEN)
+  kind             String           @db.VarChar(80)
+  summary          String           @db.VarChar(500)
+  evidence         Json
+  detectedAt       DateTime         @default(now()) @db.Timestamptz(3)
+  resolvedAt       DateTime?        @db.Timestamptz(3)
+  resolution       Json?
+  deduplicationKey String?          @unique @db.VarChar(240)
+  task             GenerationTask?  @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  idempotency      TaskIdempotency? @relation(fields: [idempotencyId], references: [id], onDelete: Restrict)
+
+  @@index([status, detectedAt])
+  @@index([taskId, detectedAt])
+  @@index([idempotencyId, detectedAt])
+}

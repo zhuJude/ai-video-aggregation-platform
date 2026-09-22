@@ -1,0 +1,40 @@
+{
+  "name": "@repo/generation-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist",
+    "prisma/migrations",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "pnpm run prisma:generate && tsc -p tsconfig.json",
+    "lint": "eslint src test",
+    "prisma:check": "pnpm run prisma:validate && pnpm run prisma:migrate:smoke",
+    "prisma:generate": "prisma generate && prettier --write --ignore-path ../../.prettierignore \"src/generated/prisma/**/*.ts\"",
+    "prisma:migrate:smoke": "prisma migrate diff --config prisma.schema-tools.config.ts --from-empty --to-schema prisma/schema.prisma --script",
+    "prisma:validate": "prisma validate",
+    "prelint": "pnpm run prisma:generate",
+    "pretest": "pnpm run prisma:generate",
+    "pretest:coverage": "pnpm run prisma:generate",
+    "pretypecheck": "pnpm run prisma:generate",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --exclude dist/**",
+    "test:coverage": "vitest run --coverage --exclude dist/**"
+  },
+  "dependencies": {
+    "@nestjs/common": "12.0.1",
+    "@prisma/adapter-pg": "7.2.0",
+    "@prisma/client": "7.2.0",
+    "@repo/contracts": "workspace:*",
+    "pg": "8.16.3",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "4.1.11",
+    "prisma": "7.2.0"
+  }
+}
