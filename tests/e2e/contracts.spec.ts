@@ -12,7 +12,9 @@ const fixtureDirectory = join(import.meta.dirname, 'fixtures', 'events');
 
 function visit(value: unknown, path: readonly string[] = []): void {
   if (Array.isArray(value)) {
-    value.forEach((entry, index) => visit(entry, [...path, String(index)]));
+    value.forEach((entry, index) => {
+      visit(entry, [...path, String(index)]);
+    });
     return;
   }
 
@@ -24,10 +26,16 @@ function visit(value: unknown, path: readonly string[] = []): void {
       expect(() => UuidSchema.parse(child), `${location} must be UUIDv7`).not.toThrow();
     }
     if (/(?:points|amountMinor)$/i.test(key)) {
-      expect(() => PointsStringSchema.parse(child), `${location} must be a decimal string`).not.toThrow();
+      expect(
+        () => PointsStringSchema.parse(child),
+        `${location} must be a decimal string`,
+      ).not.toThrow();
     }
     if (/(?:At|Timestamp)$/.test(key)) {
-      expect(() => UtcDateTimeSchema.parse(child), `${location} must be UTC ISO-8601`).not.toThrow();
+      expect(
+        () => UtcDateTimeSchema.parse(child),
+        `${location} must be UTC ISO-8601`,
+      ).not.toThrow();
     }
     visit(child, [...path, key]);
   }
