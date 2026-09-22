@@ -3,7 +3,7 @@
 - 生成日期：2026-09-22
 - 包管理器：pnpm 11.24.0（Corepack）
 - 根锁文件：`pnpm-lock.yaml`
-- SHA-256：`88a95d515b97d53fbc40076843ba6fc5b9762374fa8a2b90d876bc462460f54c`
+- SHA-256：`eab7fe9e0c57dd3bb4a228030e25c7ae12d7419b09e6ef47ae05a871219106b9`
 - 锁文件 importers：根项目 1 + workspace 23
 - 仓库内锁文件数量：1
 
@@ -35,12 +35,12 @@ corepack pnpm audit --prod --audit-level high
 
 最终结果：`No known vulnerabilities found`。
 
-| 严重性 | 数量 |
-| --- | ---: |
-| Critical | 0 |
-| High | 0 |
-| Moderate | 0 |
-| Low | 0 |
+| 严重性   | 数量 |
+| -------- | ---: |
+| Critical |    0 |
+| High     |    0 |
+| Moderate |    0 |
+| Low      |    0 |
 
 审计元数据在修复前为 596 个生产/可选依赖记录，其中 9 个 High 全部由 Prisma 传递依赖链引入。没有使用 `auditConfig.ignoreCves`、审计忽略、风险接受或关闭门禁。
 

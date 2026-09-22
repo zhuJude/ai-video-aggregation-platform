@@ -19,6 +19,7 @@
     "preflight:wave1": "node scripts/wave1-preflight.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@eslint/js": "10.0.1",
     "@types/node": "24.10.1",
     "eslint": "10.9.1",
