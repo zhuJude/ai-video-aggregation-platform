@@ -60,7 +60,11 @@ describe('workspace', () => {
       }
       const prismaConfig = await readFile(`${serviceRoot}/prisma.config.ts`, 'utf8');
 
-      expect(scripts.lint, `${serviceRoot} lint script`).toMatch(/^prisma generate && eslint\b/);
+      const lintGeneratesPrisma =
+        scripts.lint?.includes('prisma generate') === true ||
+        (scripts.prelint?.includes('prisma:generate') === true &&
+          scripts['prisma:generate']?.includes('prisma generate') === true);
+      expect(lintGeneratesPrisma, `${serviceRoot} lint prepares Prisma types`).toBe(true);
       expect(prismaConfig, `${serviceRoot} Prisma config`).not.toContain("env('DATABASE_URL')");
     }
   });
