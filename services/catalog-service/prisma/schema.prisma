@@ -1,0 +1,114 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ProviderStatus {
+  ACTIVE
+  MAINTENANCE
+  DISABLED
+}
+
+enum ModelStatus {
+  DRAFT
+  ACTIVE
+  MAINTENANCE
+  DISABLED
+}
+
+enum CapabilityStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+model Provider {
+  id                     String                  @id @db.Uuid
+  code                   String                  @unique
+  displayName            String
+  apiBaseUrl             String
+  status                 ProviderStatus          @default(ACTIVE)
+  maintenanceStartsAt    DateTime?               @db.Timestamptz(3)
+  maintenanceEndsAt      DateTime?               @db.Timestamptz(3)
+  createdAt              DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime                @updatedAt @db.Timestamptz(3)
+  credentialRefs         ProviderCredentialRef[]
+  models                 Model[]
+}
+
+model ProviderCredentialRef {
+  id              String   @id @db.Uuid
+  providerId      String   @db.Uuid
+  kmsKeyReference String
+  scope           String
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  rotatedAt       DateTime? @db.Timestamptz(3)
+  provider        Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@unique([providerId, scope])
+}
+
+model Model {
+  id                String              @id @db.Uuid
+  providerId        String              @db.Uuid
+  code              String
+  providerModelId   String
+  displayName       String
+  description       String?
+  coverUrl          String?
+  sortOrder         Int                 @default(0)
+  status            ModelStatus         @default(DRAFT)
+  maintenanceStartsAt DateTime?          @db.Timestamptz(3)
+  maintenanceEndsAt DateTime?            @db.Timestamptz(3)
+  createdAt         DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime            @updatedAt @db.Timestamptz(3)
+  provider          Provider            @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  capabilities      CapabilityVersion[]
+
+  @@unique([providerId, code])
+  @@index([status, sortOrder])
+}
+
+model CapabilityVersion {
+  id             String                  @id @db.Uuid
+  modelId        String                  @db.Uuid
+  version        Int
+  status         CapabilityStatus        @default(DRAFT)
+  document       Json
+  contentSha256  String?                 @db.Char(64)
+  publishedAt    DateTime?               @db.Timestamptz(3)
+  publishedBy    String?                 @db.Uuid
+  createdAt      DateTime                @default(now()) @db.Timestamptz(3)
+  model          Model                   @relation(fields: [modelId], references: [id], onDelete: Restrict)
+  publications   CapabilityPublication[]
+
+  @@unique([modelId, version])
+  @@index([modelId, status])
+}
+
+model CapabilityPublication {
+  id                  String            @id @db.Uuid
+  capabilityVersionId String            @db.Uuid
+  publishedAt         DateTime          @db.Timestamptz(3)
+  publishedBy         String            @db.Uuid
+  contentSha256       String            @db.Char(64)
+  capabilityVersion   CapabilityVersion @relation(fields: [capabilityVersionId], references: [id], onDelete: Restrict)
+
+  @@index([capabilityVersionId, publishedAt])
+}
+
+model OutboxEvent {
+  id            String    @id @db.Uuid
+  aggregateType String
+  aggregateId   String    @db.Uuid
+  eventType     String
+  payload       Json
+  occurredAt    DateTime  @db.Timestamptz(3)
+  publishedAt   DateTime? @db.Timestamptz(3)
+
+  @@index([publishedAt, occurredAt])
+}
