@@ -12,6 +12,9 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:3210',
     ignoreHTTPSErrors: true,
+    launchOptions: process.env.PLAYWRIGHT_EXECUTABLE_PATH
+      ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
+      : undefined,
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
     viewport: { height: 900, width: 1280 },

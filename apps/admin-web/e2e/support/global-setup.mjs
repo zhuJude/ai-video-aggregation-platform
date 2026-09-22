@@ -22,7 +22,8 @@ function waitForHttp(url, timeoutMs) {
         const response = await fetch(url, { redirect: 'manual' });
         if (response.status < 500) return resolve();
       } catch {}
-      if (Date.now() - startedAt > timeoutMs) return reject(new Error(`Timed out waiting for ${url}`));
+      if (Date.now() - startedAt > timeoutMs)
+        return reject(new Error(`Timed out waiting for ${url}`));
       setTimeout(poll, 300);
     };
     void poll();
@@ -44,7 +45,11 @@ async function closeServer(server) {
 }
 
 async function warmApplication() {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(
+    process.env.PLAYWRIGHT_EXECUTABLE_PATH
+      ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
+      : undefined,
+  );
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   try {
     const page = await context.newPage();
@@ -62,7 +67,8 @@ async function warmApplication() {
     await page.getByRole('heading', { name: '任务运营' }).waitFor();
 
     const reset = await context.request.post(`${fixtureBaseUrl}/__reset`);
-    if (!reset.ok()) throw new Error(`Fixture reset failed during readiness check (${reset.status()})`);
+    if (!reset.ok())
+      throw new Error(`Fixture reset failed during readiness check (${reset.status()})`);
   } finally {
     await context.close();
     await browser.close();
@@ -70,10 +76,10 @@ async function warmApplication() {
 }
 
 export default async function globalSetup() {
-  const certificate = await selfsigned.generate(
-    [{ name: 'commonName', value: '127.0.0.1' }],
-    { days: 1, keySize: 2048 },
-  );
+  const certificate = await selfsigned.generate([{ name: 'commonName', value: '127.0.0.1' }], {
+    days: 1,
+    keySize: 2048,
+  });
   const api = https.createServer(
     { cert: certificate.cert, key: certificate.private },
     createFixtureHandler(),
@@ -92,7 +98,8 @@ export default async function globalSetup() {
       ADMIN_AUTH_KMS_IDENTITY_REF: 'kms://e2e/admin-auth',
       ADMIN_CATALOG_API_URL: 'https://127.0.0.1:3211',
       ADMIN_CATALOG_KMS_IDENTITY_REF: 'kms://e2e/catalog',
-      ADMIN_EXACT_PHONE_DESCRIPTOR_SIGNING_KEY: 'e2e-phone-descriptor-signing-key-at-least-32-bytes',
+      ADMIN_EXACT_PHONE_DESCRIPTOR_SIGNING_KEY:
+        'e2e-phone-descriptor-signing-key-at-least-32-bytes',
       ADMIN_MFA_CHALLENGE_SIGNING_KEY: 'e2e-mfa-challenge-signing-key-at-least-32-bytes',
       ADMIN_OBSERVABILITY_ALLOWED_ORIGINS: 'https://ops.example.com',
       ADMIN_OPERATIONS_API_URL: 'https://127.0.0.1:3211',
@@ -115,9 +122,11 @@ export default async function globalSetup() {
   const exitedUnexpectedly = new Promise((_, reject) => {
     next.once('exit', (code, signal) => {
       if (!stopping) {
-        reject(new Error(
-          `Next dev exited unexpectedly (code=${String(code)}, signal=${String(signal)})\n${output}`,
-        ));
+        reject(
+          new Error(
+            `Next dev exited unexpectedly (code=${String(code)}, signal=${String(signal)})\n${output}`,
+          ),
+        );
       }
     });
   });
