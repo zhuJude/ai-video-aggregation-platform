@@ -1,0 +1,175 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum WalletAccountKind {
+  USER_AVAILABLE
+  USER_FROZEN
+  PLATFORM_LIABILITY
+  PLATFORM_CONSUMED
+  ADJUSTMENT
+}
+
+enum LedgerTransactionKind {
+  CREDIT
+  RESERVE
+  SETTLE
+  RELEASE
+  ADJUST
+  REPAIR
+  REFUND
+}
+
+enum ReconciliationStatus {
+  RUNNING
+  MATCHED
+  MISMATCHED
+  REPAIRED
+}
+
+enum AdjustmentDirection {
+  CREDIT
+  DEBIT
+}
+
+enum AdjustmentStatus {
+  PENDING
+  POSTED
+  REJECTED
+}
+
+model WalletAccount {
+  id        String            @id @db.Uuid
+  ownerId   String            @db.VarChar(80)
+  kind      WalletAccountKind
+  createdAt DateTime          @default(now()) @db.Timestamptz(3)
+  entries   LedgerEntry[]
+  snapshot  BalanceSnapshot?
+
+  @@unique([ownerId, kind])
+  @@index([ownerId])
+}
+
+model LedgerTransaction {
+  id          String                @id @db.Uuid
+  businessKey String                @unique @db.VarChar(120)
+  commandFingerprint String         @db.VarChar(320)
+  kind        LedgerTransactionKind
+  userId      String?               @db.Uuid
+  points      BigInt
+  reason      String?               @db.VarChar(240)
+  traceId     String                @db.VarChar(64)
+  createdAt   DateTime              @default(now()) @db.Timestamptz(3)
+  entries     LedgerEntry[]
+
+  @@index([userId, createdAt])
+}
+
+model LedgerEntry {
+  id            String            @id @db.Uuid
+  transactionId String            @db.Uuid
+  accountId     String            @db.Uuid
+  delta         BigInt
+  createdAt     DateTime          @default(now()) @db.Timestamptz(3)
+  transaction   LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  account       WalletAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([transactionId])
+  @@index([accountId, createdAt])
+}
+
+model BalanceSnapshot {
+  accountId String        @id @db.Uuid
+  balance   BigInt
+  version   BigInt        @default(0)
+  updatedAt DateTime      @updatedAt @db.Timestamptz(3)
+  account   WalletAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+}
+
+model OutboxEvent {
+  id            String    @id @db.Uuid
+  aggregateType String    @db.VarChar(80)
+  aggregateId   String    @db.VarChar(80)
+  eventType     String    @db.VarChar(120)
+  payload       Json
+  traceId       String    @db.VarChar(64)
+  occurredAt    DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime? @db.Timestamptz(3)
+  attempts      Int       @default(0)
+
+  @@index([publishedAt, occurredAt])
+}
+
+model InboxMessage {
+  messageId   String   @db.VarChar(120)
+  consumer    String   @db.VarChar(120)
+  processedAt DateTime @default(now()) @db.Timestamptz(3)
+  result      Json?
+
+  @@id([messageId, consumer])
+}
+
+model ReconciliationRun {
+  id            String               @id @db.Uuid
+  status        ReconciliationStatus
+  startedAt     DateTime             @default(now()) @db.Timestamptz(3)
+  completedAt   DateTime?            @db.Timestamptz(3)
+  mismatchCount Int                  @default(0)
+  summary       Json?
+  mismatches    ReconciliationMismatch[]
+}
+
+model ReconciliationMismatch {
+  id         String            @id @db.Uuid
+  runId      String            @db.Uuid
+  accountId  String            @db.Uuid
+  userId     String            @db.VarChar(80)
+  account    WalletAccountKind
+  expected   BigInt
+  actual     BigInt
+  createdAt  DateTime          @default(now()) @db.Timestamptz(3)
+  run        ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@index([runId])
+  @@index([userId, createdAt])
+}
+
+model WalletRestriction {
+  userId              String    @id @db.VarChar(80)
+  reconciliationRunId String    @db.Uuid
+  reason              String    @db.VarChar(120)
+  blockedAt           DateTime  @default(now()) @db.Timestamptz(3)
+  unblockedAt         DateTime? @db.Timestamptz(3)
+}
+
+model AdjustmentRequest {
+  id                  String              @id @db.Uuid
+  userId              String              @db.Uuid
+  direction           AdjustmentDirection
+  points              BigInt
+  requestedBy         String              @db.VarChar(80)
+  reason              String              @db.VarChar(240)
+  traceId             String              @db.VarChar(64)
+  status              AdjustmentStatus    @default(PENDING)
+  postedTransactionId String?             @db.Uuid
+  createdAt           DateTime            @default(now()) @db.Timestamptz(3)
+  completedAt         DateTime?           @db.Timestamptz(3)
+  approvals           AdjustmentApproval[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AdjustmentApproval {
+  requestId  String            @db.Uuid
+  adminId    String            @db.VarChar(80)
+  approvedAt DateTime          @default(now()) @db.Timestamptz(3)
+  request    AdjustmentRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+
+  @@id([requestId, adminId])
+}

@@ -1,0 +1,157 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PaymentOrderStatus {
+  PENDING
+  PAID
+  CLOSED
+  REFUNDED
+  FAILED
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+enum InvoiceStatus {
+  APPLIED
+  APPROVED
+  ISSUED
+  REJECTED
+}
+
+enum ChannelReconciliationStatus {
+  RUNNING
+  MATCHED
+  MISMATCHED
+  FAILED
+}
+
+model RechargePackageSnapshot {
+  id              String        @id @db.Uuid
+  sourcePackageId String        @db.VarChar(80)
+  title           String        @db.VarChar(160)
+  amountMinor     BigInt
+  points          BigInt
+  currency        String        @db.Char(3)
+  createdAt       DateTime      @default(now()) @db.Timestamptz(3)
+  order           PaymentOrder?
+}
+
+model PaymentOrder {
+  id                String                  @id @db.Uuid
+  orderNo           String                  @unique @db.VarChar(64)
+  userId            String                  @db.Uuid
+  packageSnapshotId String                  @unique @db.Uuid
+  amountMinor       BigInt
+  points            BigInt
+  currency          String                  @db.Char(3)
+  description       String                  @db.VarChar(160)
+  status            PaymentOrderStatus      @default(PENDING)
+  traceId           String                  @db.VarChar(64)
+  prepayId          String?                 @db.VarChar(160)
+  expiresAt         DateTime?               @db.Timestamptz(3)
+  transactionId     String?                 @unique @db.VarChar(80)
+  paidAt            DateTime?               @db.Timestamptz(3)
+  createdAt         DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                @updatedAt @db.Timestamptz(3)
+  packageSnapshot   RechargePackageSnapshot @relation(fields: [packageSnapshotId], references: [id], onDelete: Restrict)
+  refunds           RefundOrder[]
+  invoice           InvoiceApplication?
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model PaymentCallback {
+  id            String    @id @db.Uuid
+  callbackId    String    @unique @db.VarChar(120)
+  transactionId String    @unique @db.VarChar(80)
+  orderNo       String    @db.VarChar(64)
+  rawBodyHash   String    @db.Char(64)
+  payload       Json
+  receivedAt    DateTime  @default(now()) @db.Timestamptz(3)
+  processedAt   DateTime? @db.Timestamptz(3)
+
+  @@index([orderNo, receivedAt])
+}
+
+model RefundOrder {
+  id                String       @id @db.Uuid
+  orderId           String       @db.Uuid
+  refundNo          String       @unique @db.VarChar(64)
+  amountMinor       BigInt
+  reason            String       @db.VarChar(240)
+  status            RefundStatus @default(PENDING)
+  gatewayRefundId   String?      @unique @db.VarChar(80)
+  walletBusinessKey String       @unique @db.VarChar(120)
+  traceId           String       @db.VarChar(64)
+  attempts          Int          @default(0)
+  lastError         String?      @db.VarChar(500)
+  createdAt         DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime     @updatedAt @db.Timestamptz(3)
+  completedAt       DateTime?    @db.Timestamptz(3)
+  order             PaymentOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([status, createdAt])
+}
+
+model InvoiceApplication {
+  id              String        @id @db.Uuid
+  userId          String        @db.Uuid
+  orderId         String        @unique @db.Uuid
+  amountMinor     BigInt
+  title           String        @db.VarChar(160)
+  taxNo           String?       @db.VarChar(40)
+  status          InvoiceStatus @default(APPLIED)
+  rejectionReason String?       @db.VarChar(240)
+  createdAt       DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime      @updatedAt @db.Timestamptz(3)
+  issuedAt        DateTime?     @db.Timestamptz(3)
+  order           PaymentOrder  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model ChannelReconciliation {
+  id              String                      @id @db.Uuid
+  billDate        DateTime                    @unique @db.Date
+  status          ChannelReconciliationStatus @default(RUNNING)
+  differenceCount Int                         @default(0)
+  summary         Json?
+  startedAt       DateTime                    @default(now()) @db.Timestamptz(3)
+  completedAt     DateTime?                   @db.Timestamptz(3)
+}
+
+model OutboxEvent {
+  id            String    @id @db.Uuid
+  aggregateType String    @db.VarChar(80)
+  aggregateId   String    @db.VarChar(80)
+  eventType     String    @db.VarChar(120)
+  payload       Json
+  traceId       String    @db.VarChar(64)
+  occurredAt    DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime? @db.Timestamptz(3)
+  attempts      Int       @default(0)
+
+  @@index([publishedAt, occurredAt])
+}
+
+model InboxMessage {
+  messageId   String   @db.VarChar(120)
+  consumer    String   @db.VarChar(120)
+  processedAt DateTime @default(now()) @db.Timestamptz(3)
+  result      Json?
+
+  @@id([messageId, consumer])
+}
