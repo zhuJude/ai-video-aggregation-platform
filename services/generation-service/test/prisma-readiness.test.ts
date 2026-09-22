@@ -22,8 +22,8 @@ const readinessSource = readFileSync(
 
 describe('Prisma readiness', () => {
   it('pins compatible Prisma and coverage tooling in the service package', () => {
-    expect(packageJson.dependencies?.['@prisma/client']).toBe('7.2.0');
-    expect(packageJson.devDependencies?.prisma).toBe('7.2.0');
+    expect(packageJson.dependencies?.['@prisma/client']).toBe('7.10.0');
+    expect(packageJson.devDependencies?.prisma).toBe('7.10.0');
     expect(packageJson.devDependencies?.['@vitest/coverage-v8']).toBe('4.1.11');
   });
 

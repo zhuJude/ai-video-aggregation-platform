@@ -1,4 +1,5 @@
 import { access, readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const required = [
@@ -46,6 +47,24 @@ describe('workspace', () => {
     expect(workspace).not.toContain('set this to true or false');
     expect(workspace).toContain("'@alicloud/openapi-core': false");
     expect(workspace).toContain('protobufjs: false');
+  });
+
+  it('keeps pnpm-lock.yaml only at the workspace root', async () => {
+    await expect(access('pnpm-lock.yaml')).resolves.toBeUndefined();
+    const nestedLocks: string[] = [];
+    for (const group of ['apps', 'services', 'packages', 'providers']) {
+      for (const entry of await readdir(group, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const lockPath = join(group, entry.name, 'pnpm-lock.yaml');
+        try {
+          await access(lockPath);
+          nestedLocks.push(lockPath.replaceAll('\\', '/'));
+        } catch {
+          // The desired state is no package-local lockfile.
+        }
+      }
+    }
+    expect(nestedLocks).toEqual([]);
   });
 
   it('prepares generated Prisma types before lint in fresh worktrees', async () => {

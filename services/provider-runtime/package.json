@@ -30,8 +30,8 @@
     "test:coverage": "vitest run --coverage --exclude dist/**"
   },
   "dependencies": {
-    "@prisma/adapter-pg": "7.2.0",
-    "@prisma/client": "7.2.0",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
     "@repo/contracts": "workspace:*",
     "@repo/provider-sdk": "workspace:*",
     "@repo/mock-provider": "workspace:*",
@@ -41,7 +41,7 @@
   "devDependencies": {
     "@types/node": "24.10.1",
     "@vitest/coverage-v8": "4.1.11",
-    "prisma": "7.2.0",
+    "prisma": "7.10.0",
     "vitest": "4.1.11"
   }
 }
