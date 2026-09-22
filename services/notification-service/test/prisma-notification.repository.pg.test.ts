@@ -8,7 +8,7 @@ const connectionString = url ?? '';
 describe.skipIf(url === undefined)('notification repository on PostgreSQL', () => {
   it('runs the migration and exposes the database claim function', async () => {
     const { PrismaPg } = await import('@prisma/adapter-pg');
-    const { PrismaClient } = await import('@prisma/client');
+    const { PrismaClient } = await import('../generated/prisma/index.js');
     const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
     try {
       const rows = await prisma.$queryRaw<
@@ -22,7 +22,7 @@ describe.skipIf(url === undefined)('notification repository on PostgreSQL', () =
 
   it('deduplicates concurrent event replay and recovers a crashed lease as reconciliation', async () => {
     const { PrismaPg } = await import('@prisma/adapter-pg');
-    const { PrismaClient } = await import('@prisma/client');
+    const { PrismaClient } = await import('../generated/prisma/index.js');
     const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
     const repository = new PrismaNotificationRepository(prisma, {
       protect: (phone) =>

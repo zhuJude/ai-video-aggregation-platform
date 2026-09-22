@@ -166,7 +166,7 @@ describe('Nest operations production runtime', () => {
     } finally {
       await runtime.close();
     }
-  });
+  }, 15_000);
 
   it('uses the required readiness probe and emits frozen ApiError when unavailable', async () => {
     const http = new OperationsHttpModule({

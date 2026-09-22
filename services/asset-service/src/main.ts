@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- environment/JSON boundaries are validated immediately. */
 import { pathToFileURL } from 'node:url';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../generated/prisma/index.js';
 import { Producer, type SessionCredentials } from 'rocketmq-client-nodejs';
 import { RefreshingRocketMqProducer } from './adapters/refreshing-rocketmq.producer.js';
 import { AliyunOssObjectStore } from './adapters/aliyun-oss.object-store.js';

@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../generated/prisma/index.js';
 import {
   ApacheRocketMqTransport,
   RefreshingRocketMqTransport,

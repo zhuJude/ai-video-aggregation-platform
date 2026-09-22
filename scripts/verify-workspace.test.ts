@@ -40,6 +40,14 @@ describe('workspace', () => {
     expect(workflow).toContain('- run: docker compose -f infra/local/compose.yaml config --quiet');
   });
 
+  it('resolves every dependency build script policy to an explicit decision', async () => {
+    const workspace = await readFile('pnpm-workspace.yaml', 'utf8');
+
+    expect(workspace).not.toContain('set this to true or false');
+    expect(workspace).toContain("'@alicloud/openapi-core': false");
+    expect(workspace).toContain('protobufjs: false');
+  });
+
   it('prepares generated Prisma types before lint in fresh worktrees', async () => {
     const serviceDirectories = await readdir('services', { withFileTypes: true });
 
@@ -59,13 +67,34 @@ describe('workspace', () => {
         continue;
       }
       const prismaConfig = await readFile(`${serviceRoot}/prisma.config.ts`, 'utf8');
+      const lintUsesGenerationWrapper =
+        scripts.lint?.includes('scripts/prisma-generate.mjs') === true;
 
       const lintGeneratesPrisma =
         scripts.lint?.includes('prisma generate') === true ||
         (scripts.prelint?.includes('prisma:generate') === true &&
-          scripts['prisma:generate']?.includes('prisma generate') === true);
+          scripts['prisma:generate']?.includes('prisma generate') === true) ||
+        lintUsesGenerationWrapper;
       expect(lintGeneratesPrisma, `${serviceRoot} lint prepares Prisma types`).toBe(true);
-      expect(prismaConfig, `${serviceRoot} Prisma config`).not.toContain("env('DATABASE_URL')");
+
+      if (lintUsesGenerationWrapper) {
+        const prismaSchema = await readFile(`${serviceRoot}/prisma/schema.prisma`, 'utf8');
+        const generationWrapper = await readFile(
+          `${serviceRoot}/scripts/prisma-generate.mjs`,
+          'utf8',
+        );
+        expect(prismaSchema, `${serviceRoot} Prisma client output`).toContain(
+          'output   = "../generated/prisma"',
+        );
+        expect(generationWrapper, `${serviceRoot} Prisma generation wrapper`).toContain(
+          "[prismaCli, 'generate']",
+        );
+        expect(generationWrapper, `${serviceRoot} Prisma generation wrapper`).toContain(
+          'DATABASE_URL:',
+        );
+      } else {
+        expect(prismaConfig, `${serviceRoot} Prisma config`).not.toContain("env('DATABASE_URL')");
+      }
     }
   });
 });

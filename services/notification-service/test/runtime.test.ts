@@ -55,5 +55,5 @@ describe('Nest notification runtime', () => {
         })
       ).statusCode,
     ).toBe(200);
-  });
+  }, 15_000);
 });

@@ -4,6 +4,7 @@ node_modules/
 dist/
 coverage/
 .turbo/
+services/*/generated/prisma/
 
 # Local configuration and secrets
 .env
