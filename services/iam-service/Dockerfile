@@ -1,18 +1,18 @@
 FROM node:24-alpine AS build
 RUN corepack enable
 WORKDIR /workspace
-COPY tsconfig.base.json ./
-WORKDIR /workspace/services/iam-service
-COPY services/iam-service/package.json services/iam-service/pnpm-lock.yaml services/iam-service/pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --ignore-scripts --config.strict-dep-builds=false
-COPY services/iam-service ./
-RUN pnpm rebuild @prisma/engines argon2 esbuild prisma && pnpm build && pnpm prune --prod
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY services/iam-service/package.json services/iam-service/package.json
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @repo/iam-service...
+COPY services/iam-service services/iam-service
+RUN pnpm rebuild @prisma/engines argon2 esbuild prisma \
+ && pnpm --filter @repo/iam-service build \
+ && pnpm --filter @repo/iam-service deploy --prod --legacy /opt/service
 
 FROM node:24-alpine AS runtime
 ENV NODE_ENV=production
-WORKDIR /workspace/services/iam-service
-COPY --from=build /workspace/services/iam-service/node_modules ./node_modules
-COPY --from=build /workspace/services/iam-service/package.json ./package.json
+WORKDIR /opt/service
+COPY --from=build /opt/service ./
 COPY --from=build /workspace/services/iam-service/dist ./dist
 USER node
 EXPOSE 3002

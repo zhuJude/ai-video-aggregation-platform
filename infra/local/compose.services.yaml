@@ -1,0 +1,358 @@
+x-postgres-dependency: &postgres-dependency
+  postgres:
+    condition: service_healthy
+x-redis-dependency: &redis-dependency
+  redis:
+    condition: service_healthy
+x-support-dependency: &support-dependency
+  local-support:
+    condition: service_healthy
+
+services:
+  local-support:
+    build:
+      context: ../..
+      dockerfile: infra/local/Dockerfile.support
+    ports: ['3180:8080']
+
+  minio-init:
+    image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - >-
+        until mc alias set local http://minio:9000 localminio local-only-password; do sleep 2; done;
+        mc mb --ignore-existing local/platform-assets;
+        mc anonymous set none local/platform-assets
+
+  identity-service:
+    build:
+      context: ../..
+      dockerfile: services/identity-service/Dockerfile
+    environment:
+      IDENTITY_DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/identity
+      IDENTITY_REDIS_URL: redis://redis:6379/1
+      IDENTITY_SMS_CHALLENGE_KMS_KEY_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IDENTITY_PRIVACY_KMS_KEY_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IDENTITY_JWT_SIGNING_KMS_KEY_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IDENTITY_SMS_SIGN_NAME_KMS_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IDENTITY_SMS_TEMPLATE_KMS_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IDENTITY_SMS_ROLE_KMS_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IDENTITY_SMS_CREDENTIAL_KIND: ecs_ram_role
+    depends_on:
+      <<: [*postgres-dependency, *redis-dependency]
+    ports: ['3110:3001']
+
+  iam-service:
+    build:
+      context: ../..
+      dockerfile: services/iam-service/Dockerfile
+    environment:
+      IAM_DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/iam
+      IAM_REDIS_URL: redis://redis:6379/2
+      IAM_JWT_SIGNING_KMS_KEY_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IAM_TOTP_KMS_KEY_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IAM_LOGIN_HMAC_KMS_KEY_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IAM_RECOVERY_PEPPER_KMS_KEY_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IAM_BOOTSTRAP_PROOF_KMS_REF: acs:kms:cn-shanghai:000000000000:key/local:version/v1
+      IAM_KMS_IDENTITY_MODE: ecs_ram_role
+      IAM_KMS_ECS_RAM_ROLE_NAME: local-role
+      IAM_DUMMY_PASSWORD_HASH: local-only-dummy-hash
+    depends_on:
+      <<: [*postgres-dependency, *redis-dependency]
+    ports: ['3111:3002']
+
+  catalog-service:
+    build:
+      context: ../..
+      dockerfile: services/catalog-service/Dockerfile
+    environment:
+      INTERNAL_SERVICE_TOKEN: local-internal-token
+    depends_on:
+      <<: *postgres-dependency
+    ports: ['3120:3001']
+
+  quote-routing-service:
+    build:
+      context: ../..
+      dockerfile: services/quote-routing-service/Dockerfile
+    depends_on:
+      <<: *postgres-dependency
+    ports: ['3121:3002']
+
+  wallet-service:
+    build:
+      context: ../..
+      dockerfile: services/wallet-service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/wallet
+      INTERNAL_SERVICE_TOKEN: local-internal-token
+      WALLET_ADJUSTMENT_APPROVERS: 0198f4d4-21c2-7b7d-8a03-08a0da2a5201,0198f4d4-21c2-7b7d-8a03-08a0da2a5202
+    depends_on:
+      <<: *postgres-dependency
+    ports: ['3122:3012']
+
+  payment-service:
+    build:
+      context: ../..
+      dockerfile: services/payment-service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/payment
+      APP_ENV: local
+      INTERNAL_SERVICE_TOKEN: local-internal-token
+      OPERATIONS_SERVICE_URL: http://operations-service:3000
+      WALLET_SERVICE_URL: http://wallet-service:3012
+      PAYMENT_NOTIFY_URL: http://payment-service:3013/v1/payments/wechat/callback
+      WECHAT_MERCHANT_ID: local-merchant
+      PAYMENT_REFUND_REASONS: PROVIDER_FAILED,USER_CANCELLED
+      PAYMENT_GATEWAY: fake
+    depends_on:
+      <<: *postgres-dependency
+      wallet-service:
+        condition: service_started
+    ports: ['3123:3013']
+
+  mock-provider:
+    build:
+      context: ../..
+      dockerfile: providers/mock-provider/Dockerfile
+    environment:
+      MOCK_PROVIDER_CALLBACK_URL: http://local-support:8080/callbacks/provider
+      MOCK_PROVIDER_CALLBACK_SECRET: local-provider-callback-secret-32-bytes
+    depends_on:
+      <<: *support-dependency
+    ports: ['3130:3002']
+
+  provider-runtime:
+    build:
+      context: ../..
+      dockerfile: services/provider-runtime/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/provider_runtime
+      INTERNAL_SERVICE_AUTH_TOKEN: local-internal-token
+      MOCK_PROVIDER_ID: 0198f4d4-21c2-7b7d-8a03-08a0da2a5301
+      MOCK_PROVIDER_MODEL_CODE: mock-video-v1
+      MOCK_PROVIDER_URL: http://mock-provider:3002
+      MOCK_PROVIDER_CALLBACK_SECRET: local-provider-callback-secret-32-bytes
+      GENERATION_DISPATCH_API_URL: http://generation-service:3000/internal/dispatch/
+      MESSAGE_TRANSPORT_PUBLISH_URL: http://local-support:8080/publish
+      MESSAGE_TRANSPORT_READY_URL: http://local-support:8080/ready
+      READINESS_ADAPTER_REGISTRY_URL: http://mock-provider:3002/health/ready
+      READINESS_DATABASE_URL: http://local-support:8080/ready
+      READINESS_MESSAGE_BUS_URL: http://local-support:8080/ready
+    depends_on:
+      <<: [*postgres-dependency, *support-dependency]
+      mock-provider:
+        condition: service_healthy
+    ports: ['3125:3001']
+
+  generation-service:
+    build:
+      context: ../..
+      dockerfile: services/generation-service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/generation
+      INTERNAL_SERVICE_AUTH_TOKEN: local-internal-token
+      GATEWAY_IDENTITY_HMAC_SECRET: local-gateway-identity-secret-32-bytes
+      ROUTING_API_URL: http://quote-routing-service:3002
+      WALLET_API_URL: http://wallet-service:3012
+      ASSET_API_URL: http://asset-service:3000
+      PROVIDER_RUNTIME_API_URL: http://provider-runtime:3001
+      MESSAGE_TRANSPORT_PUBLISH_URL: http://local-support:8080/publish
+      MESSAGE_TRANSPORT_READY_URL: http://local-support:8080/ready
+      READINESS_ASSET_URL: http://local-support:8080/ready
+      READINESS_DATABASE_URL: http://local-support:8080/ready
+      READINESS_MESSAGE_BUS_URL: http://local-support:8080/ready
+      READINESS_ROUTING_URL: http://quote-routing-service:3002/health/ready
+      READINESS_WALLET_URL: http://wallet-service:3012/ready
+    depends_on:
+      <<: [*postgres-dependency, *support-dependency]
+      wallet-service:
+        condition: service_started
+      quote-routing-service:
+        condition: service_started
+    ports: ['3124:3000']
+
+  asset-service:
+    build:
+      context: ../..
+      dockerfile: services/asset-service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/asset
+      ALIBABA_CLOUD_REGION: cn-shanghai
+      KMS_ENDPOINT: http://local-support:8080
+      STS_ENDPOINT: http://local-support:8080
+      OSS_STS_EXTERNAL_ID_KMS_REFERENCE: local/oss/external-id
+      OSS_RAM_ROLE_ARN: acs:ram::000000000000:role/local-asset
+      OSS_KMS_KEY_REFERENCE: local/oss/key
+      OSS_REGION: cn-shanghai
+      OSS_BUCKET: platform-assets
+      OSS_BUCKET_ACL: private
+      CDN_BASE_URL: http://minio:9000/platform-assets
+      CDN_AUTH_KMS_REFERENCE: local/cdn/auth
+      OIDC_JWKS_URL: http://local-support:8080/jwks
+      AUTH_ISSUER: identity-service
+      AUTH_AUDIENCE: user-web
+      SERVICE_AUTH_AUDIENCE: internal-services
+      UPLOAD_POLICY_JSON: '{"maxBytes":"524288000","allowedMimeTypes":["video/mp4","image/png","image/jpeg"]}'
+      PROVIDER_CALLBACK_KEYS_JSON: '{}'
+      ROCKETMQ_ENDPOINTS: rocketmq-broker:8081
+      ROCKETMQ_TOPIC: platform-events
+      ACK_OIDC_PROVIDER_ARN: acs:ram::000000000000:oidc-provider/local
+      ACK_ROLE_ARN: acs:ram::000000000000:role/local-asset
+      ACK_OIDC_TOKEN_FILE: /run/secrets/workload-token
+      ASSET_WORKERS_ENABLED: 'false'
+    volumes:
+      - ./workload-token:/run/secrets/workload-token:ro
+    depends_on:
+      <<: [*postgres-dependency, *support-dependency]
+      minio-init:
+        condition: service_completed_successfully
+    ports: ['3126:3000']
+
+  notification-service:
+    build:
+      context: ../..
+      dockerfile: services/notification-service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/notification
+      ALIBABA_CLOUD_REGION: cn-shanghai
+      KMS_ENDPOINT: http://local-support:8080
+      STS_ENDPOINT: http://local-support:8080
+      OIDC_JWKS_URL: http://local-support:8080/jwks
+      AUTH_ISSUER: identity-service
+      AUTH_AUDIENCE: user-web
+      PHONE_KMS_REFERENCE: local/phone/key
+      SMS_RAM_ROLE_ARN: acs:ram::000000000000:role/local-sms
+      SMS_CREDENTIAL_KMS_REFERENCE: local/sms/credential
+      SMS_ENDPOINT: http://local-support:8080/sms
+      SMS_APPROVED_SIGNS: LOCAL
+      SMS_APPROVED_TEMPLATE_CODES: LOCAL_LOGIN
+      SMS_REGION: cn-shanghai
+      ROCKETMQ_ENDPOINTS: rocketmq-broker:8081
+      ROCKETMQ_CONSUMER_GROUP: notification-local
+      ROCKETMQ_TOPIC: platform-events
+      ROCKETMQ_DLQ_TOPIC: platform-events-dlq
+      ROCKETMQ_HEALTH_TOPIC: platform-health
+      ACK_OIDC_PROVIDER_ARN: acs:ram::000000000000:oidc-provider/local
+      ACK_ROLE_ARN: acs:ram::000000000000:role/local-notification
+      ACK_OIDC_TOKEN_FILE: /run/secrets/workload-token
+      NOTIFICATION_WORKERS_ENABLED: 'false'
+    volumes:
+      - ./workload-token:/run/secrets/workload-token:ro
+    depends_on:
+      <<: [*postgres-dependency, *support-dependency]
+    ports: ['3127:3000']
+
+  operations-service:
+    build:
+      context: ../..
+      dockerfile: services/operations-service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/operations
+      OIDC_JWKS_URL: http://local-support:8080/jwks
+      AUTH_ISSUER: identity-service
+      AUTH_AUDIENCE: admin-web
+      SERVICE_IDENTITY_TOKEN_FILE: /run/secrets/workload-token
+      ASSET_SERVICE_URL: http://asset-service:3000
+      GENERATION_SERVICE_URL: http://generation-service:3000
+      ROCKETMQ_ENDPOINTS: rocketmq-broker:8081
+      ROCKETMQ_TOPIC: platform-events
+      ACK_OIDC_PROVIDER_ARN: acs:ram::000000000000:oidc-provider/local
+      ACK_ROLE_ARN: acs:ram::000000000000:role/local-operations
+      ACK_OIDC_TOKEN_FILE: /run/secrets/workload-token
+      ALIBABA_CLOUD_REGION: cn-shanghai
+      STS_ENDPOINT: http://local-support:8080
+      OPERATIONS_WORKERS_ENABLED: 'false'
+    volumes:
+      - ./workload-token:/run/secrets/workload-token:ro
+    depends_on:
+      <<: [*postgres-dependency, *support-dependency]
+    ports: ['3128:3000']
+
+  reporting-service:
+    build:
+      context: ../..
+      dockerfile: services/reporting-service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://platform:local-only-password@postgres:5432/reporting
+      DATABASE_SSL: disable
+      INTERNAL_SERVICE_TOKEN: local-internal-token
+      REPORTING_ASSET_SERVICE_URL: http://asset-service:3000
+      REPORTING_AUDIT_SERVICE_URL: http://operations-service:3000
+      ROCKETMQ_CONSUMER_HEALTH_URL: http://local-support:8080/consumer
+    depends_on:
+      <<: [*postgres-dependency, *support-dependency]
+    ports: ['3129:3000']
+
+  edge-gateway:
+    build:
+      context: ../..
+      dockerfile: services/edge-gateway/Dockerfile
+    environment:
+      PORT: '3000'
+      CORS_ALLOWED_ORIGINS: http://localhost:3100,http://localhost:3101
+      TRUST_PROXY_CIDRS: 127.0.0.1/32,172.16.0.0/12
+      SERVICE_DNS_NAMES: catalog-service,generation-service,notification-service,operations-service,reporting-service,wallet-service
+      REDIS_URL: redis://redis:6379/0
+      CATALOG_SERVICE_URL: http://catalog-service:3001
+      GENERATION_SERVICE_URL: http://generation-service:3000
+      NOTIFICATION_SERVICE_URL: http://notification-service:3000
+      OPERATIONS_SERVICE_URL: http://operations-service:3000
+      REPORTING_SERVICE_URL: http://reporting-service:3000
+      WALLET_SERVICE_URL: http://wallet-service:3012
+      USER_JWT_PUBLIC_KEYS: '{"keys":[{"crv":"Ed25519","x":"XOoi26ZNq9iFrJ9gMgQ-PfTwaXA7cxxfu8kEAEp4jeI","kty":"OKP","alg":"EdDSA","kid":"local"}]}'
+      ADMIN_JWT_PUBLIC_KEYS: '{"keys":[{"crv":"Ed25519","x":"XOoi26ZNq9iFrJ9gMgQ-PfTwaXA7cxxfu8kEAEp4jeI","kty":"OKP","alg":"EdDSA","kid":"local"}]}'
+      GATEWAY_SIGNING_PRIVATE_KEY: '{"crv":"Ed25519","d":"TgUjBX6YWQZjKwPUwvC1lTxOCaWBGhIQasxMlnV4x7E","x":"XOoi26ZNq9iFrJ9gMgQ-PfTwaXA7cxxfu8kEAEp4jeI","kty":"OKP","alg":"EdDSA","kid":"local"}'
+    depends_on:
+      <<: *redis-dependency
+      catalog-service:
+        condition: service_started
+      generation-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+      operations-service:
+        condition: service_started
+      reporting-service:
+        condition: service_started
+      wallet-service:
+        condition: service_started
+    ports: ['3102:3000']
+
+  user-web:
+    build:
+      context: ../..
+      dockerfile: apps/user-web/Dockerfile
+    environment:
+      GATEWAY_URL: http://edge-gateway:3000
+      NEXT_PUBLIC_GATEWAY_URL: http://localhost:3102
+      USER_WEB_PUBLIC_ORIGIN: http://localhost:3100
+      USER_WEB_PUBLIC_MODE: mock
+      USER_WEB_SUPPORT_MODE: mock
+      USER_WEB_COMMERCE_MODE: mock
+      USER_WEB_STUDIO_MODE: mock
+      USER_WEB_E2E_MODE: '1'
+      USER_WEB_SESSION_ENCRYPTION_KEY: bG9jYWwtc2Vzc2lvbi1lbmNyeXB0aW9uLWtleS0zMg==
+      USER_WEB_MOCK_IDENTITY_KEY: bG9jYWwtaWRlbnRpdHkta2V5LTMyLWJ5dGVzLTAwMDA=
+      USER_WEB_COMMERCE_MOCK_SIGNING_KEY: bG9jYWwtY29tbWVyY2Utc2lnbmluZy1rZXktMzItYg==
+      USER_WEB_COMMERCE_IDENTITY_KEY: bG9jYWwtY29tbWVyY2UtaWRlbnRpdHkta2V5LTMyYg==
+    depends_on:
+      edge-gateway:
+        condition: service_started
+    ports: ['3100:3000']
+
+  admin-web:
+    build:
+      context: ../..
+      dockerfile: apps/admin-web/Dockerfile
+    environment:
+      GATEWAY_URL: http://edge-gateway:3000
+      NEXT_PUBLIC_GATEWAY_URL: http://localhost:3102
+      NODE_ENV: production
+    depends_on:
+      edge-gateway:
+        condition: service_started
+    ports: ['3101:3000']

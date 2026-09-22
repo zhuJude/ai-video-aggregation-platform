@@ -2,10 +2,10 @@ FROM node:24.15.0-alpine AS dependencies
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-workspace.yaml ./
+COPY pnpm-lock.yaml ./
 COPY apps/user-web/package.json ./apps/user-web/package.json
-COPY apps/user-web/pnpm-lock.yaml ./apps/user-web/pnpm-lock.yaml
 COPY packages ./packages
-RUN corepack pnpm install --frozen-lockfile --lockfile-dir apps/user-web --filter @repo/user-web...
+RUN corepack pnpm install --frozen-lockfile --filter @repo/user-web...
 
 FROM node:24.15.0-alpine AS builder
 WORKDIR /app

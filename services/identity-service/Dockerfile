@@ -1,18 +1,18 @@
 FROM node:24-alpine AS build
 RUN corepack enable
 WORKDIR /workspace
-COPY tsconfig.base.json ./
-WORKDIR /workspace/services/identity-service
-COPY services/identity-service/package.json services/identity-service/pnpm-lock.yaml services/identity-service/pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --ignore-scripts --config.strict-dep-builds=false
-COPY services/identity-service ./
-RUN pnpm rebuild @prisma/engines esbuild prisma && pnpm build && pnpm prune --prod
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY services/identity-service/package.json services/identity-service/package.json
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @repo/identity-service...
+COPY services/identity-service services/identity-service
+RUN pnpm rebuild @prisma/engines esbuild prisma \
+ && pnpm --filter @repo/identity-service build \
+ && pnpm --filter @repo/identity-service deploy --prod --legacy /opt/service
 
 FROM node:24-alpine AS runtime
 ENV NODE_ENV=production
-WORKDIR /workspace/services/identity-service
-COPY --from=build /workspace/services/identity-service/node_modules ./node_modules
-COPY --from=build /workspace/services/identity-service/package.json ./package.json
+WORKDIR /opt/service
+COPY --from=build /opt/service ./
 COPY --from=build /workspace/services/identity-service/dist ./dist
 USER node
 EXPOSE 3001
