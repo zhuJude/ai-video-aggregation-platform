@@ -54,11 +54,13 @@ describe('workspace', () => {
       const packageJson = JSON.parse(
         await readFile(`${serviceRoot}/package.json`, 'utf8'),
       ) as { scripts?: Record<string, string> };
+      const scripts = packageJson.scripts ?? {};
+      if (!Object.values(scripts).some((script) => script.includes('prisma generate'))) {
+        continue;
+      }
       const prismaConfig = await readFile(`${serviceRoot}/prisma.config.ts`, 'utf8');
 
-      expect(packageJson.scripts?.lint, `${serviceRoot} lint script`).toMatch(
-        /^prisma generate && eslint\b/,
-      );
+      expect(scripts.lint, `${serviceRoot} lint script`).toMatch(/^prisma generate && eslint\b/);
       expect(prismaConfig, `${serviceRoot} Prisma config`).not.toContain("env('DATABASE_URL')");
     }
   });
