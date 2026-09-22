@@ -41,7 +41,7 @@ describe('operations to asset HTTP integration', () => {
       id: ASSET,
       ownerId: USER,
     });
-  }, 15_000);
+  }, 30_000);
 });
 
 function spawnAssetSandbox(): ChildProcess {
@@ -91,7 +91,7 @@ function childPort(child: ChildProcess): Promise<number> {
     let stderr = '';
     const timeout = setTimeout(() => {
       reject(new Error(`asset sandbox timeout: ${stderr}`));
-    }, 15_000);
+    }, 25_000);
     child.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf8');
     });

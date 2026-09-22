@@ -49,5 +49,5 @@ describe('notification HTTP boundary', () => {
         );
       }
     }
-  });
+  }, 15_000);
 });

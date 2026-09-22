@@ -12,7 +12,7 @@
     "format:check": "prettier --check .",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "pnpm test:root && turbo run test",
+    "test": "pnpm test:root && turbo run test --concurrency=2",
     "test:root": "vitest run scripts/verify-workspace.test.ts scripts/validate-compose.test.ts scripts/verify-lock.test.ts",
     "test:coverage": "turbo run test:coverage",
     "verify": "node scripts/verify.mjs",
