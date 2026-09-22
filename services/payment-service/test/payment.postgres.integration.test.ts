@@ -16,7 +16,11 @@ const serviceRoot = fileURLToPath(new URL('../', import.meta.url));
 const userId = '0198f5f6-b5c9-7d33-a4a5-608b27b9d776';
 
 function docker(...args: string[]): string {
-  return execFileSync('docker', args, { encoding: 'utf8' }).trim();
+  return execFileSync('docker', args, {
+    encoding: 'utf8',
+    timeout: 30_000,
+    windowsHide: true,
+  }).trim();
 }
 
 async function waitForPostgres(containerId: string): Promise<void> {
@@ -82,8 +86,8 @@ describe('payment PostgreSQL persistence', { concurrent: false }, () => {
   }, 120_000);
 
   afterAll(async () => {
-    await prisma.$disconnect();
-    docker('stop', containerId);
+    if (prisma) await prisma.$disconnect();
+    if (containerId) docker('stop', containerId);
   });
 
   it('atomically persists immutable package amount and point snapshots', async () => {
