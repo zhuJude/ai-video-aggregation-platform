@@ -34,15 +34,15 @@ describe('balanced ledger entry drafts', () => {
   });
 
   it('rejects unbalanced or single-entry postings and zero adjustments', () => {
-    expect(() =>
+    expect(() => {
       assertBalanced([
         { account: 'USER_AVAILABLE', ownerId: 'user-1', delta: 2n },
         { account: 'PLATFORM_LIABILITY', ownerId: 'platform', delta: -1n },
-      ]),
-    ).toThrow(expect.objectContaining({ code: 'UNBALANCED_LEDGER_TRANSACTION' }));
-    expect(() =>
-      assertBalanced([{ account: 'USER_AVAILABLE', ownerId: 'user-1', delta: 0n }]),
-    ).toThrow(expect.objectContaining({ code: 'UNBALANCED_LEDGER_TRANSACTION' }));
+      ]);
+    }).toThrow(expect.objectContaining({ code: 'UNBALANCED_LEDGER_TRANSACTION' }));
+    expect(() => {
+      assertBalanced([{ account: 'USER_AVAILABLE', ownerId: 'user-1', delta: 0n }]);
+    }).toThrow(expect.objectContaining({ code: 'UNBALANCED_LEDGER_TRANSACTION' }));
     expect(() => adjustmentEntries('user-1', 0n)).toThrow(
       expect.objectContaining({ code: 'INVALID_POINTS' }),
     );

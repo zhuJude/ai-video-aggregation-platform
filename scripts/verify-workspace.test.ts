@@ -1,4 +1,4 @@
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const required = [
@@ -38,5 +38,28 @@ describe('workspace', () => {
 
     expect(workflow).toContain('- run: corepack pnpm verify');
     expect(workflow).toContain('- run: docker compose -f infra/local/compose.yaml config --quiet');
+  });
+
+  it('prepares generated Prisma types before lint in fresh worktrees', async () => {
+    const serviceDirectories = await readdir('services', { withFileTypes: true });
+
+    for (const serviceDirectory of serviceDirectories.filter((entry) => entry.isDirectory())) {
+      const serviceRoot = `services/${serviceDirectory.name}`;
+      try {
+        await access(`${serviceRoot}/prisma/schema.prisma`);
+      } catch {
+        continue;
+      }
+
+      const packageJson = JSON.parse(
+        await readFile(`${serviceRoot}/package.json`, 'utf8'),
+      ) as { scripts?: Record<string, string> };
+      const prismaConfig = await readFile(`${serviceRoot}/prisma.config.ts`, 'utf8');
+
+      expect(packageJson.scripts?.lint, `${serviceRoot} lint script`).toMatch(
+        /^prisma generate && eslint\b/,
+      );
+      expect(prismaConfig, `${serviceRoot} Prisma config`).not.toContain("env('DATABASE_URL')");
+    }
   });
 });
