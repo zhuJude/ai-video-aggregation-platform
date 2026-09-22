@@ -1,0 +1,370 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PublicationStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
+enum ContentKind {
+  BANNER
+  ANNOUNCEMENT
+  HELP
+  CASE_STUDY
+  LEGAL
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum TicketMessageAuthorType {
+  USER
+  AGENT
+}
+
+enum FeedbackKind {
+  MODEL_RESULT
+  FAILED_TASK
+  PRODUCT_SUGGESTION
+}
+
+enum OutboxStatus {
+  PENDING
+  FAILED
+  PUBLISHED
+}
+
+model RechargePackageVersion {
+  id            String            @id @db.Uuid
+  packageId     String            @db.Uuid
+  version       Int
+  revision      Int               @default(0)
+  status        PublicationStatus @default(DRAFT)
+  basePublishedVersionId String?   @db.Uuid
+  name          String            @db.VarChar(120)
+  amountMinor   BigInt
+  currency      String            @db.Char(3)
+  points        BigInt
+  bonusPoints   BigInt
+  purchaseLimit Int?
+  validityDays  Int?
+  sortOrder     Int               @default(0)
+  activeFrom    DateTime?         @db.Timestamptz(3)
+  activeUntil   DateTime?         @db.Timestamptz(3)
+  createdBy     String            @db.Uuid
+  createdAt     DateTime          @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime?         @db.Timestamptz(3)
+  retiredAt     DateTime?         @db.Timestamptz(3)
+  purchases     RechargePackagePurchaseSnapshot[]
+
+  @@unique([packageId, version])
+  @@index([status, activeFrom, activeUntil, sortOrder])
+}
+
+model RechargePackagePurchaseSnapshot {
+  purchaseId       String   @id @db.Uuid
+  packageVersionId String   @db.Uuid
+  buyerId          String   @db.Uuid
+  name             String   @db.VarChar(120)
+  amountMinor      BigInt
+  currency         String   @db.Char(3)
+  points           BigInt
+  bonusPoints      BigInt
+  purchaseLimit    Int?
+  validityDays     Int?
+  capturedAt       DateTime @default(now()) @db.Timestamptz(3)
+  packageVersion   RechargePackageVersion @relation(fields: [packageVersionId], references: [id], onDelete: Restrict)
+
+  @@index([buyerId, capturedAt])
+}
+
+model ContentEntry {
+  id        String         @id @db.Uuid
+  kind      ContentKind
+  key       String         @db.VarChar(128)
+  createdBy String         @db.Uuid
+  createdAt DateTime       @default(now()) @db.Timestamptz(3)
+  versions  ContentVersion[]
+
+  @@unique([kind, key])
+}
+
+model ContentVersion {
+  id             String            @id @db.Uuid
+  entryId        String            @db.Uuid
+  version        Int
+  revision       Int               @default(0)
+  status         PublicationStatus @default(DRAFT)
+  basePublishedVersionId String?    @db.Uuid
+  title          String            @db.VarChar(200)
+  summary        String            @db.VarChar(1000)
+  bodyHtml       String
+  sortOrder      Int               @default(0)
+  activeFrom     DateTime?         @db.Timestamptz(3)
+  activeUntil    DateTime?         @db.Timestamptz(3)
+  helpCategoryId String?           @db.Uuid
+  createdBy      String            @db.Uuid
+  createdAt      DateTime          @default(now()) @db.Timestamptz(3)
+  publishedAt    DateTime?         @db.Timestamptz(3)
+  retiredAt      DateTime?         @db.Timestamptz(3)
+  entry          ContentEntry      @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  helpCategory   HelpCategory?     @relation(fields: [helpCategoryId], references: [id], onDelete: Restrict)
+  placements     BannerPlacement[]
+
+  @@unique([entryId, version])
+  @@index([status, activeFrom, activeUntil, sortOrder])
+  @@index([helpCategoryId, status, sortOrder])
+}
+
+model BannerPlacement {
+  id               String         @id @db.Uuid
+  contentVersionId String         @db.Uuid
+  slot             String         @db.VarChar(64)
+  sortOrder        Int            @default(0)
+  activeFrom       DateTime?      @db.Timestamptz(3)
+  activeUntil      DateTime?      @db.Timestamptz(3)
+  createdBy        String         @db.Uuid
+  createdAt        DateTime       @default(now()) @db.Timestamptz(3)
+  contentVersion   ContentVersion @relation(fields: [contentVersionId], references: [id], onDelete: Restrict)
+
+  @@unique([slot, contentVersionId])
+  @@index([slot, activeFrom, activeUntil, sortOrder])
+}
+
+model BannerSlotRevision {
+  slot      String   @id @db.VarChar(64)
+  revision  Int      @default(0)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model HelpCategory {
+  id        String           @id @db.Uuid
+  key       String           @unique @db.VarChar(128)
+  name      String           @db.VarChar(120)
+  sortOrder Int              @default(0)
+  active    Boolean          @default(true)
+  createdBy String           @db.Uuid
+  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+  content   ContentVersion[]
+
+  @@index([active, sortOrder])
+}
+
+model FeatureFlagVersion {
+  id          String            @id @db.Uuid
+  flagKey     String            @db.VarChar(128)
+  version     Int
+  revision    Int               @default(0)
+  status      PublicationStatus @default(DRAFT)
+  basePublishedVersionId String? @db.Uuid
+  enabled     Boolean           @default(false)
+  rules       Json
+  createdBy   String            @db.Uuid
+  createdAt   DateTime          @default(now()) @db.Timestamptz(3)
+  publishedAt DateTime?         @db.Timestamptz(3)
+  retiredAt   DateTime?         @db.Timestamptz(3)
+
+  @@unique([flagKey, version])
+  @@index([flagKey, status])
+}
+
+model PublicSystemSettingVersion {
+  id                   String            @id @db.Uuid
+  settingKey           String            @db.VarChar(128)
+  version              Int
+  revision             Int               @default(0)
+  status               PublicationStatus @default(DRAFT)
+  basePublishedVersionId String?          @db.Uuid
+  publicValue          Json?
+  kmsSecretReferenceId String?           @db.VarChar(300)
+  createdBy            String            @db.Uuid
+  createdAt            DateTime          @default(now()) @db.Timestamptz(3)
+  publishedAt          DateTime?         @db.Timestamptz(3)
+  retiredAt            DateTime?         @db.Timestamptz(3)
+
+  @@unique([settingKey, version])
+  @@index([settingKey, status])
+}
+
+model Ticket {
+  id             String        @id @db.Uuid
+  userId         String        @db.Uuid
+  subject        String        @db.VarChar(200)
+  status         TicketStatus  @default(OPEN)
+  assigneeId     String?       @db.Uuid
+  resolutionCycle Int          @default(0)
+  responseRequiredSince DateTime @default(now()) @db.Timestamptz(3)
+  revision       Int           @default(0)
+  resolvedAt     DateTime?     @db.Timestamptz(3)
+  closedAt       DateTime?     @db.Timestamptz(3)
+  createdAt      DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime      @updatedAt @db.Timestamptz(3)
+  messages       TicketMessage[]
+  internalNotes  TicketInternalNote[]
+
+  @@index([userId, createdAt])
+  @@index([status, assigneeId, updatedAt])
+}
+
+model TicketMessage {
+  id         String                  @id @db.Uuid
+  ticketId   String                  @db.Uuid
+  authorId   String                  @db.Uuid
+  authorType TicketMessageAuthorType
+  resolutionCycle Int             @default(0)
+  body       String
+  idempotencyKey String?                 @db.VarChar(128)
+  requestHash    String?                 @db.Char(64)
+  createdAt  DateTime                @default(now()) @db.Timestamptz(3)
+  ticket     Ticket                  @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  attachments TicketMessageAttachment[]
+
+  @@unique([ticketId, authorId, idempotencyKey], map: "TicketMessage_idempotency_key")
+  @@index([ticketId, createdAt])
+}
+
+model TicketMessageAttachment {
+  id                     String        @id @db.Uuid
+  messageId              String        @db.Uuid
+  assetId                String        @db.Uuid
+  supportUploadSessionId String?       @db.Uuid
+  message                TicketMessage @relation(fields: [messageId], references: [id], onDelete: Restrict)
+
+  @@unique([messageId, assetId])
+  @@index([assetId])
+}
+
+model TicketInternalNote {
+  id        String   @id @db.Uuid
+  ticketId  String   @db.Uuid
+  authorId  String   @db.Uuid
+  body      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+
+  @@index([ticketId, createdAt])
+}
+
+model Feedback {
+  id         String       @id @db.Uuid
+  userId     String       @db.Uuid
+  kind       FeedbackKind
+  taskId     String?      @db.Uuid
+  content    String
+  rating     Int?
+  createdAt  DateTime     @default(now()) @db.Timestamptz(3)
+  attachments FeedbackAttachment[]
+
+  @@index([userId, createdAt])
+  @@index([kind, createdAt])
+}
+
+model FeedbackAttachment {
+  id                     String   @id @db.Uuid
+  feedbackId             String   @db.Uuid
+  assetId                String   @db.Uuid
+  supportUploadSessionId String?  @db.Uuid
+  feedback               Feedback @relation(fields: [feedbackId], references: [id], onDelete: Restrict)
+
+  @@unique([feedbackId, assetId])
+  @@index([assetId])
+}
+
+model SupportUploadConsumption {
+  id         String   @id @db.Uuid
+  sessionId  String   @unique(map: "SupportUploadConsumption_sessionId_key") @db.Uuid
+  ownerId    String   @db.Uuid
+  assetId    String   @db.Uuid
+  sourceType String   @db.VarChar(24)
+  sourceId   String   @db.Uuid
+  consumedAt DateTime @db.Timestamptz(3)
+
+  @@index([ownerId, consumedAt])
+}
+
+model SupportUploadBinding {
+  id            String   @id @db.Uuid
+  operationId   String   @unique @db.VarChar(160)
+  generation    Int      @default(0)
+  remoteOperationId String @unique @db.Uuid
+  fence         String   @db.Uuid
+  requestHash   String   @db.Char(64)
+  idempotencyKey String  @db.VarChar(128)
+  reservationId String?  @db.VarChar(160)
+  ownershipToken String? @db.VarChar(256)
+  sessionId     String   @unique @db.Uuid
+  ownerId       String   @db.Uuid
+  assetId       String   @db.Uuid
+  sourceType    String?  @db.VarChar(24)
+  sourceId      String?  @db.Uuid
+  status        String   @db.VarChar(24)
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @db.Timestamptz(3)
+  claimToken    String?  @db.Uuid
+  leaseUntil    DateTime? @db.Timestamptz(3)
+  lastError     String?  @db.VarChar(160)
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  finalizedAt   DateTime? @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt])
+}
+
+model SupportUploadCompensation {
+  id                String   @id @db.Uuid
+  compensationKey   String   @unique @db.Char(64)
+  reservationId     String   @db.VarChar(160)
+  operationId       String   @db.VarChar(160)
+  remoteOperationId String   @db.VarChar(160)
+  generation        Int
+  fence             String   @db.VarChar(160)
+  requestHash       String   @db.VarChar(128)
+  ownershipToken    String   @db.VarChar(256)
+  sessionId         String   @db.VarChar(160)
+  ownerId           String   @db.VarChar(160)
+  assetId           String   @db.VarChar(160)
+  purpose           String   @db.VarChar(64)
+  expiresAt         DateTime @db.Timestamptz(3)
+  status            String   @default("RELEASE_PENDING") @db.VarChar(24)
+  attempts          Int      @default(0)
+  nextAttemptAt     DateTime @db.Timestamptz(3)
+  claimToken        String?  @db.Uuid
+  leaseUntil        DateTime? @db.Timestamptz(3)
+  lastError         String?  @db.VarChar(160)
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  releasedAt        DateTime? @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt])
+}
+
+model OutboxEvent {
+  id            String       @id @db.Uuid
+  type          String       @db.VarChar(160)
+  version       Int
+  occurredAt    DateTime     @db.Timestamptz(3)
+  traceId       String       @db.Char(32)
+  correlationId String       @db.Uuid
+  causationId   String?      @db.Uuid
+  producer      String       @db.VarChar(80)
+  data          Json
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  nextAttemptAt DateTime     @default(now()) @db.Timestamptz(3)
+  claimToken    String?      @db.Uuid
+  leaseUntil    DateTime?    @db.Timestamptz(3)
+  lastError     String?      @db.VarChar(80)
+  createdAt     DateTime     @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime?    @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt])
+  @@index([leaseUntil])
+}
