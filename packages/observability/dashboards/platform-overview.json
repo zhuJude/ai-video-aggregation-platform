@@ -1,0 +1,72 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Availability",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg_over_time(up{tier=\"core\"}[5m])",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "HTTP p95 latency",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, service, route) (rate(http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{service}} {{route}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Task funnel",
+      "type": "barchart",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (to_state) (increase(reporting_service_task_transitions_total[1h]))",
+          "legendFormat": "{{to_state}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Queue lag",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (consumer, topic) (reporting_service_message_lag_seconds)",
+          "legendFormat": "{{consumer}} {{topic}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 40,
+  "tags": ["platform", "slo"],
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "type": "query",
+        "query": "label_values(up, environment)",
+        "includeAll": false
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "title": "AI Video Platform Overview",
+  "uid": "platform-overview"
+}

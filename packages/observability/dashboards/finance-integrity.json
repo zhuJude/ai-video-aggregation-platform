@@ -1,0 +1,78 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Payment effects",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (increase(reporting_service_payment_effects_total[1h]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Ledger mismatch",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (check) (reporting_service_wallet_reconciliation_mismatch)",
+          "legendFormat": "{{check}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Reconciliation",
+      "type": "table",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "reporting_reconciliation_difference_minor",
+          "legendFormat": "{{source}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Refund backlog",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (refund_backlog_total)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Revenue, cost and margin",
+      "type": "timeseries",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "reporting_service_margin_numerator_minor",
+          "legendFormat": "margin"
+        },
+        {
+          "refId": "B",
+          "expr": "reporting_service_margin_denominator_minor",
+          "legendFormat": "revenue"
+        }
+      ]
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 40,
+  "tags": ["finance", "integrity"],
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "title": "Finance Integrity",
+  "uid": "finance-integrity"
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@repo/reporting-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "pnpm --filter @repo/observability build",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src test",
+    "pretypecheck": "pnpm --filter @repo/observability build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm --filter @repo/observability build",
+    "test": "vitest run --exclude dist/**",
+    "pretest:coverage": "pnpm --filter @repo/observability build",
+    "test:coverage": "vitest run --coverage --exclude dist/**"
+  },
+  "dependencies": {
+    "@repo/contracts": "workspace:*",
+    "@repo/observability": "workspace:*",
+    "fastify": "5.12.1",
+    "pg": "8.23.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "@vitest/coverage-v8": "4.1.11"
+  }
+}

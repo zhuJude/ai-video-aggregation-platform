@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model ProjectionVersion {
+  version       Int      @id
+  status        String
+  active        Boolean  @default(false)
+  sourceCount   BigInt   @default(0)
+  startedAt     DateTime @db.Timestamptz(3)
+  completedAt   DateTime? @db.Timestamptz(3)
+  failureReason String?
+}
+
+model ProcessedEvent {
+  eventId           String   @db.Uuid
+  projectionVersion Int
+  eventType         String
+  occurredAt        DateTime @db.Timestamptz(3)
+  processedAt       DateTime @default(now()) @db.Timestamptz(3)
+  contribution      Json
+
+  @@id([eventId, projectionVersion])
+  @@index([projectionVersion, occurredAt])
+}
+
+model ProjectionContribution {
+  sourceEventId     String   @db.Uuid
+  projectionVersion Int
+  reversedByEventId String?  @db.Uuid
+  contribution      Json
+
+  @@id([sourceEventId, projectionVersion])
+  @@unique([reversedByEventId, projectionVersion])
+}
+
+model DailyBusinessMetric {
+  businessDate           DateTime @db.Date
+  projectionVersion      Int
+  rechargePoints         BigInt   @default(0)
+  rechargeAmountMinor    BigInt   @default(0)
+  consumedPoints         BigInt   @default(0)
+  revenueMinor           BigInt   @default(0)
+  providerCostMinor      BigInt   @default(0)
+  marginNumeratorMinor   BigInt   @default(0)
+  marginDenominatorMinor BigInt   @default(0)
+  successfulTasks        BigInt   @default(0)
+  failedTasks            BigInt   @default(0)
+  taskDurationMsTotal    BigInt   @default(0)
+  taskDurationSamples    BigInt   @default(0)
+
+  @@id([businessDate, projectionVersion])
+}
+
+model ProviderDailyMetric {
+  businessDate        DateTime @db.Date
+  providerId          String   @db.Uuid
+  projectionVersion   Int
+  successfulTasks     BigInt   @default(0)
+  failedTasks         BigInt   @default(0)
+  providerCostMinor   BigInt   @default(0)
+  durationMsTotal     BigInt   @default(0)
+  durationSamples     BigInt   @default(0)
+
+  @@id([businessDate, providerId, projectionVersion])
+}
+
+model ModelDailyMetric {
+  businessDate       DateTime @db.Date
+  modelId            String   @db.Uuid
+  projectionVersion  Int
+  successfulTasks    BigInt   @default(0)
+  failedTasks        BigInt   @default(0)
+  consumedPoints     BigInt   @default(0)
+  revenueMinor       BigInt   @default(0)
+  providerCostMinor  BigInt   @default(0)
+
+  @@id([businessDate, modelId, projectionVersion])
+}
+
+model UserSegmentMetric {
+  businessDate      DateTime @db.Date
+  segment           String
+  projectionVersion Int
+  acquiredUsers     BigInt   @default(0)
+  activeUsers       BigInt   @default(0)
+  retainedUsers     BigInt   @default(0)
+
+  @@id([businessDate, segment, projectionVersion])
+}
+
+model RealtimeCounter {
+  key               String
+  projectionVersion Int
+  value             BigInt   @default(0)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([key, projectionVersion])
+}
+
+model ProjectionCheckpoint {
+  consumer           String
+  projectionVersion  Int
+  eventId            String   @db.Uuid
+  projectedThrough   DateTime @db.Timestamptz(3)
+  processedAt        DateTime @db.Timestamptz(3)
+
+  @@id([consumer, projectionVersion])
+}
