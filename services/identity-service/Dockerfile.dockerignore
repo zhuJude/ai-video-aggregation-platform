@@ -7,8 +7,6 @@
 !services/identity-service
 !services/identity-service/Dockerfile
 !services/identity-service/package.json
-!services/identity-service/pnpm-lock.yaml
-!services/identity-service/pnpm-workspace.yaml
 !services/identity-service/tsconfig.json
 !services/identity-service/prisma.config.ts
 !services/identity-service/src

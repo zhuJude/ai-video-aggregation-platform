@@ -18,14 +18,8 @@ describe('identity and IAM production assets', () => {
         resolve(workspace, 'services', service, 'Dockerfile.dockerignore'),
         'utf8',
       );
-      const localLock = await readFile(
-        resolve(workspace, 'services', service, 'pnpm-lock.yaml'),
-        'utf8',
-      );
-      const localBuildPolicy = await readFile(
-        resolve(workspace, 'services', service, 'pnpm-workspace.yaml'),
-        'utf8',
-      );
+      const rootLock = await readFile(resolve(workspace, 'pnpm-lock.yaml'), 'utf8');
+      const rootBuildPolicy = await readFile(resolve(workspace, 'pnpm-workspace.yaml'), 'utf8');
       const servicePackage = JSON.parse(
         await readFile(resolve(workspace, 'services', service, 'package.json'), 'utf8'),
       ) as { scripts?: { build?: string } };
@@ -34,27 +28,27 @@ describe('identity and IAM production assets', () => {
       ) as { extends?: string };
       expect(dockerfile).toContain('FROM node:24-alpine AS build');
       expect(dockerfile).toContain('FROM node:24-alpine AS runtime');
-      expect(dockerfile).toContain('COPY tsconfig.base.json ./');
       expect(dockerfile).toContain(
-        `COPY services/${service}/package.json services/${service}/pnpm-lock.yaml services/${service}/pnpm-workspace.yaml ./`,
+        'COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./',
+      );
+      expect(dockerfile).toContain(
+        `COPY services/${service}/package.json services/${service}/package.json`,
       );
       expect(dockerfile).toMatch(/pnpm install .*--frozen-lockfile/);
       expect(dockerfile).not.toMatch(/pnpm install .*--ignore-workspace/);
       expect(dockerfile).toMatch(/pnpm install .*--ignore-scripts/);
-      expect(dockerfile).toMatch(/pnpm install .*--config\.strict-dep-builds=false/);
       expect(dockerfile).toContain('pnpm rebuild @prisma/engines');
       expect(dockerfile).not.toContain('--lockfile=false');
       expect(dockerfile).not.toContain('--no-frozen-lockfile');
-      expect(dockerfile).toMatch(/pnpm prune .*--prod/);
-      expect(dockerfile).not.toMatch(/pnpm prune .*--ignore-workspace/);
-      expect(localLock).toContain('lockfileVersion:');
-      expect(localLock).toContain(`'@nestjs/common':`);
-      expect(localBuildPolicy).toContain('allowBuilds:');
-      expect(localBuildPolicy).toContain("'@prisma/engines': true");
-      expect(localBuildPolicy).toContain('overrides:');
-      expect(localBuildPolicy).toContain('deepmerge-ts: 8.0.0');
-      expect(localBuildPolicy).toContain('mysql2: 3.22.0');
-      expect(localBuildPolicy).not.toMatch(/dangerouslyAllowAllBuilds|\*\s*:\s*true/);
+      expect(dockerfile).toMatch(/pnpm --filter .* deploy --prod/);
+      expect(rootLock).toContain('lockfileVersion:');
+      expect(rootLock).toContain(`services/${service}:`);
+      expect(rootBuildPolicy).toContain('allowBuilds:');
+      expect(rootBuildPolicy).toContain("'@prisma/engines': true");
+      expect(rootBuildPolicy).toContain('overrides:');
+      expect(rootBuildPolicy).toContain('deepmerge-ts: 8.0.0');
+      expect(rootBuildPolicy).toContain('mysql2: 3.23.1');
+      expect(rootBuildPolicy).not.toMatch(/dangerouslyAllowAllBuilds|\*\s*:\s*true/);
       expect(dockerfile).toContain('USER node');
       expect(dockerfile).toContain('HEALTHCHECK');
       expect(dockerfile).toContain('dist/src/main.js');
@@ -68,9 +62,10 @@ describe('identity and IAM production assets', () => {
       expect(rules[0]).toBe('**');
       for (const allowed of [
         '!tsconfig.base.json',
+        '!package.json',
+        '!pnpm-lock.yaml',
+        '!pnpm-workspace.yaml',
         `!services/${service}/package.json`,
-        `!services/${service}/pnpm-lock.yaml`,
-        `!services/${service}/pnpm-workspace.yaml`,
         `!services/${service}/tsconfig.json`,
         `!services/${service}/prisma.config.ts`,
         `!services/${service}/src/**`,
@@ -104,11 +99,12 @@ describe('identity and IAM production assets', () => {
 
       const trackedBuildInputs = trackedFiles().filter(
         (path) =>
+          path === 'package.json' ||
+          path === 'pnpm-lock.yaml' ||
+          path === 'pnpm-workspace.yaml' ||
           path === 'tsconfig.base.json' ||
           path === `services/${service}/Dockerfile` ||
           path === `services/${service}/package.json` ||
-          path === `services/${service}/pnpm-lock.yaml` ||
-          path === `services/${service}/pnpm-workspace.yaml` ||
           path === `services/${service}/tsconfig.json` ||
           path === `services/${service}/prisma.config.ts` ||
           path.startsWith(`services/${service}/src/`) ||

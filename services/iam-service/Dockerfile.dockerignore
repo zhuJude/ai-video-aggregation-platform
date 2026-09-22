@@ -7,8 +7,6 @@
 !services/iam-service
 !services/iam-service/Dockerfile
 !services/iam-service/package.json
-!services/iam-service/pnpm-lock.yaml
-!services/iam-service/pnpm-workspace.yaml
 !services/iam-service/tsconfig.json
 !services/iam-service/prisma.config.ts
 !services/iam-service/src
